@@ -4,13 +4,14 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use ghusage_core::coverage::{self, CoverageStatus, CoverageSummary, DataKind};
 use ghusage_core::metrics::{
-    self, BucketSummary, CommentRow, CommitDateBasis, Dataset, Filter, Intensity, IssueRow,
-    Participation, PrDetail, PrRow, PrSort, PrTiming, RepoSummary, ReviewCounts, ReviewDirection,
-    ReviewRow, Snapshot, Summary, ThreadCounts, TimingStats,
+    self, ActivityRow, BucketSummary, CommentRow, CommitDateBasis, CommitRow, Dataset, Filter,
+    Intensity, IssueRow, Participation, PrDetail, PrRow, PrSort, PrTiming, RepoSummary,
+    ReviewCounts, ReviewDirection, ReviewRow, Snapshot, Summary, ThreadCounts, TimingStats,
 };
 use ghusage_core::model::{ActorKind, EventType, PrState, Visibility};
 use ghusage_core::time::{Granularity, Period, Zone};
@@ -92,6 +93,10 @@ pub struct Report {
     pub comments: Option<Vec<CommentRow>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issues: Option<Vec<IssueRow>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commits: Option<Vec<CommitRow>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<Vec<ActivityRow>>,
 }
 
 impl Report {
@@ -137,21 +142,24 @@ fn options(ctx: &QueryContext, filter: Filter) -> metrics::Options {
 /// before aggregation, so numbers are identical either way.
 pub fn build(ds: &Dataset, ctx: &QueryContext, kind: ReportKind) -> Report {
     let (ds, filter) = prepare(ds, ctx);
-    let ds = &ds;
-    let opts = options(ctx, filter);
+    build_on(&ds, &options(ctx, filter), ctx, kind)
+}
+
+/// [`build`] on a dataset already passed through [`prepare`].
+fn build_on(ds: &Dataset, opts: &metrics::Options, ctx: &QueryContext, kind: ReportKind) -> Report {
     let gran = match kind {
         ReportKind::Breakdown(g) => Some(g),
         _ => None,
     };
-    let breakdown = metrics::breakdown(ds, &opts, gran.unwrap_or(Granularity::Day));
+    let breakdown = metrics::breakdown(ds, opts, gran.unwrap_or(Granularity::Day));
     let mut r = Report {
         schema_version: SCHEMA_VERSION,
         account: account(ds),
         period: period_info(ctx),
         timezone: ctx.zone.name().to_string(),
-        metrics: metrics::summary(ds, &opts),
-        snapshot: metrics::snapshot(ds, &opts),
-        repositories: metrics::by_repository(ds, &opts),
+        metrics: metrics::summary(ds, opts),
+        snapshot: metrics::snapshot(ds, opts),
+        repositories: metrics::by_repository(ds, opts),
         activity_breakdown: breakdown,
         granularity: gran,
         coverage: coverage_for(ds, ctx.period),
@@ -164,6 +172,8 @@ pub fn build(ds: &Dataset, ctx: &QueryContext, kind: ReportKind) -> Report {
         reviews_received: None,
         comments: None,
         issues: None,
+        commits: None,
+        activity: None,
     };
     match kind {
         ReportKind::PullRequests {
@@ -171,23 +181,103 @@ pub fn build(ds: &Dataset, ctx: &QueryContext, kind: ReportKind) -> Report {
             state,
             sort,
         } => {
-            r.pull_requests = Some(metrics::pr_rows(ds, &opts, participation, state, sort));
-            r.intensity = Some(metrics::intensity(ds, &opts, participation));
-            r.timing = Some(metrics::timing_stats(ds, &opts));
+            r.pull_requests = Some(metrics::pr_rows(ds, opts, participation, state, sort));
+            r.intensity = Some(metrics::intensity(ds, opts, participation));
+            r.timing = Some(metrics::timing_stats(ds, opts));
         }
         ReportKind::Reviews => {
-            r.reviews_submitted = Some(metrics::review_rows(ds, &opts, ReviewDirection::Submitted));
-            r.reviews_received = Some(metrics::review_rows(ds, &opts, ReviewDirection::Received));
+            r.reviews_submitted = Some(metrics::review_rows(ds, opts, ReviewDirection::Submitted));
+            r.reviews_received = Some(metrics::review_rows(ds, opts, ReviewDirection::Received));
         }
-        ReportKind::Comments => r.comments = Some(metrics::comment_rows(ds, &opts)),
-        ReportKind::Issues => r.issues = Some(metrics::issue_rows(ds, &opts)),
+        ReportKind::Comments => r.comments = Some(metrics::comment_rows(ds, opts)),
+        ReportKind::Issues => r.issues = Some(metrics::issue_rows(ds, opts)),
         _ => {}
     }
     r
 }
 
+/// An overview report that also lists the pull requests the subject was
+/// active in, most recently active first.
+pub fn build_dashboard(ds: &Dataset, ctx: &QueryContext) -> Report {
+    let (ds, filter) = prepare(ds, ctx);
+    let opts = options(ctx, filter);
+    let mut r = build_on(&ds, &opts, ctx, ReportKind::Overview);
+    r.pull_requests = Some(metrics::pr_rows(
+        &ds,
+        &opts,
+        Participation::Subject,
+        None,
+        PrSort::Updated,
+    ));
+    r
+}
+
+/// A report with every listing filled in: pull requests, reviews in both
+/// directions, comments, issues, commits and the activity itself. Used for
+/// the detail of one day (a one-day period) or one repository (a
+/// one-repository filter); its numbers are those of [`build`] for the same
+/// context.
+pub fn build_detail(ds: &Dataset, ctx: &QueryContext) -> Report {
+    let (ds, filter) = prepare(ds, ctx);
+    let ds = &ds;
+    let opts = options(ctx, filter);
+    let mut r = build_on(
+        ds,
+        &opts,
+        ctx,
+        ReportKind::PullRequests {
+            participation: Participation::Subject,
+            state: None,
+            sort: PrSort::Activity,
+        },
+    );
+    r.reviews_submitted = Some(metrics::review_rows(ds, &opts, ReviewDirection::Submitted));
+    r.reviews_received = Some(metrics::review_rows(ds, &opts, ReviewDirection::Received));
+    r.comments = Some(metrics::comment_rows(ds, &opts));
+    r.issues = Some(metrics::issue_rows(ds, &opts));
+    r.commits = Some(metrics::commit_rows(ds, &opts));
+    r.activity = Some(metrics::activity_rows(ds, &opts));
+    r
+}
+
+/// Detail report of one issue: its current state and its events in the
+/// period.
+#[derive(Debug, Clone, Serialize)]
+pub struct IssueReport {
+    pub issue_id: String,
+    pub repository: String,
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    pub author: String,
+    pub is_open: bool,
+    pub created_at: DateTime<Utc>,
+    pub closed_at: Option<DateTime<Utc>>,
+    pub events: Vec<ActivityRow>,
+    pub private_repositories_redacted: bool,
+}
+
+/// Builds the detail report of one issue for the period of `ctx`.
+pub fn issue_report(ds: &Dataset, ctx: &QueryContext, issue_id: &str) -> Option<IssueReport> {
+    let (ds, filter) = prepare(ds, ctx);
+    let d = metrics::issue_detail(&ds, &options(ctx, filter), issue_id)?;
+    Some(IssueReport {
+        issue_id: d.issue.id.clone(),
+        repository: d.repository,
+        number: d.issue.number,
+        title: d.issue.title.clone(),
+        url: d.issue.url.clone(),
+        author: d.issue.author.display().to_string(),
+        is_open: d.issue.is_open,
+        created_at: d.issue.created_at,
+        closed_at: d.issue.closed_at,
+        events: d.events,
+        private_repositories_redacted: ctx.redact_private,
+    })
+}
+
 /// Resolves the filter to repository ids on the real names, then redacts.
-fn prepare(ds: &Dataset, ctx: &QueryContext) -> (Dataset, Filter) {
+fn prepare<'a>(ds: &'a Dataset, ctx: &QueryContext) -> (Cow<'a, Dataset>, Filter) {
     let filter = if ctx.filter.is_empty() {
         Filter::default()
     } else {
@@ -214,9 +304,9 @@ fn prepare(ds: &Dataset, ctx: &QueryContext) -> (Dataset, Filter) {
         }
     };
     let ds = if ctx.redact_private {
-        redact(ds)
+        Cow::Owned(redact(ds))
     } else {
-        ds.clone()
+        Cow::Borrowed(ds)
     };
     (ds, filter)
 }

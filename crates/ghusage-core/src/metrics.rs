@@ -1124,6 +1124,8 @@ pub struct ReviewRow {
     pub reviewer: String,
     pub state: Option<ReviewState>,
     pub repository: String,
+    /// The reviewed pull request, when known.
+    pub pr_id: Option<String>,
     pub pr_number: Option<u64>,
     pub pr_title: Option<String>,
     pub url: Option<String>,
@@ -1157,6 +1159,7 @@ pub fn review_rows(ds: &Dataset, opts: &Options, dir: ReviewDirection) -> Vec<Re
                 reviewer: e.actor.display().to_string(),
                 state: e.meta.review_state,
                 repository: ds.repo_name(&e.repository_id),
+                pr_id: e.parent_pr_id.clone(),
                 pr_number: pr.map(|p| p.number),
                 pr_title: pr.map(|p| p.title.clone()),
                 url: e.url.clone(),
@@ -1225,6 +1228,8 @@ pub struct CommentRow {
     pub kind: EventType,
     pub written_by_subject: bool,
     pub repository: String,
+    /// The pull request the comment belongs to, when known.
+    pub pr_id: Option<String>,
     pub pr_number: Option<u64>,
     pub edited: bool,
     pub url: Option<String>,
@@ -1249,6 +1254,7 @@ pub fn comment_rows(ds: &Dataset, opts: &Options) -> Vec<CommentRow> {
             kind: e.event_type,
             written_by_subject: e.actor.is(&ds.subject),
             repository: ds.repo_name(&e.repository_id),
+            pr_id: e.parent_pr_id.clone(),
             pr_number: e
                 .parent_pr_id
                 .as_deref()
@@ -1258,6 +1264,140 @@ pub fn comment_rows(ds: &Dataset, opts: &Options) -> Vec<CommentRow> {
             url: e.url.clone(),
         })
         .collect()
+}
+
+/// A commit authored by the subject.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitRow {
+    pub event_id: String,
+    pub sha: Option<String>,
+    /// The date the commit is attributed to (see [`CommitDateBasis`]).
+    pub committed_at: DateTime<Utc>,
+    pub repository: String,
+    pub is_merge_commit: bool,
+    pub url: Option<String>,
+}
+
+/// The subject's distinct commits in the period, oldest first. There is
+/// exactly one row per commit counted in [`Summary::commits`].
+pub fn commit_rows(ds: &Dataset, opts: &Options) -> Vec<CommitRow> {
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut rows: Vec<CommitRow> = selected(ds, opts)
+        .filter(|e| e.event_type == EventType::CommitAuthored && e.actor.is(&ds.subject))
+        .filter(|e| seen.insert(e.event_id.as_str()))
+        .map(|e| CommitRow {
+            event_id: e.event_id.0.clone(),
+            sha: e.meta.sha.clone(),
+            committed_at: event_time(e, opts.commit_basis),
+            repository: ds.repo_name(&e.repository_id),
+            is_merge_commit: e.meta.is_merge_commit == Some(true),
+            url: e.url.clone(),
+        })
+        .collect();
+    rows.sort_by(|a, b| (a.committed_at, &a.event_id).cmp(&(b.committed_at, &b.event_id)));
+    rows
+}
+
+/// One event in an activity listing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivityRow {
+    pub event_id: String,
+    /// The instant the event is attributed to (see [`event_time`]).
+    pub occurred_at: DateTime<Utc>,
+    pub event_type: EventType,
+    pub actor: String,
+    pub by_subject: bool,
+    pub repository: String,
+    /// The pull request the event belongs to, when known.
+    pub pr_id: Option<String>,
+    /// The issue the event belongs to, when known.
+    pub issue_id: Option<String>,
+    /// Number of the pull request or issue.
+    pub number: Option<u64>,
+    /// Title of the pull request or issue.
+    pub title: Option<String>,
+    pub url: Option<String>,
+}
+
+fn activity_row(ds: &Dataset, e: &ActivityEvent, basis: CommitDateBasis) -> ActivityRow {
+    let pr = e
+        .parent_pr_id
+        .as_deref()
+        .and_then(|id| ds.pull_requests.get(id));
+    let issue = (e.event_type.category() == EventCategory::Issue)
+        .then(|| ds.issues.get(&e.entity_id))
+        .flatten();
+    ActivityRow {
+        event_id: e.event_id.0.clone(),
+        occurred_at: event_time(e, basis),
+        event_type: e.event_type,
+        actor: e.actor.display().to_string(),
+        by_subject: e.actor.is(&ds.subject),
+        repository: ds.repo_name(&e.repository_id),
+        pr_id: e.parent_pr_id.clone(),
+        issue_id: issue.map(|i| i.id.clone()),
+        number: pr.map(|p| p.number).or(issue.map(|i| i.number)),
+        title: pr
+            .map(|p| p.title.clone())
+            .or(issue.map(|i| i.title.clone())),
+        url: e.url.clone(),
+    }
+}
+
+fn by_time(rows: &mut [ActivityRow]) {
+    rows.sort_by(|a, b| {
+        (a.occurred_at, a.event_type.sort_rank(), &a.event_id).cmp(&(
+            b.occurred_at,
+            b.event_type.sort_rank(),
+            &b.event_id,
+        ))
+    });
+}
+
+/// Activity in the period, oldest first: every human event by the subject,
+/// plus reviews and comments others left on the subject's pull requests.
+/// Automation (CI) is never listed.
+pub fn activity_rows(ds: &Dataset, opts: &Options) -> Vec<ActivityRow> {
+    let mut rows: Vec<ActivityRow> = selected(ds, opts)
+        .filter(|e| !e.event_type.is_automation())
+        .filter(|e| {
+            e.actor.is(&ds.subject)
+                || (matches!(
+                    e.event_type,
+                    EventType::ReviewSubmitted
+                        | EventType::ConversationComment
+                        | EventType::InlineComment
+                        | EventType::ReviewSummary
+                ) && ds.pr_author_is_subject(e.parent_pr_id.as_deref()))
+        })
+        .map(|e| activity_row(ds, e, opts.commit_basis))
+        .collect();
+    by_time(&mut rows);
+    rows
+}
+
+/// One issue and its events in the period.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueDetail {
+    pub issue: Issue,
+    pub repository: String,
+    /// Events of the issue in the period, by anyone, oldest first.
+    pub events: Vec<ActivityRow>,
+}
+
+/// Detail of one issue: its current state and its events in the period.
+pub fn issue_detail(ds: &Dataset, opts: &Options, issue_id: &str) -> Option<IssueDetail> {
+    let issue = ds.issues.get(issue_id)?;
+    let mut events: Vec<ActivityRow> = selected(ds, opts)
+        .filter(|e| e.event_type.category() == EventCategory::Issue && e.entity_id == issue_id)
+        .map(|e| activity_row(ds, e, opts.commit_basis))
+        .collect();
+    by_time(&mut events);
+    Some(IssueDetail {
+        issue: issue.clone(),
+        repository: ds.repo_name(&issue.repository_id),
+        events,
+    })
 }
 
 /// Events of one pull request in deterministic order, optionally filtered.

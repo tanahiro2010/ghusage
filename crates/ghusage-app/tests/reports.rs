@@ -427,3 +427,150 @@ fn own_pull_request_commits_join_the_global_commit_set_once() {
     assert_eq!(r.metrics.commits, 2);
     assert_eq!(r.metrics.pr_commits, 2);
 }
+
+fn day(d: u32) -> QueryContext {
+    let mut c = ctx(false);
+    c.period = Period::new(t(d, 0), t(d + 1, 0)).unwrap();
+    c
+}
+
+#[test]
+fn day_detail_lists_that_days_activity_with_the_same_numbers() {
+    let ds = dataset();
+    let r = report::build_detail(&ds, &day(1));
+    // Day 1: PR_1 opened 09:00, commit abc 10:00, PR_2 opened 11:00.
+    assert_eq!(r.metrics.commits, 1);
+    assert_eq!(r.metrics.prs_created, 2);
+    let commits = r.commits.as_ref().unwrap();
+    assert_eq!(commits.len(), 1);
+    assert_eq!(commits[0].sha.as_deref(), Some("abc"));
+    let types: Vec<EventType> = r
+        .activity
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|a| a.event_type)
+        .collect();
+    assert_eq!(
+        types,
+        vec![
+            EventType::PrOpened,
+            EventType::CommitAuthored,
+            EventType::PrOpened
+        ]
+    );
+    // One event each; ties are ordered by repository name.
+    let prs: Vec<&str> = r
+        .pull_requests
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|p| p.pr_id.as_str())
+        .collect();
+    assert_eq!(prs, vec!["PR_2", "PR_1"]);
+    assert_eq!(r.reviews_received.as_ref().unwrap().len(), 0);
+
+    // Day 2: the review received on PR_2 and my comment.
+    let r2 = report::build_detail(&ds, &day(2));
+    let received = r2.reviews_received.as_ref().unwrap();
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0].pr_id.as_deref(), Some("PR_2"));
+    assert_eq!(r2.comments.as_ref().unwrap().len(), 1);
+
+    // The day's numbers are the daily breakdown row of the whole period.
+    let whole = report::build(&ds, &ctx(false), ReportKind::Overview);
+    assert_eq!(whole.activity_breakdown[0].summary, r.metrics);
+    assert_eq!(whole.activity_breakdown[1].summary, r2.metrics);
+    assert_eq!(
+        report::build(&ds, &day(1), ReportKind::Overview).metrics,
+        r.metrics
+    );
+}
+
+#[test]
+fn repository_detail_matches_the_repository_row() {
+    let ds = dataset();
+    let mut c = ctx(false);
+    c.filter.repositories = vec!["R_priv".into()];
+    let r = report::build_detail(&ds, &c);
+    let whole = report::build(&ds, &ctx(false), ReportKind::Overview);
+    let row = whole
+        .repositories
+        .iter()
+        .find(|x| x.repository_id == "R_priv")
+        .unwrap();
+    assert_eq!(row.summary, r.metrics);
+    assert!(r.commits.as_ref().unwrap().is_empty());
+    // PR_2 opened, the review received, my comment. The merge by someone
+    // else is not my activity.
+    let ids: Vec<&str> = r
+        .activity
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|a| a.event_id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["o2", "rv1", "cm"]);
+    assert_eq!(r.pull_requests.as_ref().unwrap().len(), 1);
+
+    // Redaction applies to the listings too.
+    c.redact_private = true;
+    let json = serde_json::to_string(&report::build_detail(&ds, &c)).unwrap();
+    assert!(!json.contains("Secret launch"), "{json}");
+    assert!(!json.contains("secret-plans"), "{json}");
+}
+
+#[test]
+fn dashboard_lists_pull_requests_most_recently_active_first() {
+    let ds = dataset();
+    let r = report::build_dashboard(&ds, &ctx(false));
+    assert_eq!(
+        r.metrics,
+        report::build(&ds, &ctx(false), ReportKind::Overview).metrics
+    );
+    // PR_1's last event is day 1 09:00; PR_2's is the merge on day 2 09:00.
+    let prs: Vec<&str> = r
+        .pull_requests
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|p| p.pr_id.as_str())
+        .collect();
+    assert_eq!(prs, vec!["PR_2", "PR_1"]);
+}
+
+#[test]
+fn issue_report_shows_the_issue_and_its_events_in_the_period() {
+    let mut ds = dataset();
+    ds.issues.insert(
+        "I_1".into(),
+        Issue {
+            id: "I_1".into(),
+            repository_id: "R_pub".into(),
+            number: 12,
+            title: "Crash on start".into(),
+            url: "https://github.com/me/public-tool/issues/12".into(),
+            author: me(),
+            is_open: false,
+            created_at: t(3, 1),
+            closed_at: Some(t(9, 1)),
+        },
+    );
+    for (id, ty, at) in [
+        ("io", EventType::IssueOpened, t(3, 1)),
+        ("ic", EventType::IssueClosed, t(9, 1)),
+    ] {
+        let mut e = ev(id, ty, me(), "R_pub", None, at);
+        e.entity_id = "I_1".into();
+        ds.events.push(e);
+    }
+    ghusage_core::metrics::sort_events(&mut ds.events);
+    // The period ends on day 8, so the close on day 9 is outside it.
+    let r = report::issue_report(&ds, &ctx(false), "I_1").unwrap();
+    assert_eq!(r.number, 12);
+    assert_eq!(r.repository, "me/public-tool");
+    assert!(!r.is_open);
+    assert_eq!(r.events.len(), 1);
+    assert_eq!(r.events[0].event_type, EventType::IssueOpened);
+    assert!(report::issue_report(&ds, &ctx(false), "I_missing").is_none());
+}
