@@ -20,15 +20,21 @@ launcher runs it with your arguments. Node.js 18 or newer is required.
 
 | Platform | npm package |
 |---|---|
-| macOS, Apple Silicon | `ghusage-darwin-arm64` |
-| macOS, Intel | `ghusage-darwin-x64` |
-| Linux x64 (statically linked) | `ghusage-linux-x64` |
-| Linux arm64 (statically linked) | `ghusage-linux-arm64` |
-| Windows x64 | `ghusage-win32-x64` |
+| macOS, Apple Silicon | `@ghusage/ghusage-darwin-arm64` |
+| macOS, Intel | `@ghusage/ghusage-darwin-x64` |
+| Linux x64 (statically linked) | `@ghusage/ghusage-linux-x64` |
+| Linux arm64 (statically linked) | `@ghusage/ghusage-linux-arm64` |
+| Windows x64 | `@ghusage/ghusage-win32-x64` |
+| Windows arm64 | `@ghusage/ghusage-win32-arm64` |
+
+You only install `ghusage`; npm picks the matching package above
+automatically.
 
 - If optional dependencies are skipped (for example `npm install
-  --omit=optional` or `--no-optional`), the binary is not installed and
-  `ghusage` exits with a message explaining how to reinstall.
+  --omit=optional` or `--no-optional`) or a minimum release age setting
+  (`npm --before`, `--min-release-age`, mise `minimum_release_age`) holds the
+  binary package back, the binary is not installed and `ghusage` exits with a
+  message explaining how to reinstall.
 - On other platforms the launcher exits with a message; build from source
   instead.
 - Set `GHUSAGE_BINARY` to the path of a `ghusage` binary to make the

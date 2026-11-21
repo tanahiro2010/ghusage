@@ -158,10 +158,12 @@ the API does not keep cannot be recovered later:
 
 - `ghusage` is developed on macOS (Apple Silicon), where it is used against
   real GitHub data.
-- Continuous integration is set up to build and run the test suite on Linux
-  (x86_64 and ARM64), macOS (ARM64 and Intel) and Windows, and to build the
-  binaries of the npm packages for these platforms. Linux and Windows have
-  not yet been verified by hand on real machines. This includes the sync lock,
+- Continuous integration builds and runs the test suite on Linux (x86_64 and
+  ARM64), macOS (ARM64 and Intel) and Windows (x86_64). The npm binaries,
+  including Windows ARM64, are built and smoke-tested (installed with npm and
+  run) on each of these platforms; the full test suite does not run on
+  Windows ARM64. Linux and Windows have not yet been verified by hand on real
+  machines. This includes the sync lock,
   opening links from the terminal UI, and terminal rendering.
 - File permission checks for `--token-file` are done on Unix-like systems
   only.

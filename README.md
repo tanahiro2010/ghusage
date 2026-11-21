@@ -60,12 +60,14 @@ Coverage: complete  (last sync: 2026-11-21 19:20)
 npm install -g ghusage
 ```
 
-The npm package contains a small launcher and installs a prebuilt native
-binary for your platform as an optional dependency. Supported platforms:
-macOS (Apple Silicon, Intel), Linux (x64, arm64; statically linked) and
-Windows (x64). Node.js 18 or newer is required. If your package manager
-skips optional dependencies (`--omit=optional`), the binary is not installed
-and `ghusage` exits with an explanation. `GHUSAGE_BINARY` can point the
+You only install `ghusage`. It is a small launcher; npm also installs the
+prebuilt native binary for your OS and CPU (one of the `@ghusage/ghusage-*`
+packages, as an optional dependency) and the launcher runs it. Supported
+platforms: macOS (Apple Silicon, Intel), Linux (x64, arm64; statically
+linked) and Windows (x64, arm64). Node.js 18 or newer is required. If your
+package manager skips optional dependencies (`--omit=optional`) or a minimum
+release age setting holds the binary package back, `ghusage` exits with an
+explanation. `GHUSAGE_BINARY` can point the
 launcher at a binary you built yourself.
 
 ### From source
