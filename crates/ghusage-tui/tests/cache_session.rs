@@ -83,8 +83,6 @@ fn cached_data_is_shown_with_the_same_numbers_as_in_memory() {
     let text = screen_text(&from_disk, 140, 40);
     assert!(text.contains("alice (authenticated user)"), "{text}");
     assert!(text.contains("events"), "{text}");
-    assert!(
-        text.contains(&dir.path().display().to_string()[..20]),
-        "{text}"
-    );
+    let shown: String = dir.path().display().to_string().chars().take(20).collect();
+    assert!(text.contains(&shown), "{text}");
 }

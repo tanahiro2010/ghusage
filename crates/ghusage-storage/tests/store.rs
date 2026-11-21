@@ -1,7 +1,6 @@
 //! Behavior of the cache database as seen by the rest of the application.
 
 use std::collections::HashSet;
-use std::path::Path;
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use ghusage_core::coverage::{CoverageRecord, CoverageStatus, DataKind};
@@ -925,7 +924,7 @@ fn database_from_a_newer_version_is_refused() {
 }
 
 #[cfg(unix)]
-fn set_mode(path: &Path, mode: u32) {
+fn set_mode(path: &std::path::Path, mode: u32) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
 }
