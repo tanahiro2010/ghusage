@@ -39,3 +39,15 @@ jobs:
           [ -f "$bin.exe" ] && bin="$bin.exe"
           "$bin" --version
           "$bin" --help
+
+  audit:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit
