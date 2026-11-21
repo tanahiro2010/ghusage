@@ -2,7 +2,14 @@
   "name": "ghusage",
   "version": "0.0.0",
   "description": "Know what you actually did on GitHub: commits, pull requests, reviews and the activity inside pull requests.",
-  "keywords": ["github", "cli", "tui", "analytics", "pull-requests", "code-review"],
+  "keywords": [
+    "github",
+    "cli",
+    "tui",
+    "analytics",
+    "pull-requests",
+    "code-review"
+  ],
   "homepage": "https://github.com/tanahiro2010/ghusage",
   "repository": {
     "type": "git",
@@ -11,10 +18,16 @@
   "bugs": "https://github.com/tanahiro2010/ghusage/issues",
   "license": "Apache-2.0",
   "bin": {
-    "ghusage": "bin/ghusage.js"
+    "ghusage": "./src/cli.js"
   },
-  "files": ["bin/ghusage.js"],
+  "files": [
+    "src/cli.js"
+  ],
   "engines": {
     "node": ">=18"
+  },
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
   }
 }

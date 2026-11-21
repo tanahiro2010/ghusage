@@ -42,6 +42,10 @@ function cargoVersion() {
   return m[1];
 }
 
+function dirName(pkg) {
+  return pkg.replace(/^@/, "").replace("/", "-");
+}
+
 const opts = args();
 const version = opts.version.replace(/^v/, "");
 if (version !== cargoVersion()) {
@@ -63,7 +67,8 @@ for (const p of platforms) {
     continue;
   }
   if (opts.only.length && !opts.only.includes(p.package)) continue;
-  const dir = path.join(opts.out, p.package);
+  // Scoped names (@scope/name) become a flat directory name.
+  const dir = path.join(opts.out, dirName(p.package));
   fs.mkdirSync(path.join(dir, "bin"), { recursive: true });
   const dest = path.join(dir, "bin", p.binary);
   fs.copyFileSync(src, dest);
@@ -79,11 +84,12 @@ for (const p of platforms) {
     cpu: [p.cpu],
     files: [`bin/${p.binary}`],
     preferUnplugged: true,
+    publishConfig: { access: "public" },
   };
   fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify(pkg, null, 2) + "\n");
   fs.writeFileSync(
     path.join(dir, "README.md"),
-    `# ${p.package}\n\nThe ${p.os}-${p.cpu} binary for [ghusage](https://www.npmjs.com/package/ghusage). Install \`ghusage\` instead of this package.\n`
+    `# ${p.package}\n\nThe ${p.os}-${p.cpu} native binary for [ghusage](https://www.npmjs.com/package/ghusage).\nInstall \`ghusage\` instead; npm picks this package automatically on ${p.os}-${p.cpu}.\n`
   );
   built.push(p.package);
 }
@@ -99,7 +105,7 @@ for (const f of ["LICENSE", "LICENSE-MIT", "LICENSE-APACHE"]) {
   const src = path.join(repoRoot, f);
   if (fs.existsSync(src)) {
     fs.copyFileSync(src, path.join(mainDir, f));
-    for (const name of built) fs.copyFileSync(src, path.join(opts.out, name, f));
+    for (const name of built) fs.copyFileSync(src, path.join(opts.out, dirName(name), f));
   }
 }
 console.log(JSON.stringify({ version, packages: ["ghusage", ...built] }));

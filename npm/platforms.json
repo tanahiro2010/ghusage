@@ -1,7 +1,8 @@
 [
-  { "package": "ghusage-darwin-arm64", "os": "darwin", "cpu": "arm64", "target": "aarch64-apple-darwin", "binary": "ghusage" },
-  { "package": "ghusage-darwin-x64", "os": "darwin", "cpu": "x64", "target": "x86_64-apple-darwin", "binary": "ghusage" },
-  { "package": "ghusage-linux-x64", "os": "linux", "cpu": "x64", "target": "x86_64-unknown-linux-musl", "binary": "ghusage" },
-  { "package": "ghusage-linux-arm64", "os": "linux", "cpu": "arm64", "target": "aarch64-unknown-linux-musl", "binary": "ghusage" },
-  { "package": "ghusage-win32-x64", "os": "win32", "cpu": "x64", "target": "x86_64-pc-windows-msvc", "binary": "ghusage.exe" }
+  { "package": "@ghusage/ghusage-darwin-arm64", "os": "darwin", "cpu": "arm64", "target": "aarch64-apple-darwin", "binary": "ghusage" },
+  { "package": "@ghusage/ghusage-darwin-x64", "os": "darwin", "cpu": "x64", "target": "x86_64-apple-darwin", "binary": "ghusage" },
+  { "package": "@ghusage/ghusage-linux-arm64", "os": "linux", "cpu": "arm64", "target": "aarch64-unknown-linux-musl", "binary": "ghusage" },
+  { "package": "@ghusage/ghusage-linux-x64", "os": "linux", "cpu": "x64", "target": "x86_64-unknown-linux-musl", "binary": "ghusage" },
+  { "package": "@ghusage/ghusage-win32-arm64", "os": "win32", "cpu": "arm64", "target": "aarch64-pc-windows-msvc", "binary": "ghusage.exe" },
+  { "package": "@ghusage/ghusage-win32-x64", "os": "win32", "cpu": "x64", "target": "x86_64-pc-windows-msvc", "binary": "ghusage.exe" }
 ]
