@@ -73,7 +73,7 @@ version yet), the launcher fetches it on first run with `npm pack`, using your
 npm configuration, and keeps it in a per-user cache. Set
 `GHUSAGE_NO_AUTO_INSTALL=1` to turn this off. If that fails, `ghusage` exits
 with an explanation; see
-[Missing native package](https://tanahiro2010.github.io/ghusage/guide/getting-started#missing-native-package).
+[Missing native package](https://ghusage.under18.dev/guide/getting-started#missing-native-package).
 `GHUSAGE_BINARY` can point the launcher at a binary you built yourself.
 
 ### From source
