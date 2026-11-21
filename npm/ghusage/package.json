@@ -9,7 +9,7 @@
     "url": "git+https://github.com/tanahiro2010/ghusage.git"
   },
   "bugs": "https://github.com/tanahiro2010/ghusage/issues",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "bin": {
     "ghusage": "bin/ghusage.js"
   },

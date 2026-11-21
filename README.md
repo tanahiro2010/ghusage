@@ -205,6 +205,4 @@ numbers.
 
 ## License
 
-A license has not been chosen yet. Until one is added, no license is granted
-to use, copy, modify or distribute this code beyond what GitHub's terms of
-service allow for public repositories.
+Licensed under the [Apache License, Version 2.0](LICENSE).
