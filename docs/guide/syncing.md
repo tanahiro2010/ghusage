@@ -53,7 +53,7 @@ ghusage sync --since 90d --full    # refetch everything in the period
 Synced octocat for 2026-10-23 00:00 → 2026-11-21 19:30
   commits found: 690
   pull requests found: 83 (fetched 83, unchanged 0)
-  issues found: 19 (fetched 19)
+  issues found: 19 (fetched 19, unchanged 0)
   API requests: 279 (retries 0, 40812 ms)
   status: complete
 ```

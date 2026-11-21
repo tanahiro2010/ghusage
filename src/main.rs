@@ -526,7 +526,7 @@ async fn sync_cmd(g: &GlobalArgs, cmd: &Command, zone: Zone, full: bool) -> Resu
         Format::Json => to_json(&r)?,
         _ => {
             let mut o = format!(
-                "Synced {} for {} → {}\n  commits found: {}\n  pull requests found: {} (fetched {}, unchanged {})\n  issues found: {} (fetched {})\n  API requests: {} (retries {}, {} ms)\n",
+                "Synced {} for {} → {}\n  commits found: {}\n  pull requests found: {} (fetched {}, unchanged {})\n  issues found: {} (fetched {}, unchanged {})\n  API requests: {} (retries {}, {} ms)\n",
                 ghusage_core::sanitize::sanitize_line(&s.subject.login),
                 zone.format(period.start, "%Y-%m-%d %H:%M"),
                 zone.format(period.end, "%Y-%m-%d %H:%M"),
@@ -536,6 +536,7 @@ async fn sync_cmd(g: &GlobalArgs, cmd: &Command, zone: Zone, full: bool) -> Resu
                 r.pull_requests_unchanged,
                 r.issues_found,
                 r.issues_fetched,
+                r.issues_unchanged,
                 r.api.requests,
                 r.api.retries,
                 r.api.total_api_time_ms,
