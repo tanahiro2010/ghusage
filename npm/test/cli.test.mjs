@@ -51,8 +51,16 @@ test("a missing optional package explains why and how to fix it", () => {
       throw new Error("not found");
     },
   });
-  assert.match(r.error, /Missing optional native package "@ghusage\/ghusage-linux-x64@/);
+  assert.deepEqual(r.missing, { pkg: "@ghusage/ghusage-linux-x64", target: "linux-x64" });
+  assert.match(r.error, /native binary for linux-x64 is missing/);
+  assert.match(r.error, /optional package "@ghusage\/ghusage-linux-x64@/);
   assert.match(r.error, /--omit=optional/);
+  assert.match(r.error, /min-release-age/);
+  assert.match(r.error, /proxy/);
+  assert.match(r.error, /npm uninstall -g ghusage && npm install -g ghusage@/);
+  assert.match(r.error, /npm config get registry/);
+  assert.match(r.error, /--registry https:\/\/registry\.npmjs\.org/);
+  assert.match(r.error, /follow that policy/);
 });
 
 test("the installed platform package is resolved", () => {
