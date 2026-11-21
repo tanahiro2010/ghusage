@@ -9,7 +9,7 @@ license.workspace = true
 [dependencies]
 chrono = "0.4.45"
 fs4 = "1.1.0"
-ghusage-core = { version = "0.1.0", path = "../ghusage-core" }
+ghusage-core = { version = "0.1.1", path = "../ghusage-core" }
 rusqlite = { version = "0.43", features = ["bundled"] }
 serde = "1.0.229"
 serde_json = "1.0.154"

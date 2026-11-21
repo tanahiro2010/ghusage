@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.89"
 repository = "https://github.com/tanahiro2010/ghusage"
@@ -27,11 +27,11 @@ anyhow = "1.0.104"
 chrono = "0.4.45"
 chrono-tz = "0.10.4"
 clap = { version = "4.6.9", features = ["derive", "env"] }
-ghusage-app = { version = "0.1.0", path = "crates/ghusage-app" }
-ghusage-core = { version = "0.1.0", path = "crates/ghusage-core" }
-ghusage-github = { version = "0.1.0", path = "crates/ghusage-github" }
-ghusage-storage = { version = "0.1.0", path = "crates/ghusage-storage" }
-ghusage-tui = { version = "0.1.0", path = "crates/ghusage-tui" }
+ghusage-app = { version = "0.1.1", path = "crates/ghusage-app" }
+ghusage-core = { version = "0.1.1", path = "crates/ghusage-core" }
+ghusage-github = { version = "0.1.1", path = "crates/ghusage-github" }
+ghusage-storage = { version = "0.1.1", path = "crates/ghusage-storage" }
+ghusage-tui = { version = "0.1.1", path = "crates/ghusage-tui" }
 ratatui = "0.30"
 serde = "1.0.229"
 serde_json = "1.0.154"
