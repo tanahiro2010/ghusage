@@ -208,7 +208,7 @@ jobs:
         with:
           name: npm-packages
           path: tgz
-      - name: Publish platform packages, then the main package
+      - name: Publish platform packages, wait until they are served, then the main package
         shell: bash
         run: |
           v="${{ needs.package.outputs.version }}"
@@ -231,8 +231,39 @@ jobs:
             # repository shorthand.
             npm publish "./$f" --access public
           }
+          platforms=()
           for f in tgz/*.tgz; do
             case "$f" in "tgz/ghusage-$v.tgz") continue ;; esac
+            platforms+=("$(field "$f" name)")
             publish "$f"
           done
+          if [ "${#platforms[@]}" -ne 6 ]; then
+            echo "expected 6 platform packages, found ${#platforms[@]}: ${platforms[*]}" >&2
+            exit 1
+          fi
+
+          # Installing the main package before npm serves every platform
+          # package would leave users without a binary, so wait until all of
+          # them are visible on the public registry. Give up (without
+          # publishing the main package) after 10 minutes.
+          deadline=$(( $(date +%s) + 600 ))
+          while :; do
+            pending=()
+            for name in "${platforms[@]}"; do
+              seen=$(npm view "$name@$v" version --prefer-online --registry https://registry.npmjs.org 2> /dev/null || true)
+              [ "$seen" = "$v" ] || pending+=("$name")
+            done
+            if [ "${#pending[@]}" -eq 0 ]; then
+              echo "All platform packages for $v are visible on the registry."
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "Platform packages still not visible after 10 minutes: ${pending[*]}" >&2
+              echo "Not publishing ghusage@$v. Re-run the job once they appear." >&2
+              exit 1
+            fi
+            echo "Waiting for ${pending[*]} to appear on the registry..."
+            sleep 15
+          done
+
           publish "tgz/ghusage-$v.tgz"
