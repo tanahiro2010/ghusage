@@ -132,16 +132,12 @@ the API does not keep cannot be recovered later:
 - Everything is limited to what the token can see. Private repositories
   without access, organizations that require SAML authorization, and
   repositories outside a fine-grained token's grant are invisible.
-- Repositories that become inaccessible keep their cached data; it is not
-  removed automatically.
+- Repositories that GitHub refuses during a sync (HTTP 403 or 404, for
+  example after access was removed) keep their cached data and are shown
+  with `(no access)`; coverage for the affected range is `partial`.
 - With `--user`, another user's activity is limited to repositories your
   token can see. Ownership for other users is based on the repository owner
   only.
-- Sync coverage is recorded per account, not per `--public-only` mode. After
-  switching between `--public-only` and normal mode, run
-  `ghusage sync --full` for the affected period.
-- Pull requests you look up with `ghusage pr` are stored for your account and
-  can appear in lists that include other participants' activity.
 
 ## Rate limits and network
 
@@ -154,16 +150,18 @@ the API does not keep cannot be recovered later:
   continues.
 - Secondary rate limits are honored with waits of up to 60 seconds.
   `Retry-After` is honored when given in seconds.
-- Without `--offline`, every report command contacts GitHub to identify your
-  account, so it fails without network access. Use `--offline` there.
+- When GitHub cannot be reached, report commands fall back to cached data
+  with a warning, but nothing new is fetched; `ghusage sync` needs a working
+  connection.
 
 ## Platforms
 
 - `ghusage` is developed on macOS (Apple Silicon), where it is used against
   real GitHub data.
 - Continuous integration is set up to build and run the test suite on Linux
-  (x86_64 and ARM64), macOS (ARM64 and Intel) and Windows. Linux and Windows have not yet
-  been verified by hand on real machines. This includes the sync lock,
+  (x86_64 and ARM64), macOS (ARM64 and Intel) and Windows, and to build the
+  binaries of the npm packages for these platforms. Linux and Windows have
+  not yet been verified by hand on real machines. This includes the sync lock,
   opening links from the terminal UI, and terminal rendering.
 - File permission checks for `--token-file` are done on Unix-like systems
   only.
@@ -173,9 +171,8 @@ the API does not keep cannot be recovered later:
 
 ## Terminal UI
 
-- The terminal UI always uses the committer date for commits;
-  `--commit-date author` is not applied.
 - Changing the time range with `t` does not sync the new range by itself;
   press `r`.
 - With very large caches, the first view of a screen after changing the
-  period or filter can take a noticeable moment.
+  period or filter is computed in the background and can take a noticeable
+  moment.

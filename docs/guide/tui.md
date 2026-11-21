@@ -19,10 +19,9 @@ to find out who you are before the UI opens. With `--offline` and an empty
 cache it fails unless `--user` is given.
 
 The global options `--since`, `--until`, `--timezone`, `--repo`, `--owner`,
-`--visibility`, `--ownership`, `--user`, `--public-only`, `--data-dir` and
-`--concurrency` apply. Unlike JSON and CSV output, the UI shows private
-repository names, like table output. Commit counts always use the committer
-date; `--commit-date author` is not applied in the UI.
+`--visibility`, `--ownership`, `--user`, `--public-only`, `--commit-date`,
+`--data-dir` and `--concurrency` apply. Unlike JSON and CSV output, the UI
+shows private repository names, like table output.
 
 ## Screens
 
@@ -113,8 +112,10 @@ metacharacters are refused.
 
 - Quitting while a background sync runs stops the sync. Everything written
   so far is kept, and the next sync continues from there.
-- Very large caches may take a moment to compute a screen the first time it
-  is opened after changing the period or filter.
+- Reports are computed in the background. With a very large cache, a screen
+  opened for the first time after changing the period or filter shows
+  "Computing…" (and the status bar shows `⧗ computing`) for a moment; other
+  screens and keys keep working meanwhile.
 - Terminals smaller than 20 columns by 6 rows show "terminal too small".
 - The terminal UI has been exercised on macOS. Linux and Windows terminals
   (including opening links) have not yet been verified by hand.

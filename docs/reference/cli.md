@@ -46,7 +46,9 @@ months before the current one. See [Periods and time zones](./time.md).
   row. Weeks are labeled with ISO week numbers (`2026-W47`), months as
   `2026-11`.
 - `repos`: one row per repository with activity in the period, ordered by
-  your activity. `*` after the visibility marks repositories you own.
+  your activity. `*` after the visibility marks repositories you own;
+  `(no access)` marks repositories that GitHub refused (HTTP 403 or 404)
+  during a sync. Their cached data is kept.
 - `reviews`: counts by state, then the reviews you submitted and the reviews
   others submitted on your pull requests.
 - `comments`: counts by type, then each comment you wrote or received on your
@@ -93,16 +95,18 @@ coverage.
 When online, the pull request is always fetched again before it is shown.
 If that fails and the pull request is in the cache, a warning is printed and
 the cached data is used. With `--offline`, the pull request must already be
-in the cache.
+in the cache. Looking at a pull request you are not involved in does not add
+it to your reports.
 
-Event types: `commit`, `pr_opened`, `pr_converted_to_draft`,
+Event types: `commit_authored`, `pr_opened`, `pr_converted_to_draft`,
 `pr_ready_for_review`, `pr_closed`, `pr_reopened`, `pr_merged`, `pr_commit`,
 `pr_head_force_pushed`, `review_submitted`, `review_dismissed`,
 `conversation_comment`, `inline_comment`, `review_summary`,
 `review_requested`, `review_request_removed`, `assigned`, `unassigned`,
 `labeled`, `unlabeled`, `milestoned`, `demilestoned`, `renamed`,
 `issue_opened`, `issue_closed`, `issue_reopened`, `check_run`,
-`commit_status`.
+`commit_status`. (The older name `commit` is still accepted for
+`commit_authored`.)
 
 ```sh
 ghusage pr https://github.com/OWNER/REPO/pull/123 --timeline \
@@ -171,14 +175,14 @@ Cache: /Users/me/Library/Application Support/dev.ghusage.ghusage/ghusage.db
 | `--visibility <public\|private>` | Only public, or only non-public (private and internal) repositories |
 | `--ownership <owned\|external>` | Only repositories you own, or only other repositories |
 | `--user <USER>` | Analyze another user's activity (limited to what your token can see) |
-| `--format <table\|json\|csv>` | Output format (default `table`) |
+| `--format <table\|json\|csv>` | Output format (default `table`). `csv` is only available for reports and `pr`; `sync`, `doctor`, `auth`, `cache` and `tui` reject it with exit code 2 |
 | `--offline` | Use only cached data; never contact GitHub |
 | `--no-cache` | Fetch fresh data into a temporary cache instead of the local cache |
 | `--require-complete` | Exit with code 6 if any data for the period is incomplete |
 | `--no-color` | Disable colors (also honors `NO_COLOR`) |
 | `--include-private` | Include private repository names and titles in JSON / CSV output |
 | `--public-only` | Only fetch and show public repositories |
-| `--commit-date <committer\|author>` | Which commit date places commits in the period and in days (default `committer`) |
+| `--commit-date <committer\|author>` | Which commit date decides a commit's day and whether it is in the period (default `committer`). Also used by the terminal UI |
 | `--token-file <PATH>` | Read the GitHub token from this file (must not be readable by others) |
 | `--data-dir <PATH>` | Directory for the cache database (default: OS user data directory, or `GHUSAGE_DATA_DIR`) |
 | `--concurrency <N>` | Maximum concurrent GitHub requests, 1–16 (default 4) |
@@ -213,9 +217,9 @@ repository owned.
 |---|---|
 | `0` | Success |
 | `1` | General error (for example: no cached account in offline mode, pull request not in the cache, a failed `doctor` check, terminal error) |
-| `2` | Invalid arguments (unknown option or value, invalid date or time zone, empty period, invalid pull request URL, unknown event type, `sync --offline`) |
+| `2` | Invalid arguments (unknown option or value, invalid date or time zone, empty period, invalid pull request URL, unknown event type, `sync --offline`, `--format csv` on a command without CSV output) |
 | `3` | Authentication error (no credentials, unusable token file, token rejected by GitHub) |
-| `4` | GitHub API error (network, rate limit, server errors); also `sync` when some data could not be fetched completely |
+| `4` | GitHub API error (network, rate limit, server errors); also `sync` when some data could not be fetched completely. Report commands do not fail when GitHub is unreachable and an account is cached: they warn and show cached data |
 | `5` | Cache error (cannot create or open the database, corrupt or too-new database, another sync is running) |
 | `6` | Incomplete data with `--require-complete` (the report is still printed) |
 
@@ -246,7 +250,7 @@ error: the argument '--offline' cannot be used with '--no-cache'
 | `GH_TOKEN` | GitHub token (second in priority after `--token-file`) |
 | `GITHUB_TOKEN` | GitHub token (used when `GH_TOKEN` is not set) |
 | `GHUSAGE_DATA_DIR` | Data directory for the cache (overridden by `--data-dir`) |
-| `GHUSAGE_API_URL` | REST API base URL, for GitHub Enterprise Server (default `https://api.github.com`). Also moves the GraphQL endpoint to `<GHUSAGE_API_URL>/graphql` |
+| `GHUSAGE_API_URL` | REST API base URL, for GitHub Enterprise Server (default `https://api.github.com`). Also moves the GraphQL endpoint: `https://HOST/api/graphql` when the URL ends in `/api/v3`, otherwise `<GHUSAGE_API_URL>/graphql` |
 | `GHUSAGE_GRAPHQL_URL` | GraphQL endpoint URL (overrides the one derived from `GHUSAGE_API_URL`) |
 | `GHUSAGE_LOG` | Log filter for diagnostics on stderr, in `tracing` filter syntax, e.g. `debug` or `ghusage_github=debug` (default `warn`) |
 | `TZ` | Default time zone when `--timezone` is not given (an IANA name such as `Europe/Berlin`) |

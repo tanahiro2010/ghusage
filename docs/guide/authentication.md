@@ -98,22 +98,22 @@ ghusage overview --public-only
 With `--public-only`, searches are restricted to public repositories and
 anything from non-public repositories is dropped from reports.
 
-::: warning Switching modes
-Sync coverage is recorded per account, not per mode. If you sync a period
-with `--public-only` and later run without it (or the other way round),
-`ghusage` considers the period already synced. Run
-`ghusage sync --full --since <start>` after switching modes to refetch it.
-:::
+Ranges synced with `--public-only` only count as synced in public-only
+mode. If you later run without `--public-only`, those ranges are treated as
+not yet synced and are fetched again, this time including private
+repositories. Ranges synced in normal mode also count in public-only mode;
+private data is then simply left out of the reports.
 
 ## GitHub Enterprise Server
 
-Set `GHUSAGE_API_URL` to your server's REST API base URL. The GraphQL
-endpoint defaults to `<GHUSAGE_API_URL>/graphql`; override it with
-`GHUSAGE_GRAPHQL_URL` if needed.
+Set `GHUSAGE_API_URL` to your server's REST API base URL. When it ends in
+`/api/v3`, as GitHub Enterprise Server URLs do, the GraphQL endpoint is
+derived as `/api/graphql` on the same host; otherwise it is
+`<GHUSAGE_API_URL>/graphql`. Set `GHUSAGE_GRAPHQL_URL` to override it.
 
 ```sh
 export GHUSAGE_API_URL=https://github.example.com/api/v3
-export GHUSAGE_GRAPHQL_URL=https://github.example.com/api/graphql
+# GraphQL: https://github.example.com/api/graphql (derived)
 export GH_TOKEN=...   # a token for that server
 ghusage sync
 ```

@@ -139,7 +139,8 @@ ghusage tui
 ```
 
 Report commands sync missing ranges automatically before showing results
-(unless `--offline` is given).
+(unless `--offline` is given). If GitHub cannot be reached, they warn and
+show the cached data.
 
 ## Commands
 
@@ -194,10 +195,11 @@ See [Privacy](docs/reference/privacy.md) for details.
 
 ## Known limitations
 
-GitHub's APIs do not expose everything. For example, commit search only
-covers default branches of indexed repositories, push times and the history
-of review thread resolution are not available, and search results are capped
-at 1000 per query. `ghusage` reports these gaps instead of guessing. Read
+GitHub's APIs do not expose everything. For example, commits are found on
+default branches and inside pull requests only (work on other branches
+without a pull request is not counted), push times and the history of review
+thread resolution are not available, and search results are capped at 1000
+per query. `ghusage` reports these gaps instead of guessing. Read
 [Known limitations](docs/reference/limitations.md) before relying on the
 numbers.
 

@@ -185,7 +185,8 @@ There are three comment types:
 | Review summary | `review_summary` | The text body of a submitted review |
 
 **Comments written** (`comments_written`): comments you wrote in the period on
-any pull request, by type. The table total is the sum of the three types.
+any pull request, by type. The total (`total` in JSON) is the sum of the
+three types.
 
 **Comments received** (`comments_received`): comments written by anyone other
 than you (including bots) on your pull requests in the period, by type.
@@ -246,7 +247,8 @@ pull request events.
 event: a commit, a pull request event or an issue event.
 
 **Last activity** (`last_activity`, JSON/CSV): the time of your latest
-counted non-CI event in the period.
+counted non-CI event in the period. For commits, the selected commit date
+(`--commit-date`) is used.
 
 ### CI results
 

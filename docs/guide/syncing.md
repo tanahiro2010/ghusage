@@ -83,9 +83,25 @@ authentication, they print a warning and show what is in the cache:
 warning: sync failed, showing cached data: ...
 ```
 
-Without `--offline`, report commands always resolve your account through the
-API first, even when the period is fully cached. On a machine without network
-access they therefore fail (exit code 4); use `--offline` there.
+### When GitHub is not reachable
+
+Without `--offline`, report commands first identify your account through the
+API. If GitHub cannot be reached at that point (network error, timeout, or
+HTTP 5xx after retries), they print a warning and continue as if `--offline`
+had been given, using the account of the last online run (or `--user`):
+
+```text
+warning: GitHub is not reachable (network error: could not connect to GitHub); showing cached data
+```
+
+The report then shows what is in the cache, with coverage telling you which
+ranges are missing. This fallback needs a cached account; with an empty cache
+and no `--user` the command fails with exit code 4. If GitHub rejects the
+token (HTTP 401), the command fails with exit code 3 instead of falling back.
+
+`ghusage sync` cannot fall back: it needs GitHub, so it exits with code 4.
+`ghusage pr` warns and shows the cached copy of the pull request when GitHub
+is unreachable, and fails if the pull request was never cached.
 
 When the whole period is already covered, report commands do not fetch any
 activity data. To pick up changes in a period that is already covered (for
@@ -230,9 +246,10 @@ they were fetched for (your account, or the `--user` you analyzed), so
 syncing another user does not mark your own periods as synced. Pull requests
 are shared between accounts when both were involved.
 
-A pull request you look up with `ghusage pr <URL>` is stored in the cache for
-your account even if you were not involved in it, so it can appear in lists
-that include other participants' activity, such as `prs --all-participants`.
+A pull request you look up with `ghusage pr <URL>` is cached so that it can be
+shown again (also with `--offline`). If you are not involved in it (not its
+author, no activity of yours in it, not requested as reviewer, not assigned),
+it is stored separately and never becomes part of your reports or activity.
 
 ## Network behavior
 

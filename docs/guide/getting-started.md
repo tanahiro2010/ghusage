@@ -7,8 +7,36 @@ that cache.
 
 ## Install
 
-Prebuilt binaries are not published yet. You need a Rust toolchain
-(Rust 1.89 or newer).
+### npm
+
+```sh
+npm install -g ghusage
+ghusage --version
+```
+
+The `ghusage` npm package is a small Node.js launcher. A prebuilt native
+binary for your platform is installed as an optional dependency, and the
+launcher runs it with your arguments. Node.js 18 or newer is required.
+
+| Platform | npm package |
+|---|---|
+| macOS, Apple Silicon | `ghusage-darwin-arm64` |
+| macOS, Intel | `ghusage-darwin-x64` |
+| Linux x64 (statically linked) | `ghusage-linux-x64` |
+| Linux arm64 (statically linked) | `ghusage-linux-arm64` |
+| Windows x64 | `ghusage-win32-x64` |
+
+- If optional dependencies are skipped (for example `npm install
+  --omit=optional` or `--no-optional`), the binary is not installed and
+  `ghusage` exits with a message explaining how to reinstall.
+- On other platforms the launcher exits with a message; build from source
+  instead.
+- Set `GHUSAGE_BINARY` to the path of a `ghusage` binary to make the
+  launcher run that binary instead (for example one you built yourself).
+
+### From source
+
+You need a Rust toolchain (Rust 1.89 or newer).
 
 Install directly from the repository:
 

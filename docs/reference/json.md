@@ -89,8 +89,8 @@ Definitions of every count are in [Metric definitions](./metrics.md).
 
 #### CommentCounts
 
-`conversation`, `inline`, `review_summary` (integers). There is no total
-field; the total is the sum of the three.
+`total`, `conversation`, `inline`, `review_summary` (integers). `total` is
+the sum of the three types.
 
 ### Snapshot
 
@@ -108,7 +108,7 @@ field; the total is the sum of the three.
 | `full_name` | `owner/name` (redacted for private repositories) |
 | `visibility` | `public`, `private`, `internal` or `unknown` |
 | `owned` | Whether you own it (see [CLI reference](./cli.md#global-options)) |
-| `accessible` | `false` if the repository is known to be inaccessible |
+| `accessible` | `false` when GitHub refused access to the repository (HTTP 403 or 404) during a sync; cached data is kept |
 | `summary` | [Summary](#summary) for this repository |
 
 ### BucketSummary
@@ -346,8 +346,12 @@ occurred_at,actor,actor_kind,event_type,detail,removed_observed_at,url
 ```
 
 `period_coverage` is the overall coverage of the whole period. `sync`,
-`doctor`, `auth status` and `cache status` have no CSV form; with
-`--format csv` they print their table output.
+`doctor`, `auth status`, `cache status` and `tui` have no CSV form; with
+`--format csv` they fail with exit code 2:
+
+```text
+error: --format csv is not available for this command; use table or json
+```
 
 ## Private repositories
 
