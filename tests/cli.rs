@@ -186,6 +186,37 @@ fn csv_is_rejected_for_commands_without_tables() {
     }
 }
 
+#[test]
+fn options_a_command_does_not_use_are_reported() {
+    let d = tempfile::tempdir().unwrap();
+    ghusage(&d)
+        .args(["cache", "status", "--repo", "a/b", "--since", "7d"])
+        .args(["--commit-date", "author"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "warning: --repo has no effect on `cache status`",
+        ))
+        .stderr(predicate::str::contains(
+            "warning: --since has no effect on `cache status`",
+        ))
+        .stderr(predicate::str::contains(
+            "warning: --commit-date has no effect on `cache status`",
+        ));
+    ghusage(&d)
+        .args(["doctor", "--offline", "--visibility", "public"])
+        .assert()
+        .stderr(predicate::str::contains(
+            "warning: --visibility has no effect on `doctor`",
+        ));
+    // Options the command uses, and defaults, produce no warning.
+    ghusage(&d)
+        .args(["cache", "status", "--timezone", "Asia/Tokyo"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("has no effect").not());
+}
+
 /// Environment variables the OS needs to start a process with networking
 /// (Windows cannot initialize sockets without them).
 fn keep_system_env(c: &mut Command) {

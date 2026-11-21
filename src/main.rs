@@ -195,9 +195,82 @@ fn to_json<T: serde::Serialize>(v: &T) -> Result<String> {
         .map_err(|e| AppError::Other(e.to_string()))
 }
 
+/// The command as typed, for messages.
+fn command_name(cmd: &Command) -> &'static str {
+    match cmd {
+        Command::Overview => "overview",
+        Command::Daily => "daily",
+        Command::Weekly => "weekly",
+        Command::Monthly => "monthly",
+        Command::Repos => "repos",
+        Command::Prs(_) => "prs",
+        Command::Reviews => "reviews",
+        Command::Comments => "comments",
+        Command::Issues => "issues",
+        Command::Pr(_) => "pr",
+        Command::Tui => "tui",
+        Command::Sync(_) => "sync",
+        Command::Doctor => "doctor",
+        Command::Auth {
+            command: AuthCommand::Status,
+        } => "auth status",
+        Command::Cache {
+            command: CacheCommand::Status,
+        } => "cache status",
+        Command::Cache {
+            command: CacheCommand::Clear,
+        } => "cache clear",
+    }
+}
+
+/// Global options that were given but that `cmd` does not use.
+fn unused_options(g: &GlobalArgs, cmd: &Command) -> Vec<&'static str> {
+    // Reports and the TUI use everything; sync uses the period only.
+    let (period, filters) = match cmd {
+        Command::Sync(_) => (true, false),
+        Command::Pr(_) | Command::Doctor | Command::Auth { .. } | Command::Cache { .. } => {
+            (false, false)
+        }
+        _ => (true, true),
+    };
+    let mut unused = Vec::new();
+    if !period {
+        if g.since.is_some() {
+            unused.push("--since");
+        }
+        if g.until.is_some() {
+            unused.push("--until");
+        }
+    }
+    if !filters {
+        if !g.repos.is_empty() {
+            unused.push("--repo");
+        }
+        if !g.owners.is_empty() {
+            unused.push("--owner");
+        }
+        if g.visibility.is_some() {
+            unused.push("--visibility");
+        }
+        if g.ownership.is_some() {
+            unused.push("--ownership");
+        }
+        if g.commit_date != cli::CommitDateArg::Committer {
+            unused.push("--commit-date");
+        }
+    }
+    unused
+}
+
 async fn run(cli: Cli) -> Result<i32> {
     let g = cli.global.clone();
     let cmd = cli.command.unwrap_or(Command::Overview);
+    for option in unused_options(&g, &cmd) {
+        eprintln!(
+            "warning: {option} has no effect on `{}`",
+            command_name(&cmd)
+        );
+    }
     if g.format == Format::Csv
         && matches!(
             cmd,

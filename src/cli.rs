@@ -12,7 +12,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
     long_about = "Analyze your GitHub activity: commits, pull requests, reviews, comments, issues \
 and everything that happens inside pull requests. Data is cached locally in SQLite.",
     after_help = "Exit codes: 0 success, 1 general error, 2 invalid arguments, 3 authentication \
-error, 4 API error, 5 cache error, 6 incomplete data with --require-complete."
+error, 4 API error, 5 cache error, 6 incomplete data with --require-complete.\n\nGlobal options \
+that a command does not use are ignored with a warning."
 )]
 pub struct Cli {
     #[command(subcommand)]

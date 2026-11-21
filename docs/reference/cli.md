@@ -195,6 +195,14 @@ repository's owner is you, or you have admin permission on it (when analyzing
 yourself). Being a member of the owning organization does not make a
 repository owned.
 
+Global options are accepted by every command, but not every command uses
+them. The period (`--since`, `--until`) is used by reports, `sync` and
+`tui`. The filters (`--repo`, `--owner`, `--visibility`, `--ownership`) and
+`--commit-date` are used by reports and `tui` only. When a command is given
+one of these options and does not use it, `ghusage` prints
+a warning such as `` warning: --repo has no effect on `sync` `` to stderr and
+continues.
+
 ## Output and terminals
 
 - Reports go to stdout. Errors, warnings, notes and sync progress go to
