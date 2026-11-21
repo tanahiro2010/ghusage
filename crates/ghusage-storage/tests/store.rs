@@ -1342,3 +1342,35 @@ fn actor_kinds_and_unknown_actors_round_trip() {
     assert_eq!(event_by_id(&ds, &e.event_id).actor, Actor::unknown());
     assert_eq!(event_by_id(&ds, &e2.event_id).actor.kind, ActorKind::Bot);
 }
+
+#[test]
+fn a_period_brings_every_event_of_its_active_pull_requests() {
+    // Lifetime timings (e.g. time to first review) need a pull request's
+    // events from before the period too.
+    let mut s = Store::open_in_memory().unwrap();
+    s.apply(&base_batch()).unwrap();
+    let period = Period::new(t(2, 0), t(3, 0)).unwrap();
+    let ds = s
+        .load_dataset(&subject("alice"), true, Some(period))
+        .unwrap();
+    let mut ids: Vec<String> = ds.events.iter().map(|e| e.event_id.0.clone()).collect();
+    ids.sort();
+    // In the period: review RV1 and comment C1 of PR1. Also PR1's opening
+    // on day 1. Not the commit or the issue of day 1, which belong to no
+    // active pull request.
+    let mut expected = vec![
+        EventId::review("RV1").0,
+        EventId::comment("C1").0,
+        EventId::pr_created("PR1").0,
+    ];
+    expected.sort();
+    assert_eq!(ids, expected);
+    // Counting still uses the period only: PR1 was not created in it.
+    let opts = ghusage_core::metrics::Options {
+        period,
+        zone: ghusage_core::time::Zone::utc(),
+        filter: Default::default(),
+        commit_basis: Default::default(),
+    };
+    assert_eq!(ghusage_core::metrics::summary(&ds, &opts).prs_created, 0);
+}

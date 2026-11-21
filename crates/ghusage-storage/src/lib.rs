@@ -503,6 +503,32 @@ impl Store {
                     period.contains(e.occurred_at)
                         || e.meta.author_date.is_some_and(|d| period.contains(d))
                 });
+                // Pull requests active in the period come with all their
+                // events, so lifetime timings see what happened before the
+                // period. Counting always applies the period itself.
+                let mut seen: HashSet<String> =
+                    events.iter().map(|e| e.event_id.0.clone()).collect();
+                let active: HashSet<String> = events
+                    .iter()
+                    .filter_map(|e| e.parent_pr_id.clone())
+                    .collect();
+                let mut stmt = self.conn.prepare_cached(&format!(
+                    "SELECT {EVENT_COLS} FROM activity_events e \
+                     JOIN account_events ae ON ae.event_id = e.event_id \
+                     WHERE ae.account_id = ?1 AND e.parent_pr_id = ?2"
+                ))?;
+                let mut active: Vec<String> = active.into_iter().collect();
+                active.sort();
+                for pr in active {
+                    let rows =
+                        stmt.query_map(params![account_id, pr], |r| Ok(event_from_row(r)))?;
+                    for row in rows {
+                        let e = row??;
+                        if seen.insert(e.event_id.0.clone()) {
+                            events.push(e);
+                        }
+                    }
+                }
                 events
             }
         };
