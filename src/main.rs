@@ -471,7 +471,9 @@ async fn pr_cmd(g: &GlobalArgs, a: &cli::PrArgs, zone: Zone) -> Result<i32> {
             clean(reason)
         );
     }
-    // A single pull request is always refreshed when online.
+    // A single pull request is always refreshed when online. GitHub resolves
+    // old URLs of renamed repositories, so the fetched id is authoritative.
+    let mut fetched_id = None;
     if let Some(client) = &s.client {
         let bundle = client
             .fetch_pull_request(&owner, &name, number)
@@ -479,6 +481,7 @@ async fn pr_cmd(g: &GlobalArgs, a: &cli::PrArgs, zone: Zone) -> Result<i32> {
             .map_err(AppError::from);
         match bundle {
             Ok(b) => {
+                fetched_id = Some(b.pull_request.id.clone());
                 let involved = ghusage_app::sync::involves(&s.subject, &b);
                 let mut batch = ghusage_app::sync::pr_batch(&s.subject, b);
                 if !involved {
@@ -504,9 +507,13 @@ async fn pr_cmd(g: &GlobalArgs, a: &cli::PrArgs, zone: Zone) -> Result<i32> {
             }
         }
     }
-    let Some(pr_id) = s.store.find_pr(&owner, &name, number)? else {
-        let hint = if g.offline {
-            "run without --offline to fetch it"
+    let pr_id = match fetched_id {
+        Some(id) => Some(id),
+        None => s.store.find_pr(&owner, &name, number)?,
+    };
+    let Some(pr_id) = pr_id else {
+        let hint = if s.client.is_none() {
+            "run without --offline to fetch it; if the repository was renamed, use its current URL"
         } else {
             "it could not be fetched from GitHub"
         };

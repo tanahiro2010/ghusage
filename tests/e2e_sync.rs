@@ -1158,6 +1158,32 @@ async fn renamed_repository_is_one_repository_after_resync() {
     assert_eq!(pr["pr_id"], "PR_A");
     assert_eq!(pr["repository"], "acme/gadget");
     assert_eq!(pr["commits"], 4);
+
+    // The old URL still works online: GitHub resolves it to the renamed
+    // repository, and the fetched pull request is shown.
+    let renamed = world_after_rename();
+    let pr_a = renamed.prs.iter().find(|p| p.number == 10).unwrap();
+    pr_detail_mock(
+        "acme",
+        "widget",
+        10,
+        ResponseTemplate::new(200).set_body_json(renamed.pr_body(pr_a)),
+        1,
+    )
+    .mount(&server)
+    .await;
+    let old = env
+        .run(&[
+            "pr",
+            "https://github.com/acme/widget/pull/10",
+            "--format",
+            "json",
+        ])
+        .await;
+    old.expect_code(0).assert_clean();
+    let old = old.json();
+    assert_eq!(old["pr_id"], "PR_A");
+    assert_eq!(old["repository"], "acme/gadget");
 }
 
 /// Mounts, at the highest priority, responses for acme/widget having been
