@@ -630,7 +630,9 @@ async fn fetch_checks(
         None => {
             let runs_url = t.rest_url(
                 &["repos", owner, name, "commits", sha, "check-runs"],
-                &[("per_page", "100")],
+                // Every attempt, not only the latest run of each name (the
+                // endpoint's default): a failure that was re-run happened.
+                &[("per_page", "100"), ("filter", "all")],
             );
             match t
                 .get_paginated(runs_url, |v| v.get("check_runs")?.as_array().cloned())

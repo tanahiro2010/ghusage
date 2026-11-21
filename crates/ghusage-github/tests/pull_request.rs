@@ -777,6 +777,141 @@ async fn incomplete_check_data_in_the_query_falls_back_to_rest() {
     }
 }
 
+/// CI counts of a fetched pull request, as the summary reports them.
+fn ci_counts(b: &PrBundle) -> ghusage_core::metrics::CiCounts {
+    use ghusage_core::metrics::{CommitDateBasis, Dataset, Filter, Options, summary};
+    let ds = Dataset::new(
+        ghusage_core::model::Subject {
+            id: None,
+            login: "alice".into(),
+        },
+        true,
+        vec![b.repository.clone()],
+        vec![b.pull_request.clone()],
+        vec![],
+        b.threads.clone(),
+        b.events.clone(),
+        vec![],
+    );
+    let opts = Options {
+        period: ghusage_core::time::Period::new(
+            ts("2024-03-01T00:00:00Z"),
+            ts("2024-04-01T00:00:00Z"),
+        )
+        .unwrap(),
+        zone: ghusage_core::time::Zone::utc(),
+        filter: Filter::default(),
+        commit_basis: CommitDateBasis::default(),
+    };
+    summary(&ds, &opts).ci
+}
+
+#[tokio::test]
+async fn check_runs_request_all_attempts_not_only_latest() {
+    // A build that failed and was re-run successfully in the same suite:
+    // both attempts happened and both are counted.
+    let attempt = |id: &str, conclusion: &str, done: &str| {
+        json!({ "id": id, "name": "build", "status": "COMPLETED", "conclusion": conclusion,
+                "startedAt": "2024-03-02T10:00:00Z", "completedAt": done,
+                "permalink": format!("https://github.com/acme/widget/runs/{id}") })
+    };
+    let rerun_suite = |more: bool| {
+        connection(
+            vec![
+                json!({ "databaseId": 77, "app": null, "checkRuns": connection(
+                vec![
+                    attempt("CR_try1", "FAILURE", "2024-03-02T10:01:00Z"),
+                    attempt("CR_try2", "SUCCESS", "2024-03-02T10:09:00Z"),
+                ],
+                more,
+                Some("Y3Vyc29yOnYyOpHPAAAAAg=="),
+            ) }),
+            ],
+            false,
+            Some("Y3Vyc29yOnYyOpHPAAAAAQ=="),
+        )
+    };
+    let runs_path = format!("/repos/acme/widget/commits/{}/check-runs", oid(3));
+    let statuses_path = format!("/repos/acme/widget/commits/{}/statuses", oid(3));
+    let assert_both_attempts = |b: &PrBundle, source: Source, what: &str| {
+        assert_eq!(b.status, CoverageStatus::Complete, "{what}: {:?}", b.notes);
+        let runs = of_type(b, EventType::CheckRun);
+        assert_eq!(runs.len(), 2, "{what}");
+        assert!(runs.iter().all(|r| r.source == source), "{what}");
+        assert_eq!(
+            find(b, &EventId::check_run("CR_try1")).meta.check_outcome,
+            Some(CheckOutcome::Failure),
+            "{what}"
+        );
+        assert_eq!(
+            find(b, &EventId::check_run("CR_try2")).meta.check_outcome,
+            Some(CheckOutcome::Success),
+            "{what}"
+        );
+        let ci = ci_counts(b);
+        assert_eq!((ci.failed, ci.passed), (1, 1), "{what}");
+    };
+
+    // From the pull request query: it must ask for every attempt.
+    let server = MockServer::start().await;
+    let mut pr = rich_pr();
+    pr["headCommit"]["nodes"][0]["commit"]["checkSuites"] = rerun_suite(false);
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query PullRequestDetail"))
+        .and(body_string_contains("checkType: ALL"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(pr_response(pr)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(statuses_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    assert_both_attempts(&b, Source::Graphql, "pull request query");
+
+    // From the REST fallback: it must ask for `filter=all` (the endpoint's
+    // default returns only the latest run of each name).
+    let server = MockServer::start().await;
+    let mut pr = rich_pr();
+    pr["headCommit"]["nodes"][0]["commit"]["checkSuites"] = rerun_suite(true);
+    mount_main(&server, pr_response(pr)).await;
+    let rest_run = |id: u64, node: &str, conclusion: &str, done: &str| {
+        json!({ "id": id, "node_id": node, "head_sha": oid(3), "name": "build", "status": "completed",
+                "conclusion": conclusion, "started_at": "2024-03-02T10:00:00Z", "completed_at": done,
+                "html_url": format!("https://github.com/acme/widget/runs/{id}"),
+                "check_suite": { "id": 77 }, "app": null })
+    };
+    Mock::given(method("GET"))
+        .and(path(runs_path.clone()))
+        .and(wiremock::matchers::query_param("filter", "all"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "total_count": 2,
+            "check_runs": [
+                rest_run(2, "CR_try2", "success", "2024-03-02T10:09:00Z"),
+                rest_run(1, "CR_try1", "failure", "2024-03-02T10:01:00Z"),
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(statuses_path))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    assert_both_attempts(&b, Source::Rest, "REST fallback");
+}
+
 #[tokio::test]
 async fn graphql_partial_errors_make_the_collection_partial() {
     let server = MockServer::start().await;

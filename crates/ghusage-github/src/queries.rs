@@ -16,12 +16,13 @@ const PR_COMMIT: &str = "fragment PrCommitFields on PullRequestCommit { url comm
 
 /// The head commit's latest CI rollup, whether it has any commit statuses,
 /// and its check runs: up to 100 suites with up to 100 runs each (a head
-/// commit with more falls back to the REST checks endpoint). `LATEST`
-/// returns the same runs as the REST `check-runs` endpoint's default
-/// `filter=latest`. Commit statuses themselves are not read here: GraphQL
+/// commit with more falls back to the REST checks endpoint). `ALL` returns
+/// every attempt, so a failed run that was re-run is kept alongside the
+/// re-run (the default, `LATEST`, keeps only the most recent run of each
+/// name); the REST fallback asks for the same with `filter=all`. Commit statuses themselves are not read here: GraphQL
 /// only exposes the latest status of each context, while every status
 /// posted is an event.
-const HEAD_COMMIT: &str = "fragment HeadCommitFields on Commit { oid statusCheckRollup { state } status { state } checkSuites(first: 100) { pageInfo { hasNextPage endCursor } nodes { databaseId app { id slug } checkRuns(first: 100, filterBy: { checkType: LATEST }) { pageInfo { hasNextPage endCursor } nodes { id name status conclusion startedAt completedAt permalink } } } } }";
+const HEAD_COMMIT: &str = "fragment HeadCommitFields on Commit { oid statusCheckRollup { state } status { state } checkSuites(first: 100) { pageInfo { hasNextPage endCursor } nodes { databaseId app { id slug } checkRuns(first: 100, filterBy: { checkType: ALL }) { pageInfo { hasNextPage endCursor } nodes { id name status conclusion startedAt completedAt permalink } } } } }";
 
 const REVIEW_COMMENT: &str = "fragment ReviewCommentFields on PullRequestReviewComment { id state createdAt lastEditedAt url author { ...ActorFields } replyTo { id } pullRequestReview { id } }";
 
