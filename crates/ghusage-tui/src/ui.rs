@@ -868,7 +868,7 @@ fn draw_pr_detail(f: &mut Frame, app: &App, area: Rect) {
         ),
         kv("Creation to merge", dur(r.timing.creation_to_merge_secs)),
         kv(
-            "Review → author reply",
+            "Review → next author activity",
             dur(r.timing.review_to_next_author_activity_secs),
         ),
         kv(
