@@ -346,6 +346,14 @@ impl Transport {
         };
         let elapsed = started.elapsed().as_millis() as u64;
         let bytes = result.as_ref().map(|r| r.body.len() as u64).unwrap_or(0);
+        tracing::debug!(
+            %method,
+            path = url.path(),
+            status = result.as_ref().map(|r| r.status).unwrap_or(0),
+            elapsed_ms = elapsed,
+            bytes,
+            "GitHub request"
+        );
         self.with_stats(|s| {
             s.requests += 1;
             s.total_api_time_ms += elapsed;
