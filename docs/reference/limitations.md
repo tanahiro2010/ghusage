@@ -179,3 +179,17 @@ the API does not keep cannot be recovered later:
 - With very large caches, the first view of a screen after changing the
   period or filter is computed in the background and can take a noticeable
   moment.
+- In narrow terminals (around 110 columns), the Repositories tab shortens
+  long repository names; widen the terminal or open the repository detail
+  with Enter to see the full name.
+- If the terminal UI is ended by a signal such as `SIGTERM` (for example
+  `kill`), the terminal may stay in the alternate screen with input echo
+  turned off. Run `reset` to restore it. Quitting with `q` or `Ctrl+C`
+  restores the terminal.
+
+## Cache files
+
+- New data directories are created readable only by you (`0700`) and the
+  database as `0600`. An existing directory keeps its permissions; on a
+  shared machine, check them with `ls -ld` and tighten them with
+  `chmod 700` if needed.
