@@ -41,6 +41,26 @@ jobs:
           [ -f "$bin.exe" ] && bin="$bin.exe"
           "$bin" --version
           "$bin" --help
+      - name: Default cache location and paths with spaces
+        shell: bash
+        run: |
+          bin=target/release/ghusage
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          path=$(env -u GHUSAGE_DATA_DIR "$bin" cache status --format json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).path))')
+          echo "default cache: $path"
+          case "$RUNNER_OS" in
+            macOS) expected="$HOME/Library/Application Support/dev.ghusage.ghusage/ghusage.db" ;;
+            Linux) expected="${XDG_DATA_HOME:-$HOME/.local/share}/ghusage/ghusage.db" ;;
+            Windows) expected="$(cygpath -w "$APPDATA")\\ghusage\\ghusage\\data\\ghusage.db" ;;
+          esac
+          test "$path" = "$expected" || { echo "expected $expected"; exit 1; }
+          spaced="$RUNNER_TEMP/My Data/ghusage cache"
+          "$bin" cache status --data-dir "$spaced"
+          "$bin" overview --offline --user octocat --data-dir "$spaced" --format json > /dev/null
+          test -f "$spaced/ghusage.db"
+      - name: Terminal UI in a pseudo terminal
+        if: runner.os != 'Windows'
+        run: python3 scripts/tui-pty-smoke.py target/release/ghusage "$RUNNER_TEMP/tui-data"
 
   npm-launcher:
     name: npm launcher tests
