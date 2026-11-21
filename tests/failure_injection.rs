@@ -733,6 +733,23 @@ fn permissions_enforced(file: &std::path::Path) -> bool {
     std::fs::OpenOptions::new().write(true).open(file).is_err()
 }
 
+/// Says loudly that a permission test checked nothing. As root (or with a
+/// capability that bypasses file modes) a read-only cache cannot be
+/// simulated, so the test is skipped rather than reported as verified.
+/// The message goes to stderr, which `cargo test -- --nocapture` shows; set
+/// `GHUSAGE_REQUIRE_PERMISSION_TESTS=1` to turn the skip into a failure.
+#[cfg(unix)]
+fn report_skipped(test: &str) {
+    let msg = format!(
+        "SKIPPED {test}: file permissions are not enforced for this user \
+         (running as root?); nothing was verified"
+    );
+    if std::env::var_os("GHUSAGE_REQUIRE_PERMISSION_TESTS").is_some_and(|v| !v.is_empty()) {
+        panic!("{msg}");
+    }
+    eprintln!("{msg}");
+}
+
 #[cfg(unix)]
 fn set_mode(p: &std::path::Path, mode: u32) {
     use std::os::unix::fs::PermissionsExt;
@@ -753,7 +770,7 @@ async fn read_only_cache_is_a_cache_error_and_data_survives() {
     if !permissions_enforced(&env.db_path()) {
         set_mode(env.data_dir(), 0o755);
         set_mode(&env.db_path(), 0o644);
-        eprintln!("skipping: file permissions are not enforced for this user");
+        report_skipped("read_only_cache_is_a_cache_error_and_data_survives");
         return;
     }
     let mut results = Vec::new();
@@ -800,6 +817,7 @@ async fn reading_a_read_only_cache_works_offline() {
     set_mode(env.data_dir(), 0o755);
     set_mode(&env.db_path(), 0o644);
     if !enforced {
+        report_skipped("reading_a_read_only_cache_works_offline");
         return;
     }
     r.assert_clean();
