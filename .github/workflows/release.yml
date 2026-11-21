@@ -227,7 +227,9 @@ jobs:
               echo "$name@$v is already published; skipping"
               return
             fi
-            npm publish "$f" --access public
+            # A leading ./ keeps npm from reading "dir/file.tgz" as a GitHub
+            # repository shorthand.
+            npm publish "./$f" --access public
           }
           for f in tgz/*.tgz; do
             case "$f" in "tgz/ghusage-$v.tgz") continue ;; esac
