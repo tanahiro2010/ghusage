@@ -84,6 +84,7 @@ pub struct SyncReport {
     pub pull_requests_unchanged: u64,
     pub issues_found: u64,
     pub issues_fetched: u64,
+    pub issues_unchanged: u64,
     pub failures: Vec<String>,
     pub coverage: Vec<CoverageRecord>,
     pub api: ApiStats,
@@ -473,9 +474,21 @@ async fn run_inner(
             )
             .await?;
         report.issues_found += found.items.len() as u64;
+        // An issue whose update time is unchanged since it was last fetched
+        // completely has no new history.
+        let mut changed = Vec::new();
+        for r in found.items {
+            let key = issue_cursor(&r.node_id);
+            let seen = store.cursor(&subject.login, &key)?;
+            if !opts.full && seen.as_deref() == Some(r.updated_at.to_rfc3339().as_str()) {
+                report.issues_unchanged += 1;
+            } else {
+                changed.push(r);
+            }
+        }
         let mut failures = Vec::new();
-        let total = found.items.len();
-        let mut stream = futures::stream::iter(found.items.into_iter().map(|r| async move {
+        let total = changed.len();
+        let mut stream = futures::stream::iter(changed.into_iter().map(|r| async move {
             let res = client.fetch_issue(&r.owner, &r.name, r.number).await;
             (r, res)
         }))
@@ -496,11 +509,17 @@ async fn run_inner(
                             r.owner, r.name, r.number
                         ));
                     }
+                    let cursors = if bundle.status.is_complete() {
+                        vec![(issue_cursor(&r.node_id), r.updated_at.to_rfc3339())]
+                    } else {
+                        Vec::new()
+                    };
                     store.apply(&WriteBatch {
                         account: subject.login.clone(),
                         repositories: vec![bundle.repository],
                         issues: vec![bundle.issue],
                         events: bundle.events,
+                        cursors,
                         ..Default::default()
                     })?;
                     report.issues_fetched += 1;
@@ -784,6 +803,11 @@ async fn sync_commits(
         report.coverage.push(rec);
     }
     Ok(())
+}
+
+/// Sync cursor holding the update time of an issue's last complete fetch.
+fn issue_cursor(node_id: &str) -> String {
+    format!("issue_updated_at:{node_id}")
 }
 
 /// Search window for pull requests and issues. GitHub matches `updated:`

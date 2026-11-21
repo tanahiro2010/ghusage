@@ -417,6 +417,10 @@ async fn incremental_sync_refetches_only_changed_pull_requests() {
     // Only PR A's updated_at changed.
     assert_eq!(s["pull_requests_fetched"], 1, "{s}");
     assert_eq!(s["pull_requests_unchanged"], 2, "{s}");
+    // Neither issue changed, so neither is fetched again.
+    assert_eq!(s["issues_found"], 2, "{s}");
+    assert_eq!(s["issues_fetched"], 0, "{s}");
+    assert_eq!(s["issues_unchanged"], 2, "{s}");
     let reqs = requests(&server).await;
     assert_eq!(pr_detail_requests(&reqs, 10), 1);
     assert_eq!(pr_detail_requests(&reqs, 3), 0);
@@ -490,6 +494,8 @@ async fn incremental_sync_refetches_only_changed_pull_requests() {
     // Re-fetching everything again never changes the numbers.
     let again = env.sync(&["--full"]).await;
     again.expect_code(0);
+    // --full refetches unchanged issues too.
+    assert_eq!(again.json()["issues_fetched"], 2);
     let o2 = env.offline_json(&["overview"]).await.json();
     assert_eq!(o["metrics"], o2["metrics"]);
 }
