@@ -57,7 +57,7 @@ impl SyncOptions {
             now,
             overlap: Duration::days(3),
             recheck_open_after: Duration::days(7),
-            concurrency: 4,
+            concurrency: 8,
             subject_is_viewer: true,
         }
     }

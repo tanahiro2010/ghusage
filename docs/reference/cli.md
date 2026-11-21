@@ -185,7 +185,7 @@ Cache: /Users/me/Library/Application Support/dev.ghusage.ghusage/ghusage.db
 | `--commit-date <committer\|author>` | Which commit date decides a commit's day and whether it is in the period (default `committer`). Also used by the terminal UI |
 | `--token-file <PATH>` | Read the GitHub token from this file (must not be readable by others) |
 | `--data-dir <PATH>` | Directory for the cache database (default: OS user data directory, or `GHUSAGE_DATA_DIR`) |
-| `--concurrency <N>` | Maximum concurrent GitHub requests, 1–16 (default 4) |
+| `--concurrency <N>` | Maximum concurrent GitHub requests, 1–16 (default 8) |
 | `--max-age <AGE>` | Reports skip syncing when the cache was synced this recently, and show the data as of that sync: `30s`, `5m`, `1h`, or `0` to always fetch the latest (default `5m`, or `GHUSAGE_MAX_AGE`) |
 | `-h`, `--help` | Print help |
 | `-V`, `--version` | Print version |

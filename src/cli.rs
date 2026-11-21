@@ -83,7 +83,7 @@ pub struct GlobalArgs {
     #[arg(long, global = true, env = "GHUSAGE_MAX_AGE", default_value = "5m", value_parser = parse_max_age)]
     pub max_age: std::time::Duration,
     /// Maximum concurrent GitHub requests (1-16).
-    #[arg(long, global = true, default_value_t = 4, value_parser = clap::value_parser!(u8).range(1..=16))]
+    #[arg(long, global = true, default_value_t = 8, value_parser = clap::value_parser!(u8).range(1..=16))]
     pub concurrency: u8,
 }
 

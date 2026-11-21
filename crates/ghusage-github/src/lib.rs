@@ -54,7 +54,7 @@ impl Default for ClientConfig {
         Self {
             api_base: "https://api.github.com".into(),
             graphql_url: "https://api.github.com/graphql".into(),
-            concurrency: 4,
+            concurrency: 8,
             max_attempts: 5,
             request_timeout: Duration::from_secs(30),
             max_rate_limit_wait: Duration::from_secs(15 * 60),
