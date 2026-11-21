@@ -54,7 +54,7 @@ impl Default for ClientConfig {
         Self {
             api_base: "https://api.github.com".into(),
             graphql_url: "https://api.github.com/graphql".into(),
-            concurrency: 4,
+            concurrency: 8,
             max_attempts: 5,
             request_timeout: Duration::from_secs(30),
             max_rate_limit_wait: Duration::from_secs(15 * 60),
@@ -359,9 +359,10 @@ impl GitHubClient {
     }
 
     /// Fetches a pull request with every page of commits, reviews, review
-    /// threads and their comments, conversation comments and timeline items
-    /// (GraphQL), plus check runs and commit statuses of the head commit
-    /// (REST).
+    /// threads and their comments, conversation comments, timeline items
+    /// and check runs of the head commit (GraphQL), plus the head commit's
+    /// commit statuses when it has any (REST). Check runs that do not fit in
+    /// the pull request query are fetched over REST.
     pub async fn fetch_pull_request(
         &self,
         owner: &str,

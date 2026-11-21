@@ -16,6 +16,7 @@ before or after the command (`ghusage --since 30d daily` and
 | `daily` | Activity per day | last 7 days |
 | `weekly` | Activity per week (weeks start on Monday) | last 8 weeks |
 | `monthly` | Activity per calendar month | last 6 months |
+| `yearly` | Activity per calendar year | last 3 years |
 | `repos` | Activity per repository | last 7 days |
 | `prs` | Pull requests with activity in the period | last 7 days |
 | `reviews` | Reviews you submitted and reviews you received | last 7 days |
@@ -36,13 +37,13 @@ months before the current one. See [Periods and time zones](./time.md).
 
 ### Report commands
 
-`overview`, `daily`, `weekly`, `monthly`, `repos`, `prs`, `reviews`,
+`overview`, `daily`, `weekly`, `monthly`, `yearly`, `repos`, `prs`, `reviews`,
 `comments` and `issues` sync missing ranges of the period (unless
 `--offline`), then print the report followed by its coverage. See the
 [metric definitions](./metrics.md) for what each number means.
 
 - `overview`: the summary of the period and the top 5 repositories.
-- `daily` / `weekly` / `monthly`: one row per calendar bucket and a total
+- `daily` / `weekly` / `monthly` / `yearly`: one row per calendar bucket and a total
   row. Weeks are labeled with ISO week numbers (`2026-W47`), months as
   `2026-11`.
 - `repos`: one row per repository with activity in the period, ordered by
@@ -167,8 +168,8 @@ Cache: /Users/me/Library/Application Support/dev.ghusage.ghusage/ghusage.db
 
 | Option | Description |
 |---|---|
-| `--since <SINCE>` | Start of the period: `YYYY-MM-DD`, RFC 3339, `today`, `yesterday`, or `Nd` / `Nw` / `Nm` (last N days / weeks / months) |
-| `--until <UNTIL>` | End of the period (exclusive). A date includes that whole day. Defaults to now. `Nd`/`Nw`/`Nm` are not accepted here |
+| `--since <SINCE>` | Start of the period: `YYYY-MM-DD`, RFC 3339, `today`, `yesterday`, or `Nd` / `Nw` / `Nm` / `Ny` (last N days / weeks / months / years) |
+| `--until <UNTIL>` | End of the period (exclusive). A date includes that whole day. Defaults to now. `Nd`/`Nw`/`Nm`/`Ny` are not accepted here |
 | `--timezone <TZ>` | IANA time zone for day / week / month boundaries (default: `TZ`, then the system setting, then UTC) |
 | `--repo <OWNER/NAME>` | Only this repository (case-insensitive). Repeatable |
 | `--owner <LOGIN>` | Only repositories owned by this user or organization. Repeatable |
@@ -185,7 +186,8 @@ Cache: /Users/me/Library/Application Support/dev.ghusage.ghusage/ghusage.db
 | `--commit-date <committer\|author>` | Which commit date decides a commit's day and whether it is in the period (default `committer`). Also used by the terminal UI |
 | `--token-file <PATH>` | Read the GitHub token from this file (must not be readable by others) |
 | `--data-dir <PATH>` | Directory for the cache database (default: OS user data directory, or `GHUSAGE_DATA_DIR`) |
-| `--concurrency <N>` | Maximum concurrent GitHub requests, 1–16 (default 4) |
+| `--concurrency <N>` | Maximum concurrent GitHub requests, 1–16 (default 8) |
+| `--max-age <AGE>` | Reports skip syncing when the cache was synced this recently, and show the data as of that sync: `30s`, `5m`, `1h`, or `0` to always fetch the latest (default `5m`, or `GHUSAGE_MAX_AGE`) |
 | `-h`, `--help` | Print help |
 | `-V`, `--version` | Print version |
 
@@ -194,6 +196,14 @@ Filters combine with AND: a repository must match every given filter. Within
 repository's owner is you, or you have admin permission on it (when analyzing
 yourself). Being a member of the owning organization does not make a
 repository owned.
+
+Global options are accepted by every command, but not every command uses
+them. The period (`--since`, `--until`) is used by reports, `sync` and
+`tui`. The filters (`--repo`, `--owner`, `--visibility`, `--ownership`) and
+`--commit-date` are used by reports and `tui` only. When a command is given
+one of these options and does not use it, `ghusage` prints
+a warning such as `` warning: --repo has no effect on `sync` `` to stderr and
+continues.
 
 ## Output and terminals
 
@@ -229,7 +239,7 @@ Examples, as printed by the current version:
 
 ```text
 $ ghusage --since 0d
-error: invalid date or time: 0d (use YYYY-MM-DD, RFC 3339, today, yesterday, or Nd/Nw/Nm)
+error: invalid date or time: 0d (use YYYY-MM-DD, RFC 3339, today, yesterday, or Nd/Nw/Nm/Ny)
 $ echo $?
 2
 
@@ -250,6 +260,7 @@ error: the argument '--offline' cannot be used with '--no-cache'
 | `GH_TOKEN` | GitHub token (second in priority after `--token-file`) |
 | `GITHUB_TOKEN` | GitHub token (used when `GH_TOKEN` is not set) |
 | `GHUSAGE_DATA_DIR` | Data directory for the cache (overridden by `--data-dir`) |
+| `GHUSAGE_MAX_AGE` | Default for `--max-age` |
 | `GHUSAGE_API_URL` | REST API base URL, for GitHub Enterprise Server (default `https://api.github.com`). Also moves the GraphQL endpoint: `https://HOST/api/graphql` when the URL ends in `/api/v3`, otherwise `<GHUSAGE_API_URL>/graphql` |
 | `GHUSAGE_GRAPHQL_URL` | GraphQL endpoint URL (overrides the one derived from `GHUSAGE_API_URL`) |
 | `GHUSAGE_LOG` | Log filter for diagnostics on stderr, in `tracing` filter syntax, e.g. `debug` or `ghusage_github=debug` (default `warn`) |

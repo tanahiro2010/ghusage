@@ -5,8 +5,8 @@ use std::collections::HashSet;
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use ghusage_core::coverage::{CoverageRecord, CoverageStatus, DataKind};
 use ghusage_core::model::{
-    ActivityEvent, Actor, ActorKind, Collection, EventId, EventMeta, EventType, Issue, PrState,
-    PullRequest, Repository, ReviewThread, Source, Subject, Visibility,
+    ActivityEvent, Actor, ActorKind, CheckOutcome, Collection, EventId, EventMeta, EventType,
+    Issue, PrState, PullRequest, Repository, ReviewThread, Source, Subject, Visibility,
 };
 use ghusage_core::time::Period;
 use ghusage_storage::{PrCommitLink, PrSnapshot, StorageError, Store, SyncLock, WriteBatch};
@@ -475,6 +475,131 @@ fn comment_missing_from_complete_resync_is_marked_removed_then_restored() {
     assert!(!event_by_id(&alice_dataset(&s), &c1).is_removed());
 }
 
+fn check_run_event(
+    node: &str,
+    sha: &str,
+    outcome: CheckOutcome,
+    at: DateTime<Utc>,
+) -> ActivityEvent {
+    let mut e = event(
+        EventId::check_run(node),
+        EventType::CheckRun,
+        "R1",
+        Some("PR1"),
+        at,
+    );
+    e.entity_id = node.into();
+    e.actor = Actor::new(
+        Some("A_actions".into()),
+        Some("github-actions".into()),
+        Some("Bot"),
+    );
+    e.meta.sha = Some(sha.into());
+    e.meta.check_name = Some("build".into());
+    e.meta.check_outcome = Some(outcome);
+    e
+}
+
+/// A resync of PR1 whose head commit is `head`, with the checks of that
+/// head fetched completely.
+fn checks_resync(head: &str, at: DateTime<Utc>, runs: Vec<ActivityEvent>) -> WriteBatch {
+    let mut p = pr("PR1", "R1", 1);
+    p.head_sha = Some(head.into());
+    let present: Vec<EventId> = runs.iter().map(|e| e.event_id.clone()).collect();
+    WriteBatch {
+        account: "alice".into(),
+        pull_requests: vec![p],
+        events: runs,
+        pr_snapshots: vec![snapshot("PR1", at, &[Collection::Checks], &present)],
+        ..Default::default()
+    }
+}
+
+fn ci_counts(s: &Store) -> ghusage_core::metrics::CiCounts {
+    let opts = ghusage_core::metrics::Options {
+        period: Period::new(t(1, 0), t(20, 0)).unwrap(),
+        zone: ghusage_core::time::Zone::utc(),
+        filter: ghusage_core::metrics::Filter::default(),
+        commit_basis: ghusage_core::metrics::CommitDateBasis::default(),
+    };
+    ghusage_core::metrics::summary(&alice_dataset(s), &opts).ci
+}
+
+#[test]
+fn checks_of_an_older_head_survive_a_resync_with_a_new_head() {
+    let mut s = store_with_base();
+    let failed = EventId::check_run("CR_A");
+    s.apply(&checks_resync(
+        "aaa",
+        t(10, 0),
+        vec![check_run_event(
+            "CR_A",
+            "aaa",
+            CheckOutcome::Failure,
+            t(2, 10),
+        )],
+    ))
+    .unwrap();
+    assert_eq!(ci_counts(&s).failed, 1);
+
+    // A new head was pushed; its checks are fetched completely, but they
+    // only cover the new head: the failure on the old head still happened.
+    s.apply(&checks_resync(
+        "BBB",
+        t(11, 0),
+        vec![check_run_event(
+            "CR_B",
+            "bbb",
+            CheckOutcome::Success,
+            t(3, 10),
+        )],
+    ))
+    .unwrap();
+    let ds = alice_dataset(&s);
+    assert_eq!(event_by_id(&ds, &failed).meta.removed_observed_at, None);
+    let ci = ci_counts(&s);
+    assert_eq!(ci.failed, 1);
+    assert_eq!(ci.passed, 1);
+}
+
+#[test]
+fn check_run_missing_from_a_resync_of_the_same_head_is_marked_removed() {
+    let mut s = store_with_base();
+    let gone = EventId::check_run("CR_1");
+    s.apply(&checks_resync(
+        "aaa",
+        t(10, 0),
+        vec![
+            check_run_event("CR_1", "aaa", CheckOutcome::Failure, t(2, 10)),
+            check_run_event("CR_2", "aaa", CheckOutcome::Success, t(2, 11)),
+        ],
+    ))
+    .unwrap();
+    assert_eq!(ci_counts(&s).failed, 1);
+
+    // The same head, fetched completely again, no longer has CR_1.
+    s.apply(&checks_resync(
+        "AAA",
+        t(11, 0),
+        vec![check_run_event(
+            "CR_2",
+            "aaa",
+            CheckOutcome::Success,
+            t(2, 11),
+        )],
+    ))
+    .unwrap();
+    let ds = alice_dataset(&s);
+    assert_eq!(
+        event_by_id(&ds, &gone).meta.removed_observed_at,
+        Some(t(11, 0))
+    );
+    assert!(!event_by_id(&ds, &EventId::check_run("CR_2")).is_removed());
+    let ci = ci_counts(&s);
+    assert_eq!(ci.failed, 0);
+    assert_eq!(ci.passed, 1);
+}
+
 #[test]
 fn review_thread_missing_from_complete_resync_is_deleted() {
     let mut s = store_with_base();
@@ -560,6 +685,153 @@ fn force_push_keeps_old_commit_link_and_marks_its_event_removed() {
     };
     s.apply(&b).unwrap();
     assert!(event_by_id(&alice_dataset(&s), &new).is_removed());
+}
+
+fn file_store_with_base(dir: &tempfile::TempDir) -> (Store, std::path::PathBuf) {
+    let path = dir.path().join("ghusage.db");
+    let mut s = Store::open(&path).unwrap();
+    s.apply(&base_batch()).unwrap();
+    (s, path)
+}
+
+/// Result of a `count(*)` query, read straight from the database file.
+fn count_rows(path: &std::path::Path, sql: &str) -> i64 {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.query_row(sql, [], |r| r.get(0)).unwrap()
+}
+
+fn march() -> ghusage_core::metrics::Options {
+    ghusage_core::metrics::Options {
+        period: Period::new(t(1, 0), Utc.with_ymd_and_hms(2026, 4, 1, 0, 0, 0).unwrap()).unwrap(),
+        zone: ghusage_core::time::Zone::utc(),
+        filter: ghusage_core::metrics::Filter::default(),
+        commit_basis: ghusage_core::metrics::CommitDateBasis::Committer,
+    }
+}
+
+#[test]
+fn same_sha_linked_to_two_pull_requests_is_two_links() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut s, path) = file_store_with_base(&dir);
+    let link = |pr_id: &str, sha: &str, current: bool| PrCommitLink {
+        pr_id: pr_id.into(),
+        repository_id: "R1".into(),
+        sha: sha.into(),
+        is_current: current,
+    };
+    let shared = "ddd444";
+    let b = WriteBatch {
+        account: "alice".into(),
+        pull_requests: vec![pr("PR2", "R1", 2)],
+        events: vec![
+            pr_commit_event("PR1", "R1", shared, t(4, 11)),
+            pr_commit_event("PR2", "R1", shared, t(4, 11)),
+        ],
+        pr_commits: vec![link("PR1", shared, true), link("PR2", shared, true)],
+        pr_snapshots: vec![
+            snapshot(
+                "PR1",
+                t(10, 0),
+                &[Collection::Commits],
+                &[EventId::pr_commit("PR1", shared)],
+            ),
+            snapshot(
+                "PR2",
+                t(10, 0),
+                &[Collection::Commits],
+                &[EventId::pr_commit("PR2", shared)],
+            ),
+        ],
+        ..Default::default()
+    };
+    s.apply(&b).unwrap();
+
+    // One commit object in the repository, linked from both pull requests.
+    assert_eq!(
+        count_rows(
+            &path,
+            "SELECT count(*) FROM commits WHERE repository_id = 'R1' AND sha = 'ddd444'"
+        ),
+        1
+    );
+    assert_eq!(
+        count_rows(
+            &path,
+            "SELECT count(*) FROM pull_request_commits WHERE sha = 'ddd444' AND is_current = 1"
+        ),
+        2
+    );
+    // Distinct (pull request, sha) pairs: (PR1, ddd444) and (PR2, ddd444) = 2.
+    // The globally counted commits stay the base batch's single aaa111.
+    let sum = ghusage_core::metrics::summary(&alice_dataset(&s), &march());
+    assert_eq!((sum.pr_commits, sum.commits), (2, 1));
+
+    // A force push on PR2 replaces the commit there only; PR1 keeps its link.
+    let b = WriteBatch {
+        account: "alice".into(),
+        events: vec![pr_commit_event("PR2", "R1", "eee555", t(5, 11))],
+        pr_commits: vec![link("PR2", "eee555", true)],
+        pr_snapshots: vec![snapshot(
+            "PR2",
+            t(11, 0),
+            &[Collection::Commits],
+            &[EventId::pr_commit("PR2", "eee555")],
+        )],
+        ..Default::default()
+    };
+    s.apply(&b).unwrap();
+    assert_eq!(
+        count_rows(
+            &path,
+            "SELECT count(*) FROM pull_request_commits \
+             WHERE pr_id = 'PR1' AND sha = 'ddd444' AND is_current = 1"
+        ),
+        1
+    );
+    assert_eq!(
+        count_rows(
+            &path,
+            "SELECT count(*) FROM pull_request_commits \
+             WHERE pr_id = 'PR2' AND sha = 'ddd444' AND is_current = 0"
+        ),
+        1
+    );
+    let ds = alice_dataset(&s);
+    assert!(!event_by_id(&ds, &EventId::pr_commit("PR1", shared)).is_removed());
+    assert_eq!(
+        event_by_id(&ds, &EventId::pr_commit("PR2", shared))
+            .meta
+            .removed_observed_at,
+        Some(t(11, 0))
+    );
+    // Now (PR1, ddd444) and (PR2, eee555): still 2 pairs.
+    assert_eq!(ghusage_core::metrics::summary(&ds, &march()).pr_commits, 2);
+}
+
+#[test]
+fn reapplying_the_same_review_thread_keeps_one_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut s, path) = file_store_with_base(&dir);
+    s.apply(&base_batch()).unwrap();
+    s.apply(&base_batch()).unwrap();
+    // The same thread twice in one batch, the later copy resolved.
+    let mut resolved = thread("TH1", "PR1");
+    resolved.is_resolved = true;
+    let b = WriteBatch {
+        account: "alice".into(),
+        threads: vec![thread("TH1", "PR1"), resolved.clone()],
+        ..Default::default()
+    };
+    s.apply(&b).unwrap();
+
+    assert_eq!(count_rows(&path, "SELECT count(*) FROM review_threads"), 1);
+    let ds = alice_dataset(&s);
+    assert_eq!(ds.threads.len(), 1);
+    assert_eq!(ds.threads["TH1"], resolved);
+    // PR1 is active in March (opened 03-01 09:00), so its one thread counts:
+    // total 1, resolved 1, open 0.
+    let threads = ghusage_core::metrics::snapshot(&ds, &march()).threads;
+    assert_eq!((threads.total, threads.resolved, threads.open), (1, 1, 0));
 }
 
 // ---------------------------------------------------------------------------
@@ -971,6 +1243,46 @@ fn read_only_cache_returns_an_error_and_keeps_data() {
     assert!(s.integrity_check().unwrap().is_empty());
 }
 
+#[cfg(unix)]
+#[test]
+fn read_only_cache_can_be_opened_for_reading() {
+    if running_as_root() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ghusage.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.apply(&base_batch()).unwrap();
+    }
+    set_mode(&path, 0o444);
+    set_mode(dir.path(), 0o555);
+
+    let opened = Store::open(&path).err().map(|e| e.is_read_only());
+    let reader = Store::open_read_only(&path).map(|s| s.stats().map(|st| st.events));
+    let mut extra = WriteBatch {
+        account: "alice".into(),
+        ..Default::default()
+    };
+    extra.events.push(commit_event("R1", "zzz999", t(6, 0)));
+    let write = Store::open_read_only(&path).map(|mut s| s.apply(&extra).is_err());
+
+    set_mode(dir.path(), 0o755);
+    set_mode(&path, 0o644);
+    assert_eq!(opened, Some(true));
+    assert_eq!(reader.unwrap().unwrap(), 5);
+    assert!(write.unwrap(), "writes through a read-only store must fail");
+    assert_eq!(Store::open(&path).unwrap().stats().unwrap().events, 5);
+}
+
+#[test]
+fn opening_a_missing_cache_read_only_fails_without_creating_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ghusage.db");
+    assert!(Store::open_read_only(&path).is_err());
+    assert!(!path.exists());
+}
+
 #[test]
 fn second_sync_lock_is_refused_until_the_first_is_released() {
     let dir = tempfile::tempdir().unwrap();
@@ -1029,4 +1341,57 @@ fn actor_kinds_and_unknown_actors_round_trip() {
     let ds = alice_dataset(&s);
     assert_eq!(event_by_id(&ds, &e.event_id).actor, Actor::unknown());
     assert_eq!(event_by_id(&ds, &e2.event_id).actor.kind, ActorKind::Bot);
+}
+
+#[test]
+fn a_period_brings_every_event_of_its_active_pull_requests() {
+    // Lifetime timings (e.g. time to first review) need a pull request's
+    // events from before the period too.
+    let mut s = Store::open_in_memory().unwrap();
+    s.apply(&base_batch()).unwrap();
+    let period = Period::new(t(2, 0), t(3, 0)).unwrap();
+    let ds = s
+        .load_dataset(&subject("alice"), true, Some(period))
+        .unwrap();
+    let mut ids: Vec<String> = ds.events.iter().map(|e| e.event_id.0.clone()).collect();
+    ids.sort();
+    // In the period: review RV1 and comment C1 of PR1. Also PR1's opening
+    // on day 1. Not the commit or the issue of day 1, which belong to no
+    // active pull request.
+    let mut expected = vec![
+        EventId::review("RV1").0,
+        EventId::comment("C1").0,
+        EventId::pr_created("PR1").0,
+    ];
+    expected.sort();
+    assert_eq!(ids, expected);
+    // Counting still uses the period only: PR1 was not created in it.
+    let opts = ghusage_core::metrics::Options {
+        period,
+        zone: ghusage_core::time::Zone::utc(),
+        filter: Default::default(),
+        commit_basis: Default::default(),
+    };
+    assert_eq!(ghusage_core::metrics::summary(&ds, &opts).prs_created, 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn cache_files_are_private_to_the_user() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("data");
+    let path = dir.join("ghusage.db");
+    let mut s = Store::open(&path).unwrap();
+    s.apply(&base_batch()).unwrap();
+    // The cache holds private repository names and titles.
+    assert_eq!(mode(&dir), 0o700);
+    assert_eq!(mode(&path), 0o600);
+    let wal = dir.join("ghusage.db-wal");
+    if wal.exists() {
+        assert_eq!(mode(&wal), 0o600);
+    }
+    let lock = SyncLock::acquire(&dir).unwrap();
+    assert_eq!(mode(lock.path()), 0o600);
 }

@@ -6,20 +6,23 @@ use common::*;
 use ghusage_core::metrics::{Ownership, ReviewDirection, VisibilityFilter};
 use ghusage_core::time::resolve_period;
 use ghusage_tui::app::{
-    Effect, FilterPreset, ListId, OverviewPane, Screen, TimeRange, TimelineFilter,
+    DetailTab, Effect, FilterPreset, ListId, OverviewPane, Screen, TimeRange, TimelineFilter,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 #[test]
 fn number_keys_switch_screens() {
     let mut app = app();
+    assert_eq!(app.screen, Screen::Dashboard, "the dashboard comes first");
     let expected = [
-        ('2', Screen::Daily),
-        ('3', Screen::Repositories),
-        ('4', Screen::PullRequests),
-        ('5', Screen::Reviews),
-        ('6', Screen::System),
-        ('1', Screen::Overview),
+        ('2', Screen::Overview),
+        ('3', Screen::Daily),
+        ('4', Screen::Repositories),
+        ('5', Screen::PullRequests),
+        ('6', Screen::Reviews),
+        ('7', Screen::Issues),
+        ('8', Screen::System),
+        ('1', Screen::Dashboard),
     ];
     for (k, s) in expected {
         app.handle_key(key(k));
@@ -30,7 +33,7 @@ fn number_keys_switch_screens() {
 #[test]
 fn enter_opens_pr_detail_then_timeline_and_esc_goes_back() {
     let mut app = app();
-    press(&mut app, "4");
+    press(&mut app, "5");
     app.handle_key(code(KeyCode::Enter));
     assert_eq!(app.screen, Screen::PrDetail);
     let id = app.detail_pr.clone().unwrap();
@@ -47,7 +50,7 @@ fn enter_opens_pr_detail_then_timeline_and_esc_goes_back() {
 #[test]
 fn pr_detail_shows_counts_of_the_selected_pull_request() {
     let mut app = app();
-    press(&mut app, "4");
+    press(&mut app, "5");
     app.handle_key(key('/'));
     press(&mut app, "パーサー");
     app.handle_key(code(KeyCode::Enter));
@@ -65,7 +68,7 @@ fn pr_detail_shows_counts_of_the_selected_pull_request() {
 #[test]
 fn selection_moves_and_stops_at_the_ends() {
     let mut app = app();
-    press(&mut app, "3");
+    press(&mut app, "4");
     let n = app.visible(ListId::Repositories).len();
     assert_eq!(n, 3);
     assert_eq!(app.selected(ListId::Repositories), 0);
@@ -95,7 +98,7 @@ fn selection_moves_and_stops_at_the_ends() {
 #[test]
 fn moving_the_selection_does_not_recompute_reports() {
     let mut app = app();
-    press(&mut app, "4");
+    press(&mut app, "5");
     let builds = app.report_builds();
     let loads = app.dataset_loads();
     for _ in 0..20 {
@@ -106,16 +109,16 @@ fn moving_the_selection_does_not_recompute_reports() {
     assert_eq!(app.report_builds(), builds);
     assert_eq!(app.dataset_loads(), loads);
     // Going back to a visited screen uses the cached report.
-    press(&mut app, "14");
+    press(&mut app, "25");
     let after = app.report_builds();
-    press(&mut app, "14");
+    press(&mut app, "25");
     assert_eq!(app.report_builds(), after);
 }
 
 #[test]
 fn search_filters_lists_incrementally() {
     let mut app = app();
-    press(&mut app, "3");
+    press(&mut app, "4");
     app.handle_key(key('/'));
     assert!(app.search_mode);
     press(&mut app, "ウェブ");
@@ -150,13 +153,13 @@ fn search_filters_lists_incrementally() {
 #[test]
 fn search_matches_pull_request_titles_and_reviewers() {
     let mut app = app();
-    press(&mut app, "4");
+    press(&mut app, "5");
     app.handle_key(key('/'));
     press(&mut app, "PRIVATE");
     app.handle_key(code(KeyCode::Enter));
     assert_eq!(app.visible(ListId::PullRequests).len(), 1);
 
-    press(&mut app, "5");
+    press(&mut app, "6");
     app.handle_key(code(KeyCode::Tab));
     assert_eq!(app.review_direction, ReviewDirection::Received);
     app.handle_key(key('/'));
@@ -235,8 +238,8 @@ fn help_toggles_and_blocks_other_keys() {
     let mut app = app();
     app.handle_key(key('?'));
     assert!(app.show_help);
-    app.handle_key(key('3'));
-    assert_eq!(app.screen, Screen::Overview, "keys are ignored under help");
+    app.handle_key(key('4'));
+    assert_eq!(app.screen, Screen::Dashboard, "keys are ignored under help");
     app.handle_key(key('?'));
     assert!(!app.show_help);
     app.handle_key(key('?'));
@@ -257,15 +260,16 @@ fn q_and_ctrl_c_quit() {
 #[test]
 fn key_releases_are_ignored() {
     let mut app = app();
-    let mut k = key('3');
+    let mut k = key('4');
     k.kind = KeyEventKind::Release;
     app.handle_key(k);
-    assert_eq!(app.screen, Screen::Overview);
+    assert_eq!(app.screen, Screen::Dashboard);
 }
 
 #[test]
 fn tab_switches_panes() {
     let mut app = app();
+    press(&mut app, "2");
     assert_eq!(app.overview_pane, OverviewPane::Summary);
     app.handle_key(code(KeyCode::Tab));
     assert_eq!(app.overview_pane, OverviewPane::Repositories);
@@ -274,7 +278,7 @@ fn tab_switches_panes() {
     app.handle_key(code(KeyCode::BackTab));
     assert_eq!(app.overview_pane, OverviewPane::Summary);
 
-    press(&mut app, "5");
+    press(&mut app, "6");
     assert_eq!(app.review_direction, ReviewDirection::Submitted);
     app.handle_key(code(KeyCode::Tab));
     assert_eq!(app.review_direction, ReviewDirection::Received);
@@ -286,7 +290,7 @@ fn tab_switches_panes() {
 #[test]
 fn timeline_event_type_filter_cycles_with_tab() {
     let mut app = app();
-    press(&mut app, "4");
+    press(&mut app, "5");
     app.handle_key(key('/'));
     press(&mut app, "#1");
     app.handle_key(code(KeyCode::Enter));
@@ -314,33 +318,36 @@ fn timeline_event_type_filter_cycles_with_tab() {
 }
 
 #[test]
-fn enter_on_a_repository_lists_its_pull_requests() {
+fn enter_on_a_repository_opens_its_detail_with_its_pull_requests() {
     let mut app = app();
-    press(&mut app, "3");
+    press(&mut app, "4");
     app.handle_key(key('/'));
     press(&mut app, "parser");
     app.handle_key(code(KeyCode::Enter));
     app.handle_key(code(KeyCode::Enter));
-    assert_eq!(app.screen, Screen::PullRequests);
-    assert_eq!(app.search_query(ListId::PullRequests), "alice/parser");
-    assert_eq!(app.visible(ListId::PullRequests).len(), 1);
+    assert_eq!(app.screen, Screen::RepoDetail);
+    assert_eq!(app.detail_repo.as_ref().unwrap().full_name, "alice/parser");
+    assert_eq!(app.detail_tab, DetailTab::PullRequests);
+    assert_eq!(app.visible(ListId::DetailPullRequests).len(), 1);
+    app.handle_key(code(KeyCode::Esc));
+    assert_eq!(app.screen, Screen::Repositories);
 }
 
 #[test]
 fn open_validates_the_url_first() {
     let mut app = app();
+    press(&mut app, "5");
+    match app.handle_key(key('o')) {
+        Some(Effect::OpenUrl(u)) => assert!(u.starts_with("https://github.com/"), "{u}"),
+        other => panic!("expected an URL to open, got {other:?}"),
+    }
     press(&mut app, "4");
     match app.handle_key(key('o')) {
         Some(Effect::OpenUrl(u)) => assert!(u.starts_with("https://github.com/"), "{u}"),
         other => panic!("expected an URL to open, got {other:?}"),
     }
-    press(&mut app, "3");
-    match app.handle_key(key('o')) {
-        Some(Effect::OpenUrl(u)) => assert!(u.starts_with("https://github.com/"), "{u}"),
-        other => panic!("expected an URL to open, got {other:?}"),
-    }
     // Nothing selectable on the system screen.
-    press(&mut app, "6");
+    press(&mut app, "8");
     assert_eq!(app.handle_key(key('o')), None);
     assert!(app.message.is_some());
 }
@@ -352,7 +359,7 @@ fn open_refuses_urls_outside_github() {
         pr.url = "javascript:alert(1)".into();
     }
     let mut app = app_with(ds, false);
-    press(&mut app, "4");
+    press(&mut app, "5");
     assert_eq!(app.handle_key(key('o')), None);
     assert!(app.message.as_deref().unwrap().contains("not opening"));
 }
@@ -379,7 +386,7 @@ fn idle_warm_up_makes_later_screen_switches_cache_hits() {
     let mut app = app();
     while app.warm_up() {}
     let builds = app.report_builds();
-    press(&mut app, "12345");
+    press(&mut app, "12345678");
     assert_eq!(app.report_builds(), builds);
     assert!(!app.warm_up());
 }

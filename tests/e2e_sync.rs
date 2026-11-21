@@ -9,7 +9,10 @@ mod support;
 
 use serde_json::{Value, json};
 use support::*;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{
+    body_partial_json, body_string_contains, method, path, query_param, query_param_contains,
+    query_param_is_missing,
+};
 use wiremock::{Mock, ResponseTemplate};
 
 /// Every report command, as offline JSON over the standard period.
@@ -32,6 +35,17 @@ async fn initial_sync_then_offline_reports_match_the_fixture() {
     assert_eq!(s["pull_requests_found"], 3);
     assert_eq!(s["pull_requests_fetched"], 3);
     assert_eq!(s["issues_fetched"], 2);
+    // Head commit check runs come with the pull request query, and no head
+    // commit has commit statuses, so no REST checks request is needed.
+    let reqs = requests(&server).await;
+    assert!(
+        !reqs.iter().any(|r| {
+            let p = r.url.path();
+            p.ends_with("/check-runs") || p.ends_with("/statuses")
+        }),
+        "{:?}",
+        reqs.iter().map(|r| r.url.path()).collect::<Vec<_>>()
+    );
 
     let before = requests(&server).await.len();
 
@@ -417,6 +431,10 @@ async fn incremental_sync_refetches_only_changed_pull_requests() {
     // Only PR A's updated_at changed.
     assert_eq!(s["pull_requests_fetched"], 1, "{s}");
     assert_eq!(s["pull_requests_unchanged"], 2, "{s}");
+    // Neither issue changed, so neither is fetched again.
+    assert_eq!(s["issues_found"], 2, "{s}");
+    assert_eq!(s["issues_fetched"], 0, "{s}");
+    assert_eq!(s["issues_unchanged"], 2, "{s}");
     let reqs = requests(&server).await;
     assert_eq!(pr_detail_requests(&reqs, 10), 1);
     assert_eq!(pr_detail_requests(&reqs, 3), 0);
@@ -490,6 +508,8 @@ async fn incremental_sync_refetches_only_changed_pull_requests() {
     // Re-fetching everything again never changes the numbers.
     let again = env.sync(&["--full"]).await;
     again.expect_code(0);
+    // --full refetches unchanged issues too.
+    assert_eq!(again.json()["issues_fetched"], 2);
     let o2 = env.offline_json(&["overview"]).await.json();
     assert_eq!(o["metrics"], o2["metrics"]);
 }
@@ -950,7 +970,16 @@ async fn empty_and_inaccessible_repositories_do_not_fail_the_commit_sync() {
     let o = env.offline_json(&["overview"]).await.json();
     assert_eq!(coverage_status(&o, "commits"), "partial");
     assert_eq!(coverage_status(&o, "pull_requests"), "complete");
+    // JSON hides the private repository's name unless asked to include it.
     let reasons = coverage_reasons(&o, "commits").join(" ");
+    assert!(!reasons.contains("acme/secret"), "{reasons}");
+    assert!(reasons.contains("[private repository]"), "{reasons}");
+    assert!(!o.to_string().contains("acme/secret"), "{o}");
+    let named = env
+        .offline_json(&["overview", "--include-private"])
+        .await
+        .json();
+    let reasons = coverage_reasons(&named, "commits").join(" ");
     assert!(reasons.contains("acme/secret"), "{reasons}");
     assert_eq!(o["metrics"]["commits"], 6);
 }
@@ -963,4 +992,435 @@ async fn public_only_sync_does_not_list_private_repositories() {
     let reqs = requests(&server).await;
     assert_eq!(request_count(&reqs, "/repos/acme/secret/commits"), 0);
     assert_eq!(request_count(&reqs, "/repos/acme/widget/commits"), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reports_reuse_a_fresh_sync_and_say_how_old_it_is() {
+    let world = World::base();
+    let server = serve(&world).await;
+    let env = Env::new(&server);
+    // A period that runs until now.
+    env.run(&["sync", "--since", SINCE, "--format", "json"])
+        .await
+        .expect_code(0);
+    let synced = requests(&server).await.len();
+
+    let r = env
+        .run(&["overview", "--since", SINCE, "--format", "json"])
+        .await;
+    r.expect_code(0).assert_clean();
+    assert!(
+        r.stderr
+            .contains("note: showing data synced less than a minute ago"),
+        "{}",
+        r.stderr
+    );
+    // Only the identity check; nothing is fetched again.
+    let after: Vec<String> = requests(&server).await[synced..]
+        .iter()
+        .map(|r| r.url.path().to_string())
+        .collect();
+    assert_eq!(after, vec!["/user".to_string()]);
+    // The report ends where the sync ended, so it is complete.
+    for kind in ["commits", "pull_requests", "issues"] {
+        assert_eq!(coverage_status(&r.json(), kind), "complete");
+    }
+    let end = r.json()["period"]["end"].as_str().unwrap().to_string();
+    let end = chrono::DateTime::parse_from_rfc3339(&end).unwrap();
+    assert!(chrono::Utc::now() - end.to_utc() < chrono::Duration::minutes(1));
+
+    // --max-age 0 fetches the latest data.
+    let r = env
+        .run(&[
+            "overview",
+            "--since",
+            SINCE,
+            "--format",
+            "json",
+            "--max-age",
+            "0",
+        ])
+        .await;
+    r.expect_code(0);
+    assert!(
+        !r.stderr.contains("note: showing data synced"),
+        "{}",
+        r.stderr
+    );
+    assert!(requests(&server).await.len() > synced);
+}
+
+/// Replaces `acme/widget` with `acme/gadget` everywhere in a fixture
+/// value, and the bare repository name `widget` with `gadget`.
+fn renamed_value(v: &Value) -> Value {
+    match v {
+        Value::String(s) if s == "widget" => json!("gadget"),
+        Value::String(s) => json!(s.replace("acme/widget", "acme/gadget")),
+        Value::Array(a) => Value::Array(a.iter().map(renamed_value).collect()),
+        Value::Object(o) => Value::Object(
+            o.iter()
+                .map(|(k, v)| (k.clone(), renamed_value(v)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// The base world after acme/widget was renamed to acme/gadget on GitHub.
+/// The repository keeps its node ID (R_widget), and so do its pull
+/// requests and issues; only names and URLs change.
+fn world_after_rename() -> World {
+    let mut w = World::base();
+    for r in &mut w.repos {
+        if r.name == "widget" {
+            r.name = "gadget".into();
+            r.gql = renamed_value(&r.gql);
+            r.rest = renamed_value(&r.rest);
+            r.listed = renamed_value(&r.listed);
+            r.default_branch = r.default_branch.iter().map(renamed_value).collect();
+        }
+    }
+    w.commits = w.commits.iter().map(renamed_value).collect();
+    for p in &mut w.prs {
+        if p.name == "widget" {
+            p.name = "gadget".into();
+            p.gql = renamed_value(&p.gql);
+        }
+    }
+    for i in &mut w.issues {
+        if i.name == "widget" {
+            i.name = "gadget".into();
+            i.gql = renamed_value(&i.gql);
+        }
+    }
+    w
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn renamed_repository_is_one_repository_after_resync() {
+    let server = serve(&World::base()).await;
+    let env = Env::new(&server);
+    env.sync(&[]).await.expect_code(0);
+
+    reserve(&server, &world_after_rename()).await;
+    let r = env.sync(&["--full"]).await;
+    r.expect_code(0).assert_clean();
+    assert_eq!(r.json()["status"], "complete");
+
+    // Same repository ID, so still two repositories with activity: the
+    // renamed one (sha 1, 11, 12) and me/dotfiles (sha 2, 3, 21).
+    let rp = env.offline_json(&["repos"]).await.json();
+    let repos: Vec<(String, String, u64)> = rp["repositories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["repository_id"].as_str().unwrap().to_string(),
+                r["full_name"].as_str().unwrap().to_string(),
+                r["summary"]["commits"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        repos,
+        vec![
+            (WIDGET_ID.to_string(), "acme/gadget".to_string(), 3),
+            (DOTFILES_ID.to_string(), "me/dotfiles".to_string(), 3)
+        ]
+    );
+    // Nothing is counted twice.
+    let o = env.offline_json(&["overview"]).await.json();
+    assert_eq!(o["metrics"]["commits"], 6);
+    assert_eq!(o["metrics"]["prs_created"], 2);
+    assert_eq!(o["metrics"]["pr_commits"], 3);
+    assert_eq!(o["metrics"]["active_prs"], 3);
+    assert_eq!(o["metrics"]["issues_closed"], 2);
+    // The new name selects everything of the repository.
+    let g = env
+        .offline_json(&["overview", "--repo", "acme/gadget"])
+        .await
+        .json();
+    assert_eq!(g["metrics"]["commits"], 3);
+    assert_eq!(g["metrics"]["prs_created"], 1);
+    // The pull request is found under its new URL.
+    let pr = env
+        .run(&[
+            "pr",
+            "https://github.com/acme/gadget/pull/10",
+            "--offline",
+            "--format",
+            "json",
+        ])
+        .await;
+    pr.expect_code(0);
+    let pr = pr.json();
+    assert_eq!(pr["pr_id"], "PR_A");
+    assert_eq!(pr["repository"], "acme/gadget");
+    assert_eq!(pr["commits"], 4);
+
+    // The old URL still works online: GitHub resolves it to the renamed
+    // repository, and the fetched pull request is shown.
+    let renamed = world_after_rename();
+    let pr_a = renamed.prs.iter().find(|p| p.number == 10).unwrap();
+    pr_detail_mock(
+        "acme",
+        "widget",
+        10,
+        ResponseTemplate::new(200).set_body_json(renamed.pr_body(pr_a)),
+        1,
+    )
+    .mount(&server)
+    .await;
+    let old = env
+        .run(&[
+            "pr",
+            "https://github.com/acme/widget/pull/10",
+            "--format",
+            "json",
+        ])
+        .await;
+    old.expect_code(0).assert_clean();
+    let old = old.json();
+    assert_eq!(old["pr_id"], "PR_A");
+    assert_eq!(old["repository"], "acme/gadget");
+}
+
+/// Mounts, at the highest priority, responses for acme/widget having been
+/// deleted on GitHub: its commit list and repository lookups are 404, the
+/// repository is gone from `GET /user/repos`, and `PullRequestDetail` for
+/// acme/widget#20 says the repository cannot be resolved.
+async fn mount_widget_deleted(server: &wiremock::MockServer, world: &World) {
+    let not_found = json!({
+        "message": "Not Found",
+        "documentation_url": "https://docs.github.com/rest/commits/commits#list-commits",
+        "status": "404"
+    });
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widget/commits"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(not_found.clone()))
+        .with_priority(1)
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widget"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(not_found))
+        .with_priority(1)
+        .mount(server)
+        .await;
+    let gone = json!({
+        "data": { "repository": null },
+        "errors": [{
+            "type": "NOT_FOUND",
+            "path": ["repository"],
+            "locations": [{ "line": 2, "column": 3 }],
+            "message": "Could not resolve to a Repository with the name 'acme/widget'."
+        }]
+    });
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query RepositoryDetail"))
+        .and(body_partial_json(
+            json!({ "variables": { "owner": "acme", "name": "widget" } }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(gone.clone()))
+        .with_priority(1)
+        .mount(server)
+        .await;
+    pr_detail_mock(
+        "acme",
+        "widget",
+        20,
+        ResponseTemplate::new(200).set_body_json(gone),
+        1,
+    )
+    .mount(server)
+    .await;
+    let mut listed: Vec<Value> = world
+        .repos
+        .iter()
+        .filter(|r| r.name != "widget")
+        .map(|r| r.listed.clone())
+        .collect();
+    listed.sort_by(|a, b| {
+        b["pushed_at"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(a["pushed_at"].as_str().unwrap_or(""))
+    });
+    Mock::given(method("GET"))
+        .and(path("/user/repos"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(Value::Array(listed)))
+        .with_priority(1)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn repository_deleted_after_sync_keeps_cached_data_and_is_partial() {
+    let server = serve(&World::base()).await;
+    let env = Env::new(&server);
+    env.sync(&[]).await.expect_code(0);
+    let before = env.offline_json(&["overview"]).await.json();
+
+    // acme/widget is deleted. Commit search no longer finds sha 1, 4 and 5;
+    // issue search no longer finds acme/widget#7. The pull request search
+    // index still lists acme/widget#20 (it lags behind), but its detail
+    // query fails. me/dotfiles is unchanged.
+    let mut world = World::base();
+    world
+        .commits
+        .retain(|c| c["repository"]["full_name"] != "acme/widget");
+    world.prs.retain(|p| p.number != 10);
+    world.issues.retain(|i| i.name != "widget");
+    reserve(&server, &world).await;
+    mount_widget_deleted(&server, &world).await;
+
+    let r = env.sync(&["--full"]).await;
+    r.expect_code(4).assert_clean();
+    let s = r.json();
+    assert_eq!(s["status"], "partial");
+    let failures = s["failures"].to_string();
+    assert!(failures.contains("acme/widget#20"), "{failures}");
+
+    // Everything synced before is kept: sha 1, 11, 12 of acme/widget and
+    // pull requests #10 and #20 are still counted.
+    let o = env.offline_json(&["overview"]).await;
+    o.expect_code(0).assert_clean();
+    let o = o.json();
+    assert_eq!(o["metrics"], before["metrics"]);
+    assert_eq!(o["metrics"]["commits"], 6);
+    assert_eq!(coverage_status(&o, "commits"), "partial");
+    assert_eq!(coverage_status(&o, "pull_requests"), "partial");
+    // acme/widget is public, so its name may appear in the reason.
+    let reasons = coverage_reasons(&o, "commits").join(" ");
+    assert!(reasons.contains("acme/widget"), "{reasons}");
+
+    // The repository is still listed with its data, marked inaccessible.
+    let rp = env.offline_json(&["repos"]).await.json();
+    let find = |id: &str| -> Value {
+        rp["repositories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["repository_id"] == id)
+            .unwrap_or_else(|| panic!("{id} missing: {rp}"))
+            .clone()
+    };
+    let w = find(WIDGET_ID);
+    assert_eq!(w["accessible"], false);
+    assert_eq!(w["summary"]["commits"], 3);
+    assert_eq!(find(DOTFILES_ID)["accessible"], true);
+    let p = env.offline_json(&["prs"]).await.json();
+    assert_eq!(pr_numbers(&p), vec![3, 10, 20]);
+    env.run(&[
+        "pr",
+        "https://github.com/acme/widget/pull/20",
+        "--offline",
+        "--format",
+        "json",
+    ])
+    .await
+    .expect_code(0);
+
+    // Incomplete data is detected.
+    env.offline_json(&["overview", "--require-complete"])
+        .await
+        .expect_code(6);
+    let t = env
+        .run(&["repos", "--since", SINCE, "--until", UNTIL, "--offline"])
+        .await;
+    t.expect_code(0);
+    assert!(t.stdout.contains("acme/widget (no access)"), "{}", t.stdout);
+}
+
+/// 250 commits of mine in acme/widget, one every 30 minutes from
+/// 2024-03-04T00:00Z, returned by commit search over three pages
+/// (100 + 100 + 50) linked with `Link: <...>; rel="next"`.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_hundred_fifty_commits_over_three_search_pages_are_all_counted() {
+    let mut world = World::base();
+    world.commits = vec![];
+    for r in &mut world.repos {
+        r.default_branch.clear();
+    }
+    world.prs = vec![];
+    world.issues = vec![];
+    let server = serve(&world).await;
+    let w = widget();
+    let mine = Some((ME, ME_ID, "User"));
+    let start = chrono::DateTime::parse_from_rfc3339("2024-03-04T00:00:00Z").unwrap();
+    let all: Vec<Value> = (0..250)
+        .map(|i| {
+            let t = (start + chrono::Duration::minutes(30 * i))
+                .to_utc()
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string();
+            search_commit(&w.rest, &sha(1000 + i as u64), mine, &t, 1)
+        })
+        .collect();
+    let page = |items: &[Value]| json!({ "total_count": 250, "incomplete_results": false, "items": items });
+    let uri = server.uri();
+    let next = |n: u32| {
+        format!(
+            "<{uri}/search/commits?marker=m&per_page=100&page={n}>; rel=\"next\", <{uri}/search/commits?marker=m&per_page=100&page=3>; rel=\"last\""
+        )
+    };
+    Mock::given(method("GET"))
+        .and(path("/search/commits"))
+        .and(query_param_contains("q", format!("author:{ME}")))
+        .and(query_param_is_missing("page"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(page(&all[0..100]))
+                .insert_header("link", next(2).as_str()),
+        )
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    for (n, items, link) in [
+        (2, &all[100..200], Some(next(3))),
+        (3, &all[200..250], None),
+    ] {
+        let mut resp = ResponseTemplate::new(200).set_body_json(page(items));
+        if let Some(l) = link {
+            resp = resp.insert_header("link", l.as_str());
+        }
+        Mock::given(method("GET"))
+            .and(path("/search/commits"))
+            .and(query_param("marker", "m"))
+            .and(query_param("page", n.to_string()))
+            .respond_with(resp)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+    }
+    let env = Env::new(&server);
+    let r = env.sync(&[]).await;
+    r.expect_code(0).assert_clean();
+    let s = r.json();
+    assert_eq!(s["status"], "complete");
+    assert_eq!(s["commits_found"], 250);
+
+    let o = env.offline_json(&["overview"]).await.json();
+    assert_eq!(o["metrics"]["commits"], 250);
+    assert_eq!(coverage_status(&o, "commits"), "complete");
+    // 48 commits a day on 03-04..03-08 (240), then 10 on 03-09 (00:00 to
+    // 04:30).
+    let d = env.offline_json(&["daily"]).await.json();
+    for (date, n) in [
+        ("2024-03-04", 48),
+        ("2024-03-05", 48),
+        ("2024-03-06", 48),
+        ("2024-03-07", 48),
+        ("2024-03-08", 48),
+        ("2024-03-09", 10),
+        ("2024-03-10", 0),
+    ] {
+        assert_eq!(bucket(&d, date)["summary"]["commits"], n, "{date}");
+    }
+    // Re-syncing the same pages never adds commits.
+    env.sync(&["--full"]).await.expect_code(0);
+    let again = env.offline_json(&["overview"]).await.json();
+    assert_eq!(again["metrics"]["commits"], 250);
 }

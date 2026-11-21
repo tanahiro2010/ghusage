@@ -147,6 +147,8 @@ pub fn report_csv(r: &Report, kind: ReportKind) -> String {
                 "reviews",
                 "comments",
                 "participants",
+                "discussion_participants",
+                "threads",
                 "last_activity",
                 "latest_ci",
                 "url",
@@ -160,7 +162,7 @@ pub fn report_csv(r: &Report, kind: ReportKind) -> String {
                     text(&p.title),
                     p.state.as_str().to_string(),
                     p.is_draft.to_string(),
-                    p.author.clone(),
+                    text(&p.author),
                     p.created_at.to_rfc3339(),
                     ts(p.merged_at),
                     p.events.to_string(),
@@ -169,6 +171,8 @@ pub fn report_csv(r: &Report, kind: ReportKind) -> String {
                     p.reviews.to_string(),
                     p.comments.to_string(),
                     p.participants.to_string(),
+                    p.discussion_participants.to_string(),
+                    p.threads.to_string(),
                     ts(p.last_activity),
                     opt(p.latest_ci.map(|c| c.as_str())),
                     p.url.clone(),
@@ -197,7 +201,7 @@ pub fn report_csv(r: &Report, kind: ReportKind) -> String {
                     w.write_record([
                         dir.to_string(),
                         x.submitted_at.to_rfc3339(),
-                        x.reviewer.clone(),
+                        text(&x.reviewer),
                         opt(x.state.map(|s| s.as_str())),
                         x.repository.clone(),
                         opt(x.pr_number),
@@ -224,7 +228,7 @@ pub fn report_csv(r: &Report, kind: ReportKind) -> String {
             for c in r.comments.iter().flatten() {
                 w.write_record([
                     c.created_at.to_rfc3339(),
-                    c.author.clone(),
+                    text(&c.author),
                     c.kind.as_str().to_string(),
                     c.written_by_subject.to_string(),
                     c.repository.clone(),
@@ -304,7 +308,7 @@ pub fn pr_csv(r: &PrReport) -> String {
     for e in &r.timeline {
         w.write_record([
             e.occurred_at.to_rfc3339(),
-            e.actor.clone(),
+            text(&e.actor),
             format!("{:?}", e.actor_kind).to_ascii_lowercase(),
             e.event_type.as_str().to_string(),
             text(&e.detail.clone().unwrap_or_default()),
@@ -314,4 +318,18 @@ pub fn pr_csv(r: &PrReport) -> String {
         .ok();
     }
     finish(w)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::text;
+
+    #[test]
+    fn names_get_the_same_treatment_as_titles() {
+        // Logins and display names come from GitHub too.
+        // The whole escape sequence is removed, not just ESC.
+        assert_eq!(text("evil\u{1b}[2Jbot"), "evilbot");
+        assert_eq!(text("=HYPERLINK(1)"), "'=HYPERLINK(1)");
+        assert_eq!(text("octocat"), "octocat");
+    }
 }

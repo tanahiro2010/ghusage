@@ -5,6 +5,7 @@
 //! with what is missing. Coverage records describe exactly which ranges
 //! were fetched and how completely.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use chrono::{DateTime, Duration, Utc};
@@ -56,7 +57,7 @@ impl SyncOptions {
             now,
             overlap: Duration::days(3),
             recheck_open_after: Duration::days(7),
-            concurrency: 4,
+            concurrency: 8,
             subject_is_viewer: true,
         }
     }
@@ -71,6 +72,8 @@ pub enum SyncProgress {
         done: usize,
         total: usize,
     },
+    /// The latest step, e.g. a repository or pull request just fetched.
+    Detail(String),
     Finished,
 }
 
@@ -84,6 +87,7 @@ pub struct SyncReport {
     pub pull_requests_unchanged: u64,
     pub issues_found: u64,
     pub issues_fetched: u64,
+    pub issues_unchanged: u64,
     pub failures: Vec<String>,
     pub coverage: Vec<CoverageRecord>,
     pub api: ApiStats,
@@ -297,29 +301,110 @@ async fn run_inner(
     opts: &SyncOptions,
     progress: &dyn Fn(SyncProgress),
 ) -> Result<SyncReport> {
-    let mut report = SyncReport::default();
     let existing = applicable_coverage(store.coverage(&subject.login)?, opts.public_only);
     let probe = Period::new(opts.now, opts.now + Duration::seconds(1))?;
     let cached = store.load_dataset(subject, false, Some(probe))?;
-    let mut known_repos: HashMap<String, Repository> = cached.repositories.into_iter().collect();
+    let known_repos: HashMap<String, Repository> = cached.repositories.into_iter().collect();
+    // Pull requests already linked to this account. One cached for another
+    // account (another `--user`, or only viewed) still has to be fetched
+    // for this one, even if it has not changed.
+    let linked_prs: HashSet<String> = cached.pull_requests.keys().cloned().collect();
     let cached_prs: Vec<CachedPr> = cached
         .pull_requests
         .into_values()
         .map(|p| (p.repository_id, p.created_at, p.updated_at))
         .collect();
-
-    // Pull requests.
     let pr_ranges = ranges_to_fetch(&existing, DataKind::PullRequests, opts);
+    let commit_ranges = ranges_to_fetch(&existing, DataKind::Commits, opts);
+    let issue_ranges = ranges_to_fetch(&existing, DataKind::Issues, opts);
+    // Periodically recheck open pull requests even if search did not
+    // report them as updated.
+    let stale_open = stale_open_prs(store, subject, opts)?;
+    let pr_states: HashMap<String, (Option<DateTime<Utc>>, CoverageStatus)> = store
+        .pr_sync_states()?
+        .into_iter()
+        .filter(|s| linked_prs.contains(&s.pr_id))
+        .map(|s| (s.pr_id, (s.updated_at, s.coverage)))
+        .collect();
+
+    // Pull requests, commits and issues are fetched at the same time; the
+    // client limits the number of requests in flight. All phases run on
+    // this task, so the store is only borrowed between awaits.
+    let store = RefCell::new(store);
+    let report = RefCell::new(SyncReport::default());
+    let shared = Shared {
+        client,
+        store: &store,
+        report: &report,
+        subject,
+        opts,
+        progress,
+    };
+    let prs_and_commits = async {
+        let (refs, search_status) = search_prs(&shared, &pr_ranges).await?;
+        // Commits: commit search plus the default branches of repositories
+        // the subject pushed to or took part in through pull requests.
+        let mut pr_repos: Vec<(String, String)> = Vec::new();
+        let mut seen_names = HashSet::new();
+        for r in refs.values() {
+            if seen_names.insert(format!("{}/{}", r.owner, r.name).to_ascii_lowercase()) {
+                pr_repos.push((r.owner.clone(), r.name.clone()));
+            }
+        }
+        let ctx = CommitContext {
+            cached_prs: &cached_prs,
+            pr_repos: &pr_repos,
+        };
+        tokio::try_join!(
+            fetch_prs(&shared, &refs, search_status, &pr_states, stale_open),
+            sync_commits(&shared, &commit_ranges, &ctx, known_repos),
+        )?;
+        Ok::<(), AppError>(())
+    };
+    tokio::try_join!(prs_and_commits, sync_issues(&shared, &issue_ranges))?;
+
+    let mut report = report.into_inner();
+    report.api = client.stats();
+    report.status = if report.is_complete() {
+        "complete".into()
+    } else {
+        "partial".into()
+    };
+    Ok(report)
+}
+
+/// What every sync phase works with.
+struct Shared<'a, 's> {
+    client: &'a GitHubClient,
+    store: &'a RefCell<&'s mut Store>,
+    report: &'a RefCell<SyncReport>,
+    subject: &'a Subject,
+    opts: &'a SyncOptions,
+    progress: &'a dyn Fn(SyncProgress),
+}
+
+type SearchStatus = Vec<(Period, CoverageStatus, Option<String>)>;
+
+/// Finds pull requests updated in `ranges`.
+async fn search_prs(
+    sh: &Shared<'_, '_>,
+    ranges: &[Period],
+) -> Result<(BTreeMap<String, IssueRef>, SearchStatus)> {
+    let (client, subject, opts) = (sh.client, sh.subject, sh.opts);
     let mut refs: BTreeMap<String, IssueRef> = BTreeMap::new();
-    let mut search_status: Vec<(Period, CoverageStatus, Option<String>)> = Vec::new();
-    for range in &pr_ranges {
-        progress(SyncProgress::Searching(DataKind::PullRequests));
+    let mut search_status = Vec::new();
+    for range in ranges {
+        (sh.progress)(SyncProgress::Searching(DataKind::PullRequests));
         let mut statuses = Vec::new();
         let mut reasons = Vec::new();
         for q in [
             format!("involves:{}", subject.login),
             format!("reviewed-by:{}", subject.login),
         ] {
+            (sh.progress)(SyncProgress::Detail(format!(
+                "searching pull requests: {q} updated since {}",
+                range.start.format("%Y-%m-%d")
+            )));
             let found = client
                 .search_issues(
                     &q,
@@ -337,45 +422,20 @@ async fn run_inner(
         let reason = (!reasons.is_empty()).then(|| reasons.join("; "));
         search_status.push((*range, CoverageStatus::combine(statuses), reason));
     }
-    // Commits: commit search plus the default branches of repositories the
-    // subject pushed to or took part in through pull requests.
-    let commit_ranges = ranges_to_fetch(&existing, DataKind::Commits, opts);
-    if !commit_ranges.is_empty() {
-        let mut pr_repos: Vec<(String, String)> = Vec::new();
-        let mut seen_names = HashSet::new();
-        for r in refs.values() {
-            if seen_names.insert(format!("{}/{}", r.owner, r.name).to_ascii_lowercase()) {
-                pr_repos.push((r.owner.clone(), r.name.clone()));
-            }
-        }
-        let ctx = CommitContext {
-            cached_prs: &cached_prs,
-            pr_repos: &pr_repos,
-        };
-        sync_commits(
-            client,
-            store,
-            subject,
-            opts,
-            progress,
-            &commit_ranges,
-            &ctx,
-            &mut known_repos,
-            &mut report,
-        )
-        .await?;
-    }
+    sh.report.borrow_mut().pull_requests_found = refs.len() as u64;
+    Ok((refs, search_status))
+}
 
-    // Periodically recheck open pull requests even if search did not
-    // report them as updated.
-    let stale_open = stale_open_prs(store, subject, opts)?;
-    report.pull_requests_found = refs.len() as u64;
-
-    let states: HashMap<String, (Option<DateTime<Utc>>, CoverageStatus)> = store
-        .pr_sync_states()?
-        .into_iter()
-        .map(|s| (s.pr_id, (s.updated_at, s.coverage)))
-        .collect();
+/// Fetches changed and stale pull requests and records pull request
+/// coverage for the searched ranges.
+async fn fetch_prs(
+    sh: &Shared<'_, '_>,
+    refs: &BTreeMap<String, IssueRef>,
+    search_status: SearchStatus,
+    states: &HashMap<String, (Option<DateTime<Utc>>, CoverageStatus)>,
+    stale_open: Vec<(String, PrKey)>,
+) -> Result<()> {
+    let (client, subject, opts, progress) = (sh.client, sh.subject, sh.opts, sh.progress);
     let mut to_fetch: Vec<PrKey> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for r in refs.values() {
@@ -384,7 +444,7 @@ async fn run_inner(
             Some((Some(u), CoverageStatus::Complete)) if *u == r.updated_at
         );
         if unchanged && !opts.full {
-            report.pull_requests_unchanged += 1;
+            sh.report.borrow_mut().pull_requests_unchanged += 1;
             continue;
         }
         if seen.insert(r.node_id.clone()) {
@@ -401,6 +461,11 @@ async fn run_inner(
     let mut pr_partial: Vec<String> = Vec::new();
     let total = to_fetch.len();
     let mut done = 0;
+    progress(SyncProgress::Fetching {
+        kind: DataKind::PullRequests,
+        done,
+        total,
+    });
     let mut stream = futures::stream::iter(to_fetch.into_iter().map(|(o, n, num)| async move {
         let res = client.fetch_pull_request(&o, &n, num).await;
         (o, n, num, res)
@@ -413,20 +478,23 @@ async fn run_inner(
             done,
             total,
         });
+        progress(SyncProgress::Detail(format!("pull request {o}/{n}#{num}")));
         match res {
             Ok(bundle) => {
                 if !bundle.status.is_complete() {
                     pr_partial.push(format!("{o}/{n}#{num}: {}", bundle.notes.join(", ")));
                 }
                 let batch = pr_batch(subject, bundle);
-                store.apply(&batch)?;
-                report.pull_requests_fetched += 1;
+                sh.store.borrow_mut().apply(&batch)?;
+                sh.report.borrow_mut().pull_requests_fetched += 1;
             }
             Err(e @ ApiError::Unauthorized) => return Err(e.into()),
             Err(e) => {
                 if matches!(e, ApiError::NotFound(_) | ApiError::Forbidden(_)) {
                     // Keep earlier data but show that access was lost.
-                    store.set_repository_accessible(&o, &n, false)?;
+                    sh.store
+                        .borrow_mut()
+                        .set_repository_accessible(&o, &n, false)?;
                 }
                 pr_failures.push(format!("{o}/{n}#{num}: {e}"));
             }
@@ -451,19 +519,28 @@ async fn run_inner(
         };
         let reason = (!reasons.is_empty()).then(|| reasons.join("; "));
         let rec = record(DataKind::PullRequests, range, status, reason, subject, opts);
-        store.apply(&WriteBatch {
+        sh.store.borrow_mut().apply(&WriteBatch {
             account: subject.login.clone(),
             coverage: vec![rec.clone()],
             ..Default::default()
         })?;
-        report.coverage.push(rec);
+        sh.report.borrow_mut().coverage.push(rec);
     }
+    let mut report = sh.report.borrow_mut();
     report.failures.extend(pr_failures);
     report.failures.extend(pr_partial);
+    Ok(())
+}
 
-    // Issues.
-    for range in ranges_to_fetch(&existing, DataKind::Issues, opts) {
+/// Finds issues updated in `ranges` and fetches the changed ones.
+async fn sync_issues(sh: &Shared<'_, '_>, ranges: &[Period]) -> Result<()> {
+    let (client, subject, opts, progress) = (sh.client, sh.subject, sh.opts, sh.progress);
+    for &range in ranges {
         progress(SyncProgress::Searching(DataKind::Issues));
+        progress(SyncProgress::Detail(format!(
+            "searching issues updated since {}",
+            range.start.format("%Y-%m-%d")
+        )));
         let found = client
             .search_issues(
                 &format!("involves:{}", subject.login),
@@ -472,10 +549,27 @@ async fn run_inner(
                 opts.public_only,
             )
             .await?;
-        report.issues_found += found.items.len() as u64;
+        sh.report.borrow_mut().issues_found += found.items.len() as u64;
+        // An issue whose update time is unchanged since it was last fetched
+        // completely has no new history.
+        let mut changed = Vec::new();
+        for r in found.items {
+            let key = issue_cursor(&r.node_id);
+            let seen = sh.store.borrow().cursor(&subject.login, &key)?;
+            if !opts.full && seen.as_deref() == Some(r.updated_at.to_rfc3339().as_str()) {
+                sh.report.borrow_mut().issues_unchanged += 1;
+            } else {
+                changed.push(r);
+            }
+        }
         let mut failures = Vec::new();
-        let total = found.items.len();
-        let mut stream = futures::stream::iter(found.items.into_iter().map(|r| async move {
+        let total = changed.len();
+        progress(SyncProgress::Fetching {
+            kind: DataKind::Issues,
+            done: 0,
+            total,
+        });
+        let mut stream = futures::stream::iter(changed.into_iter().map(|r| async move {
             let res = client.fetch_issue(&r.owner, &r.name, r.number).await;
             (r, res)
         }))
@@ -488,6 +582,10 @@ async fn run_inner(
                 done,
                 total,
             });
+            progress(SyncProgress::Detail(format!(
+                "issue {}/{}#{}",
+                r.owner, r.name, r.number
+            )));
             match res {
                 Ok(bundle) => {
                     if !bundle.status.is_complete() {
@@ -496,19 +594,27 @@ async fn run_inner(
                             r.owner, r.name, r.number
                         ));
                     }
-                    store.apply(&WriteBatch {
+                    let cursors = if bundle.status.is_complete() {
+                        vec![(issue_cursor(&r.node_id), r.updated_at.to_rfc3339())]
+                    } else {
+                        Vec::new()
+                    };
+                    sh.store.borrow_mut().apply(&WriteBatch {
                         account: subject.login.clone(),
                         repositories: vec![bundle.repository],
                         issues: vec![bundle.issue],
                         events: bundle.events,
+                        cursors,
                         ..Default::default()
                     })?;
-                    report.issues_fetched += 1;
+                    sh.report.borrow_mut().issues_fetched += 1;
                 }
                 Err(e @ ApiError::Unauthorized) => return Err(e.into()),
                 Err(e) => {
                     if matches!(e, ApiError::NotFound(_) | ApiError::Forbidden(_)) {
-                        store.set_repository_accessible(&r.owner, &r.name, false)?;
+                        sh.store
+                            .borrow_mut()
+                            .set_repository_accessible(&r.owner, &r.name, false)?;
                     }
                     failures.push(format!("{}/{}#{}: {e}", r.owner, r.name, r.number));
                 }
@@ -526,22 +632,16 @@ async fn run_inner(
         };
         let reason = (!reasons.is_empty()).then(|| reasons.join("; "));
         let rec = record(DataKind::Issues, range, status, reason, subject, opts);
-        store.apply(&WriteBatch {
+        sh.store.borrow_mut().apply(&WriteBatch {
             account: subject.login.clone(),
             coverage: vec![rec.clone()],
             ..Default::default()
         })?;
+        let mut report = sh.report.borrow_mut();
         report.coverage.push(rec);
         report.failures.extend(failures);
     }
-
-    report.api = client.stats();
-    report.status = if report.is_complete() {
-        "complete".into()
-    } else {
-        "partial".into()
-    };
-    Ok(report)
+    Ok(())
 }
 
 /// Repository id, creation and last update of a cached pull request.
@@ -588,22 +688,22 @@ fn find_repo<'a>(
 /// stored once.
 #[allow(clippy::too_many_arguments)]
 async fn sync_commits(
-    client: &GitHubClient,
-    store: &mut Store,
-    subject: &Subject,
-    opts: &SyncOptions,
-    progress: &dyn Fn(SyncProgress),
+    sh: &Shared<'_, '_>,
     ranges: &[Period],
     ctx: &CommitContext<'_>,
-    known_repos: &mut HashMap<String, Repository>,
-    report: &mut SyncReport,
+    mut known_repos: HashMap<String, Repository>,
 ) -> Result<()> {
+    let (client, subject, opts, progress) = (sh.client, sh.subject, sh.opts, sh.progress);
+    let known_repos = &mut known_repos;
     let Some(earliest) = ranges.iter().map(|r| r.start).min() else {
         return Ok(());
     };
     progress(SyncProgress::Searching(DataKind::Commits));
     // Repositories pushed to since the earliest range, newest first.
     let user = (!opts.subject_is_viewer).then_some(subject.login.as_str());
+    progress(SyncProgress::Detail(
+        "listing repositories with recent pushes".into(),
+    ));
     let (pushed, listing_failure) = match client.pushed_repositories(user, earliest).await {
         Ok(list) => (list, None),
         Err(e @ ApiError::Unauthorized) => return Err(e.into()),
@@ -638,6 +738,11 @@ async fn sync_commits(
     for range in ranges {
         let range = *range;
         progress(SyncProgress::Searching(DataKind::Commits));
+        progress(SyncProgress::Detail(format!(
+            "searching commits {} – {}",
+            range.start.format("%Y-%m-%d"),
+            range.end.format("%Y-%m-%d")
+        )));
         let fetched = client
             .search_commits(&subject.login, range, opts.public_only)
             .await?;
@@ -689,6 +794,11 @@ async fn sync_commits(
 
         let total = to_list.len();
         let mut done = 0;
+        progress(SyncProgress::Fetching {
+            kind: DataKind::Commits,
+            done,
+            total,
+        });
         let mut found: BTreeMap<EventId, CommitRecord> = BTreeMap::new();
         for c in fetched.items {
             found.insert(c.event.event_id.clone(), c);
@@ -709,6 +819,14 @@ async fn sync_commits(
                 done,
                 total,
             });
+            progress(SyncProgress::Detail(match &res {
+                Ok(listed) => format!(
+                    "commits in {}: {} found",
+                    repo.full_name(),
+                    listed.items.len()
+                ),
+                Err(_) => format!("commits in {}: failed", repo.full_name()),
+            }));
             match res {
                 Ok(listed) => {
                     statuses.push(listed.status);
@@ -727,7 +845,9 @@ async fn sync_commits(
         drop(stream);
         if !inaccessible.is_empty() {
             for (owner, name) in &inaccessible {
-                store.set_repository_accessible(owner, name, false)?;
+                sh.store
+                    .borrow_mut()
+                    .set_repository_accessible(owner, name, false)?;
             }
             let names: Vec<String> = inaccessible
                 .iter()
@@ -749,7 +869,7 @@ async fn sync_commits(
             ));
         }
 
-        report.commits_found += found.len() as u64;
+        sh.report.borrow_mut().commits_found += found.len() as u64;
         let mut batch = WriteBatch {
             account: subject.login.clone(),
             ..Default::default()
@@ -761,10 +881,10 @@ async fn sync_commits(
             if let Some(known) = known_repos.get(&repo.id)
                 && known.viewer_permission.is_some()
             {
-                *repo = Repository {
-                    accessible: true,
-                    ..known.clone()
-                };
+                // Names, visibility and URL come from this fetch, so a
+                // renamed repository takes its new name.
+                repo.viewer_permission = known.viewer_permission.clone();
+                repo.accessible = true;
                 continue;
             }
             if repo.viewer_permission.is_none() {
@@ -780,10 +900,15 @@ async fn sync_commits(
         let reason = (!reasons.is_empty()).then(|| reasons.join("; "));
         let rec = record(DataKind::Commits, range, status, reason, subject, opts);
         batch.coverage.push(rec.clone());
-        store.apply(&batch)?;
-        report.coverage.push(rec);
+        sh.store.borrow_mut().apply(&batch)?;
+        sh.report.borrow_mut().coverage.push(rec);
     }
     Ok(())
+}
+
+/// Sync cursor holding the update time of an issue's last complete fetch.
+fn issue_cursor(node_id: &str) -> String {
+    format!("issue_updated_at:{node_id}")
 }
 
 /// Search window for pull requests and issues. GitHub matches `updated:`

@@ -62,7 +62,7 @@ They are labeled "(current)" or "(now)" in table output and live under
 
 ### Totals and breakdowns
 
-`daily`, `weekly` and `monthly` split the period into calendar buckets that
+`daily`, `weekly`, `monthly` and `yearly` split the period into calendar buckets that
 cover it exactly, without gaps or overlaps. Event counts in the buckets add up
 to the total of the period. Unique counts do not add up: a pull request
 reviewed on two days counts once on each of those days but once in the
@@ -263,7 +263,13 @@ regardless of who triggered them:
 | `pending` | queued, in progress, waiting, requested, pending |
 | `other` | neutral, skipped, stale, cancelled, unknown |
 
-Only CI results of each pull request's current head commit are available.
+Every attempt is counted: a check that failed and was then re-run
+successfully counts once in `failed` and once in `passed`.
+
+A sync reads the CI results of each pull request's head commit at that
+time. Results already stored for earlier head commits are kept when new
+commits are pushed, so a failure on an earlier head still counts; CI of a
+head commit that was never synced while it was the head is not available.
 
 ### Review threads (current)
 
@@ -296,7 +302,7 @@ known.
 | CI results (not counted as activity) | `ci` |
 | Active days | `active_days` |
 
-In `daily` / `weekly` / `monthly`, the columns are: Commits (`commits`), PRs
+In `daily` / `weekly` / `monthly` / `yearly`, the columns are: Commits (`commits`), PRs
 (`prs_created`), Merged (`prs_merged`), Reviews (`reviews_submitted.total`),
 Received (`reviews_received.total`), Comments (comments written, all types),
 PR commits (`pr_commits`), Issues (`issues_opened`), Active PRs
@@ -325,14 +331,16 @@ count events in the period only.
 | Reviews | `reviews` | Counted review submissions by anyone |
 | Comments | `comments` | Comments of all three types by anyone |
 | People | `participants` | Distinct known accounts with at least one event |
+| Discussion | `discussion_participants` | Distinct known accounts that wrote a conversation, inline or review summary comment (labels, commits or review requests alone do not count) |
+| Threads | `threads` | Review threads with an inline comment in the period |
 | Last activity | `last_activity` | Time of the latest of those events |
 | CI | `latest_ci` | Current combined CI state of the head commit (snapshot) |
 
 ### `--details`: activity per pull request
 
 Descriptive statistics over the listed pull requests (same participation
-rule): events, reviews, comments, commits, participants and active days per
-pull request, where active days are the distinct local dates with a non-CI
+rule): events, reviews, comments, commits, participants, discussion
+participants, review threads and active days per pull request, where active days are the distinct local dates with a non-CI
 event in the period. For each, `ghusage` reports the median, mean, 90th
 percentile (nearest rank), maximum and the number of pull requests (`n`);
 JSON also includes the minimum.

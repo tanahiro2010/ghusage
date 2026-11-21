@@ -12,7 +12,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
     long_about = "Analyze your GitHub activity: commits, pull requests, reviews, comments, issues \
 and everything that happens inside pull requests. Data is cached locally in SQLite.",
     after_help = "Exit codes: 0 success, 1 general error, 2 invalid arguments, 3 authentication \
-error, 4 API error, 5 cache error, 6 incomplete data with --require-complete."
+error, 4 API error, 5 cache error, 6 incomplete data with --require-complete.\n\nGlobal options \
+that a command does not use are ignored with a warning."
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -23,7 +24,7 @@ pub struct Cli {
 
 #[derive(Debug, Clone, Args)]
 pub struct GlobalArgs {
-    /// Start of the period: YYYY-MM-DD, RFC 3339, today, yesterday, or Nd/Nw/Nm (last N days/weeks/months).
+    /// Start of the period: YYYY-MM-DD, RFC 3339, today, yesterday, or Nd/Nw/Nm/Ny (last N days/weeks/months/years).
     #[arg(long, global = true)]
     pub since: Option<String>,
     /// End of the period (exclusive). A date includes that whole day. Defaults to now.
@@ -77,8 +78,12 @@ pub struct GlobalArgs {
     /// Directory for the cache database (default: OS user data directory, or GHUSAGE_DATA_DIR).
     #[arg(long, global = true, value_name = "PATH")]
     pub data_dir: Option<PathBuf>,
+    /// Reports skip syncing when the cache was synced this recently and show
+    /// the data as of that sync, e.g. 30s, 5m, 1h; 0 always syncs.
+    #[arg(long, global = true, env = "GHUSAGE_MAX_AGE", default_value = "5m", value_parser = parse_max_age)]
+    pub max_age: std::time::Duration,
     /// Maximum concurrent GitHub requests (1-16).
-    #[arg(long, global = true, default_value_t = 4, value_parser = clap::value_parser!(u8).range(1..=16))]
+    #[arg(long, global = true, default_value_t = 8, value_parser = clap::value_parser!(u8).range(1..=16))]
     pub concurrency: u8,
 }
 
@@ -133,6 +138,8 @@ pub enum Command {
     Weekly,
     /// Activity per calendar month.
     Monthly,
+    /// Activity per calendar year.
+    Yearly,
     /// Activity per repository.
     Repos,
     /// Pull requests with activity in the period.
@@ -209,4 +216,40 @@ pub enum CacheCommand {
     Status,
     /// Delete all cached GitHub data (credentials are not affected).
     Clear,
+}
+
+/// Parses `0`, `Ns`, `Nm` or `Nh`.
+fn parse_max_age(s: &str) -> Result<std::time::Duration, String> {
+    let s = s.trim();
+    if s == "0" {
+        return Ok(std::time::Duration::ZERO);
+    }
+    let (num, unit) = s.split_at(s.len().saturating_sub(1));
+    let n: u64 = num
+        .parse()
+        .map_err(|_| format!("invalid duration {s:?}; use e.g. 30s, 5m, 1h or 0"))?;
+    let secs = match unit {
+        "s" => n,
+        "m" => n * 60,
+        "h" => n * 3600,
+        _ => return Err(format!("invalid duration {s:?}; use e.g. 30s, 5m, 1h or 0")),
+    };
+    Ok(std::time::Duration::from_secs(secs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_max_age;
+    use std::time::Duration;
+
+    #[test]
+    fn max_age_accepts_seconds_minutes_hours_and_zero() {
+        assert_eq!(parse_max_age("0"), Ok(Duration::ZERO));
+        assert_eq!(parse_max_age("30s"), Ok(Duration::from_secs(30)));
+        assert_eq!(parse_max_age("5m"), Ok(Duration::from_secs(300)));
+        assert_eq!(parse_max_age("2h"), Ok(Duration::from_secs(7200)));
+        assert!(parse_max_age("5").is_err());
+        assert!(parse_max_age("m").is_err());
+        assert!(parse_max_age("-1m").is_err());
+    }
 }

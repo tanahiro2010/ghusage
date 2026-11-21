@@ -422,6 +422,7 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
                 ghusage_core::time::Granularity::Day => "Daily",
                 ghusage_core::time::Granularity::Week => "Weekly",
                 ghusage_core::time::Granularity::Month => "Monthly",
+                ghusage_core::time::Granularity::Year => "Yearly",
             };
             out.push_str(&header(r, zone, title, style));
             out.push_str(&breakdown_table(r, true).render(style));
@@ -492,6 +493,13 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
                         stats_line("Comments", &i.comments_per_pr, 1.0, ""),
                         stats_line("Commits", &i.commits_per_pr, 1.0, ""),
                         stats_line("Participants", &i.participants_per_pr, 1.0, ""),
+                        stats_line(
+                            "Discussion participants",
+                            &i.discussion_participants_per_pr,
+                            1.0,
+                            "",
+                        ),
+                        stats_line("Review threads", &i.threads_per_pr, 1.0, ""),
                         stats_line("Active days", &i.active_days_per_pr, 1.0, ""),
                     ];
                     let refs: Vec<(&str, String)> =
@@ -754,6 +762,20 @@ pub fn pr(r: &PrReport, timeline: bool, style: Style) -> String {
             r.latest_ci.clone().unwrap_or_else(|| "-".into()),
         ),
         ("Participants", sanitize_line(&r.participants.join(", "))),
+        (
+            "Discussion",
+            sanitize_line(&r.discussion_participants.join(", ")),
+        ),
+        (
+            "Commit authors",
+            sanitize_line(
+                &r.commit_authors
+                    .iter()
+                    .map(|a| format!("{} {}", a.author, a.commits))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+        ),
         (
             "Time to first review",
             dur(r.timing.time_to_first_review_secs),

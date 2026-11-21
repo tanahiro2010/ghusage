@@ -6,6 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ghusage is a Rust CLI/TUI that collects, stores, analyzes, and visualizes a developer's GitHub activity: commits, PRs, reviews, issues, and the events inside a PR. This repository is public OSS. Commit messages follow Conventional Commits and describe the product change (e.g. `feat(github): collect pull request reviews`).
 
+## Branches
+
+- `dev` is the default branch. Day-to-day work lands here; CI runs on every push.
+- `release` must always be releasable. Changes reach it only by merging `dev` (or a fix) after CI passes on `dev`. The documentation site deploys from `release`.
+- Releases are tags `vX.Y.Z` on a commit of `release`, with the version in `Cargo.toml` raised first. The release workflow refuses tags that are not on `release`.
+
 ## Commands
 
 Workspace crates: `ghusage-core`, `ghusage-github`, `ghusage-storage`, `ghusage-app`, `ghusage-tui`; the root package builds the `ghusage` binary. The required CI gates (run all four before considering work done):

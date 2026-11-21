@@ -8,7 +8,7 @@ license.workspace = true
 
 [dependencies]
 chrono = { version = "0.4.45", features = ["serde"] }
-ghusage-core = { version = "0.1.0", path = "../ghusage-core" }
+ghusage-core = { version = "0.1.1", path = "../ghusage-core" }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "gzip", "http2"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
@@ -17,6 +17,7 @@ tokio = { version = "1.54.1", features = ["sync", "time", "macros"] }
 tracing = "0.1.44"
 
 [dev-dependencies]
+proptest = "1.11.0"
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "test-util", "net", "io-util"] }
 wiremock = "0.6.5"

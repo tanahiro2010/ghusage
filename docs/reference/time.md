@@ -29,11 +29,12 @@ Accepted forms:
 | `Nd` | The start of the day N−1 days ago: the last N days including today | not accepted |
 | `Nw` | The Monday that starts the week N−1 weeks ago: the last N weeks including the current week | not accepted |
 | `Nm` | The first day of the month N−1 months ago: the last N months including the current month | not accepted |
+| `Ny` | January 1 of the year N−1 years ago: the last N calendar years including the current year | not accepted |
 
 - `N` must be a positive integer (`0d` is rejected).
 - When `--until` is omitted, the period ends now.
 - When `--since` is omitted, the command's default applies: `7d` for most
-  reports, `8w` for `weekly`, `6m` for `monthly`, `30d` for `sync` and `tui`.
+  reports, `8w` for `weekly`, `6m` for `monthly`, `3y` for `yearly`, `30d` for `sync` and `tui`.
 - The start must be before the end; otherwise the command fails with exit
   code 2 (`error: empty period: ...`).
 

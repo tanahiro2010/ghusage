@@ -252,6 +252,14 @@ impl EventType {
     }
 
     /// Automation events are never counted as human activity.
+    /// Comments that make up a pull request's discussion.
+    pub fn is_discussion(self) -> bool {
+        matches!(
+            self,
+            EventType::ConversationComment | EventType::InlineComment | EventType::ReviewSummary
+        )
+    }
+
     pub fn is_automation(self) -> bool {
         self.category() == EventCategory::Automation
     }

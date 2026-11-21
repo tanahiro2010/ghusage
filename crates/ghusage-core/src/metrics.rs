@@ -582,7 +582,9 @@ pub fn by_repository(ds: &Dataset, opts: &Options) -> Vec<RepoSummary> {
     out
 }
 
-fn activity_weight(s: &Summary) -> u64 {
+/// Activity measure used to rank repositories and draw activity charts:
+/// commits, the subject's pull request events and issue events.
+pub fn activity_weight(s: &Summary) -> u64 {
     s.commits + s.pr_internal_events + s.issues_opened + s.issues_closed + s.issues_reopened
 }
 
@@ -692,6 +694,10 @@ pub struct PrRow {
     pub reviews: u64,
     pub comments: u64,
     pub participants: u64,
+    /// People who wrote a conversation, inline or review summary comment.
+    pub discussion_participants: u64,
+    /// Review threads with an inline comment in the period.
+    pub threads: u64,
     pub last_activity: Option<DateTime<Utc>>,
     pub latest_ci: Option<CheckOutcome>,
 }
@@ -723,7 +729,7 @@ pub fn pr_rows(
             if participation == Participation::Subject && by_subject == 0 {
                 return None;
             }
-            Some(pr_row(ds, pr, &events, by_subject))
+            Some(pr_row(ds, pr, &events, by_subject, opts.commit_basis))
         })
         .collect();
     rows.sort_by(|a, b| {
@@ -742,13 +748,31 @@ pub fn pr_rows(
     rows
 }
 
-fn pr_row(ds: &Dataset, pr: &PullRequest, events: &[&ActivityEvent], by_subject: u64) -> PrRow {
+fn pr_row(
+    ds: &Dataset,
+    pr: &PullRequest,
+    events: &[&ActivityEvent],
+    by_subject: u64,
+    basis: CommitDateBasis,
+) -> PrRow {
     let mut commits: HashSet<&str> = HashSet::new();
     let mut reviews = 0;
     let mut comments = 0;
     let mut participants: HashSet<String> = HashSet::new();
+    let mut discussion: HashSet<String> = HashSet::new();
+    let mut threads: HashSet<&str> = HashSet::new();
     let mut last = None;
     for e in events {
+        if e.event_type.is_discussion()
+            && let Some(key) = participant_key(&e.actor)
+        {
+            discussion.insert(key);
+        }
+        if e.event_type == EventType::InlineComment
+            && let Some(t) = e.meta.thread_id.as_deref()
+        {
+            threads.insert(t);
+        }
         match e.event_type {
             EventType::PrCommit => {
                 if let Some(sha) = e.meta.sha.as_deref() {
@@ -764,7 +788,7 @@ fn pr_row(ds: &Dataset, pr: &PullRequest, events: &[&ActivityEvent], by_subject:
         if let Some(key) = participant_key(&e.actor) {
             participants.insert(key);
         }
-        last = last.max(Some(e.occurred_at));
+        last = last.max(Some(event_time(e, basis)));
     }
     PrRow {
         pr_id: pr.id.clone(),
@@ -783,6 +807,8 @@ fn pr_row(ds: &Dataset, pr: &PullRequest, events: &[&ActivityEvent], by_subject:
         reviews,
         comments,
         participants: participants.len() as u64,
+        discussion_participants: discussion.len() as u64,
+        threads: threads.len() as u64,
         last_activity: last,
         latest_ci: pr.latest_ci,
     }
@@ -845,6 +871,8 @@ pub struct Intensity {
     pub comments_per_pr: Option<Stats>,
     pub commits_per_pr: Option<Stats>,
     pub participants_per_pr: Option<Stats>,
+    pub discussion_participants_per_pr: Option<Stats>,
+    pub threads_per_pr: Option<Stats>,
     pub active_days_per_pr: Option<Stats>,
 }
 
@@ -868,6 +896,8 @@ pub fn intensity(ds: &Dataset, opts: &Options, participation: Participation) -> 
         comments_per_pr: col(&|r| r.comments as f64),
         commits_per_pr: col(&|r| r.commits as f64),
         participants_per_pr: col(&|r| r.participants as f64),
+        discussion_participants_per_pr: col(&|r| r.discussion_participants as f64),
+        threads_per_pr: col(&|r| r.threads as f64),
         active_days_per_pr: Stats::from_values(
             rows.iter()
                 .map(|r| days.get(r.pr_id.as_str()).map_or(0, |d| d.len()) as f64)
@@ -999,8 +1029,19 @@ pub struct PrDetail {
     pub comments: CommentCounts,
     pub threads: ThreadCounts,
     pub participants: Vec<String>,
+    /// People who wrote a conversation, inline or review summary comment.
+    pub discussion_participants: Vec<String>,
+    /// Current commits by commit author, most commits first.
+    pub commit_authors: Vec<AuthorCount>,
     pub timing: PrTiming,
     pub timeline: Vec<ActivityEvent>,
+}
+
+/// Number of commits by one author.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorCount {
+    pub author: String,
+    pub commits: u64,
 }
 
 /// Full detail and timeline of a pull request. `types` filters the
@@ -1012,6 +1053,8 @@ pub fn pr_detail(ds: &Dataset, pr_id: &str, types: &[EventType]) -> Option<PrDet
     let mut reviews = ReviewCounts::default();
     let mut comments = CommentCounts::default();
     let mut participants = BTreeSet::new();
+    let mut discussion = BTreeSet::new();
+    let mut authors: HashMap<String, String> = HashMap::new();
     let mut timeline = Vec::new();
     for e in ds
         .events
@@ -1023,6 +1066,7 @@ pub fn pr_detail(ds: &Dataset, pr_id: &str, types: &[EventType]) -> Option<PrDet
             if e.is_removed() {
                 removed_commits.insert(sha);
             } else {
+                authors.insert(sha.to_ascii_lowercase(), e.actor.display().to_string());
                 commits.insert(sha);
             }
         }
@@ -1036,12 +1080,24 @@ pub fn pr_detail(ds: &Dataset, pr_id: &str, types: &[EventType]) -> Option<PrDet
             }
             if !e.event_type.is_automation() && !e.actor.is_unknown() {
                 participants.insert(e.actor.display().to_string());
+                if e.event_type.is_discussion() {
+                    discussion.insert(e.actor.display().to_string());
+                }
             }
         }
         if types.is_empty() || types.contains(&e.event_type) {
             timeline.push(e.clone());
         }
     }
+    let mut by_author: BTreeMap<String, u64> = BTreeMap::new();
+    for author in authors.into_values() {
+        *by_author.entry(author).or_default() += 1;
+    }
+    let mut commit_authors: Vec<AuthorCount> = by_author
+        .into_iter()
+        .map(|(author, commits)| AuthorCount { author, commits })
+        .collect();
+    commit_authors.sort_by(|a, b| b.commits.cmp(&a.commits).then(a.author.cmp(&b.author)));
     let mut threads = ThreadCounts::default();
     for t in ds.threads.values().filter(|t| t.pr_id == pr_id) {
         threads.add(t);
@@ -1055,6 +1111,8 @@ pub fn pr_detail(ds: &Dataset, pr_id: &str, types: &[EventType]) -> Option<PrDet
         comments,
         threads,
         participants: participants.into_iter().collect(),
+        discussion_participants: discussion.into_iter().collect(),
+        commit_authors,
         timing: pr_timing(ds, pr),
         timeline,
     })
@@ -1068,6 +1126,8 @@ pub struct ReviewRow {
     pub reviewer: String,
     pub state: Option<ReviewState>,
     pub repository: String,
+    /// The reviewed pull request, when known.
+    pub pr_id: Option<String>,
     pub pr_number: Option<u64>,
     pub pr_title: Option<String>,
     pub url: Option<String>,
@@ -1101,6 +1161,7 @@ pub fn review_rows(ds: &Dataset, opts: &Options, dir: ReviewDirection) -> Vec<Re
                 reviewer: e.actor.display().to_string(),
                 state: e.meta.review_state,
                 repository: ds.repo_name(&e.repository_id),
+                pr_id: e.parent_pr_id.clone(),
                 pr_number: pr.map(|p| p.number),
                 pr_title: pr.map(|p| p.title.clone()),
                 url: e.url.clone(),
@@ -1169,6 +1230,8 @@ pub struct CommentRow {
     pub kind: EventType,
     pub written_by_subject: bool,
     pub repository: String,
+    /// The pull request the comment belongs to, when known.
+    pub pr_id: Option<String>,
     pub pr_number: Option<u64>,
     pub edited: bool,
     pub url: Option<String>,
@@ -1193,6 +1256,7 @@ pub fn comment_rows(ds: &Dataset, opts: &Options) -> Vec<CommentRow> {
             kind: e.event_type,
             written_by_subject: e.actor.is(&ds.subject),
             repository: ds.repo_name(&e.repository_id),
+            pr_id: e.parent_pr_id.clone(),
             pr_number: e
                 .parent_pr_id
                 .as_deref()
@@ -1202,6 +1266,140 @@ pub fn comment_rows(ds: &Dataset, opts: &Options) -> Vec<CommentRow> {
             url: e.url.clone(),
         })
         .collect()
+}
+
+/// A commit authored by the subject.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitRow {
+    pub event_id: String,
+    pub sha: Option<String>,
+    /// The date the commit is attributed to (see [`CommitDateBasis`]).
+    pub committed_at: DateTime<Utc>,
+    pub repository: String,
+    pub is_merge_commit: bool,
+    pub url: Option<String>,
+}
+
+/// The subject's distinct commits in the period, oldest first. There is
+/// exactly one row per commit counted in [`Summary::commits`].
+pub fn commit_rows(ds: &Dataset, opts: &Options) -> Vec<CommitRow> {
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut rows: Vec<CommitRow> = selected(ds, opts)
+        .filter(|e| e.event_type == EventType::CommitAuthored && e.actor.is(&ds.subject))
+        .filter(|e| seen.insert(e.event_id.as_str()))
+        .map(|e| CommitRow {
+            event_id: e.event_id.0.clone(),
+            sha: e.meta.sha.clone(),
+            committed_at: event_time(e, opts.commit_basis),
+            repository: ds.repo_name(&e.repository_id),
+            is_merge_commit: e.meta.is_merge_commit == Some(true),
+            url: e.url.clone(),
+        })
+        .collect();
+    rows.sort_by(|a, b| (a.committed_at, &a.event_id).cmp(&(b.committed_at, &b.event_id)));
+    rows
+}
+
+/// One event in an activity listing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivityRow {
+    pub event_id: String,
+    /// The instant the event is attributed to (see [`event_time`]).
+    pub occurred_at: DateTime<Utc>,
+    pub event_type: EventType,
+    pub actor: String,
+    pub by_subject: bool,
+    pub repository: String,
+    /// The pull request the event belongs to, when known.
+    pub pr_id: Option<String>,
+    /// The issue the event belongs to, when known.
+    pub issue_id: Option<String>,
+    /// Number of the pull request or issue.
+    pub number: Option<u64>,
+    /// Title of the pull request or issue.
+    pub title: Option<String>,
+    pub url: Option<String>,
+}
+
+fn activity_row(ds: &Dataset, e: &ActivityEvent, basis: CommitDateBasis) -> ActivityRow {
+    let pr = e
+        .parent_pr_id
+        .as_deref()
+        .and_then(|id| ds.pull_requests.get(id));
+    let issue = (e.event_type.category() == EventCategory::Issue)
+        .then(|| ds.issues.get(&e.entity_id))
+        .flatten();
+    ActivityRow {
+        event_id: e.event_id.0.clone(),
+        occurred_at: event_time(e, basis),
+        event_type: e.event_type,
+        actor: e.actor.display().to_string(),
+        by_subject: e.actor.is(&ds.subject),
+        repository: ds.repo_name(&e.repository_id),
+        pr_id: e.parent_pr_id.clone(),
+        issue_id: issue.map(|i| i.id.clone()),
+        number: pr.map(|p| p.number).or(issue.map(|i| i.number)),
+        title: pr
+            .map(|p| p.title.clone())
+            .or(issue.map(|i| i.title.clone())),
+        url: e.url.clone(),
+    }
+}
+
+fn by_time(rows: &mut [ActivityRow]) {
+    rows.sort_by(|a, b| {
+        (a.occurred_at, a.event_type.sort_rank(), &a.event_id).cmp(&(
+            b.occurred_at,
+            b.event_type.sort_rank(),
+            &b.event_id,
+        ))
+    });
+}
+
+/// Activity in the period, oldest first: every human event by the subject,
+/// plus reviews and comments others left on the subject's pull requests.
+/// Automation (CI) is never listed.
+pub fn activity_rows(ds: &Dataset, opts: &Options) -> Vec<ActivityRow> {
+    let mut rows: Vec<ActivityRow> = selected(ds, opts)
+        .filter(|e| !e.event_type.is_automation())
+        .filter(|e| {
+            e.actor.is(&ds.subject)
+                || (matches!(
+                    e.event_type,
+                    EventType::ReviewSubmitted
+                        | EventType::ConversationComment
+                        | EventType::InlineComment
+                        | EventType::ReviewSummary
+                ) && ds.pr_author_is_subject(e.parent_pr_id.as_deref()))
+        })
+        .map(|e| activity_row(ds, e, opts.commit_basis))
+        .collect();
+    by_time(&mut rows);
+    rows
+}
+
+/// One issue and its events in the period.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueDetail {
+    pub issue: Issue,
+    pub repository: String,
+    /// Events of the issue in the period, by anyone, oldest first.
+    pub events: Vec<ActivityRow>,
+}
+
+/// Detail of one issue: its current state and its events in the period.
+pub fn issue_detail(ds: &Dataset, opts: &Options, issue_id: &str) -> Option<IssueDetail> {
+    let issue = ds.issues.get(issue_id)?;
+    let mut events: Vec<ActivityRow> = selected(ds, opts)
+        .filter(|e| e.event_type.category() == EventCategory::Issue && e.entity_id == issue_id)
+        .map(|e| activity_row(ds, e, opts.commit_basis))
+        .collect();
+    by_time(&mut events);
+    Some(IssueDetail {
+        issue: issue.clone(),
+        repository: ds.repo_name(&issue.repository_id),
+        events,
+    })
 }
 
 /// Events of one pull request in deterministic order, optionally filtered.

@@ -4,13 +4,14 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use ghusage_core::coverage::{self, CoverageStatus, CoverageSummary, DataKind};
 use ghusage_core::metrics::{
-    self, BucketSummary, CommentRow, CommitDateBasis, Dataset, Filter, Intensity, IssueRow,
-    Participation, PrDetail, PrRow, PrSort, PrTiming, RepoSummary, ReviewCounts, ReviewDirection,
-    ReviewRow, Snapshot, Summary, ThreadCounts, TimingStats,
+    self, ActivityRow, BucketSummary, CommentRow, CommitDateBasis, CommitRow, Dataset, Filter,
+    Intensity, IssueRow, Participation, PrDetail, PrRow, PrSort, PrTiming, RepoSummary,
+    ReviewCounts, ReviewDirection, ReviewRow, Snapshot, Summary, ThreadCounts, TimingStats,
 };
 use ghusage_core::model::{ActorKind, EventType, PrState, Visibility};
 use ghusage_core::time::{Granularity, Period, Zone};
@@ -92,6 +93,10 @@ pub struct Report {
     pub comments: Option<Vec<CommentRow>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issues: Option<Vec<IssueRow>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commits: Option<Vec<CommitRow>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<Vec<ActivityRow>>,
 }
 
 impl Report {
@@ -137,21 +142,24 @@ fn options(ctx: &QueryContext, filter: Filter) -> metrics::Options {
 /// before aggregation, so numbers are identical either way.
 pub fn build(ds: &Dataset, ctx: &QueryContext, kind: ReportKind) -> Report {
     let (ds, filter) = prepare(ds, ctx);
-    let ds = &ds;
-    let opts = options(ctx, filter);
+    build_on(&ds, &options(ctx, filter), ctx, kind)
+}
+
+/// [`build`] on a dataset already passed through [`prepare`].
+fn build_on(ds: &Dataset, opts: &metrics::Options, ctx: &QueryContext, kind: ReportKind) -> Report {
     let gran = match kind {
         ReportKind::Breakdown(g) => Some(g),
         _ => None,
     };
-    let breakdown = metrics::breakdown(ds, &opts, gran.unwrap_or(Granularity::Day));
+    let breakdown = metrics::breakdown(ds, opts, gran.unwrap_or(Granularity::Day));
     let mut r = Report {
         schema_version: SCHEMA_VERSION,
         account: account(ds),
         period: period_info(ctx),
         timezone: ctx.zone.name().to_string(),
-        metrics: metrics::summary(ds, &opts),
-        snapshot: metrics::snapshot(ds, &opts),
-        repositories: metrics::by_repository(ds, &opts),
+        metrics: metrics::summary(ds, opts),
+        snapshot: metrics::snapshot(ds, opts),
+        repositories: metrics::by_repository(ds, opts),
         activity_breakdown: breakdown,
         granularity: gran,
         coverage: coverage_for(ds, ctx.period),
@@ -164,6 +172,8 @@ pub fn build(ds: &Dataset, ctx: &QueryContext, kind: ReportKind) -> Report {
         reviews_received: None,
         comments: None,
         issues: None,
+        commits: None,
+        activity: None,
     };
     match kind {
         ReportKind::PullRequests {
@@ -171,23 +181,103 @@ pub fn build(ds: &Dataset, ctx: &QueryContext, kind: ReportKind) -> Report {
             state,
             sort,
         } => {
-            r.pull_requests = Some(metrics::pr_rows(ds, &opts, participation, state, sort));
-            r.intensity = Some(metrics::intensity(ds, &opts, participation));
-            r.timing = Some(metrics::timing_stats(ds, &opts));
+            r.pull_requests = Some(metrics::pr_rows(ds, opts, participation, state, sort));
+            r.intensity = Some(metrics::intensity(ds, opts, participation));
+            r.timing = Some(metrics::timing_stats(ds, opts));
         }
         ReportKind::Reviews => {
-            r.reviews_submitted = Some(metrics::review_rows(ds, &opts, ReviewDirection::Submitted));
-            r.reviews_received = Some(metrics::review_rows(ds, &opts, ReviewDirection::Received));
+            r.reviews_submitted = Some(metrics::review_rows(ds, opts, ReviewDirection::Submitted));
+            r.reviews_received = Some(metrics::review_rows(ds, opts, ReviewDirection::Received));
         }
-        ReportKind::Comments => r.comments = Some(metrics::comment_rows(ds, &opts)),
-        ReportKind::Issues => r.issues = Some(metrics::issue_rows(ds, &opts)),
+        ReportKind::Comments => r.comments = Some(metrics::comment_rows(ds, opts)),
+        ReportKind::Issues => r.issues = Some(metrics::issue_rows(ds, opts)),
         _ => {}
     }
     r
 }
 
+/// An overview report that also lists the pull requests the subject was
+/// active in, most recently active first.
+pub fn build_dashboard(ds: &Dataset, ctx: &QueryContext) -> Report {
+    let (ds, filter) = prepare(ds, ctx);
+    let opts = options(ctx, filter);
+    let mut r = build_on(&ds, &opts, ctx, ReportKind::Overview);
+    r.pull_requests = Some(metrics::pr_rows(
+        &ds,
+        &opts,
+        Participation::Subject,
+        None,
+        PrSort::Updated,
+    ));
+    r
+}
+
+/// A report with every listing filled in: pull requests, reviews in both
+/// directions, comments, issues, commits and the activity itself. Used for
+/// the detail of one day (a one-day period) or one repository (a
+/// one-repository filter); its numbers are those of [`build`] for the same
+/// context.
+pub fn build_detail(ds: &Dataset, ctx: &QueryContext) -> Report {
+    let (ds, filter) = prepare(ds, ctx);
+    let ds = &ds;
+    let opts = options(ctx, filter);
+    let mut r = build_on(
+        ds,
+        &opts,
+        ctx,
+        ReportKind::PullRequests {
+            participation: Participation::Subject,
+            state: None,
+            sort: PrSort::Activity,
+        },
+    );
+    r.reviews_submitted = Some(metrics::review_rows(ds, &opts, ReviewDirection::Submitted));
+    r.reviews_received = Some(metrics::review_rows(ds, &opts, ReviewDirection::Received));
+    r.comments = Some(metrics::comment_rows(ds, &opts));
+    r.issues = Some(metrics::issue_rows(ds, &opts));
+    r.commits = Some(metrics::commit_rows(ds, &opts));
+    r.activity = Some(metrics::activity_rows(ds, &opts));
+    r
+}
+
+/// Detail report of one issue: its current state and its events in the
+/// period.
+#[derive(Debug, Clone, Serialize)]
+pub struct IssueReport {
+    pub issue_id: String,
+    pub repository: String,
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    pub author: String,
+    pub is_open: bool,
+    pub created_at: DateTime<Utc>,
+    pub closed_at: Option<DateTime<Utc>>,
+    pub events: Vec<ActivityRow>,
+    pub private_repositories_redacted: bool,
+}
+
+/// Builds the detail report of one issue for the period of `ctx`.
+pub fn issue_report(ds: &Dataset, ctx: &QueryContext, issue_id: &str) -> Option<IssueReport> {
+    let (ds, filter) = prepare(ds, ctx);
+    let d = metrics::issue_detail(&ds, &options(ctx, filter), issue_id)?;
+    Some(IssueReport {
+        issue_id: d.issue.id.clone(),
+        repository: d.repository,
+        number: d.issue.number,
+        title: d.issue.title.clone(),
+        url: d.issue.url.clone(),
+        author: d.issue.author.display().to_string(),
+        is_open: d.issue.is_open,
+        created_at: d.issue.created_at,
+        closed_at: d.issue.closed_at,
+        events: d.events,
+        private_repositories_redacted: ctx.redact_private,
+    })
+}
+
 /// Resolves the filter to repository ids on the real names, then redacts.
-fn prepare(ds: &Dataset, ctx: &QueryContext) -> (Dataset, Filter) {
+fn prepare<'a>(ds: &'a Dataset, ctx: &QueryContext) -> (Cow<'a, Dataset>, Filter) {
     let filter = if ctx.filter.is_empty() {
         Filter::default()
     } else {
@@ -214,9 +304,9 @@ fn prepare(ds: &Dataset, ctx: &QueryContext) -> (Dataset, Filter) {
         }
     };
     let ds = if ctx.redact_private {
-        redact(ds)
+        Cow::Owned(redact(ds))
     } else {
-        ds.clone()
+        Cow::Borrowed(ds)
     };
     (ds, filter)
 }
@@ -258,6 +348,66 @@ fn repo_matches(ds: &Dataset, opts: &metrics::Options, repo_id: &str) -> bool {
 fn short_hash(s: &str) -> String {
     let d = Sha256::digest(s.as_bytes());
     hex::encode(&d[..4])
+}
+
+/// Lower-case `owner/name` of every public repository in `ds`.
+pub fn public_names(ds: &Dataset) -> BTreeSet<String> {
+    ds.repositories
+        .values()
+        .filter(|r| r.visibility.is_public())
+        .map(|r| r.full_name().to_ascii_lowercase())
+        .collect()
+}
+
+/// Replaces every `owner/name` (with an optional `#number`) in `text` that
+/// is not a known public repository. Coverage reasons and sync failures
+/// name repositories; unknown ones are treated as private.
+pub fn scrub_names(text: &str, public: &BTreeSet<String>) -> String {
+    let is_name_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.');
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if !is_name_char(chars[i]) {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && is_name_char(chars[i]) {
+            i += 1;
+        }
+        if i + 1 < chars.len() && chars[i] == '/' && is_name_char(chars[i + 1]) {
+            let mut j = i + 1;
+            while j < chars.len() && is_name_char(chars[j]) {
+                j += 1;
+            }
+            let full: String = chars[start..j].iter().collect();
+            // Trailing dots are punctuation, not part of the name.
+            let trimmed = full.trim_end_matches('.');
+            let end = start + trimmed.chars().count();
+            if public.contains(&trimmed.to_ascii_lowercase()) {
+                out.push_str(trimmed);
+                i = end;
+                continue;
+            }
+            out.push_str("[private repository]");
+            i = end;
+            // Drop a following `#number`.
+            if i < chars.len() && chars[i] == '#' {
+                let mut k = i + 1;
+                while k < chars.len() && chars[k].is_ascii_digit() {
+                    k += 1;
+                }
+                if k > i + 1 {
+                    i = k;
+                }
+            }
+            continue;
+        }
+        out.extend(&chars[start..i]);
+    }
+    out
 }
 
 /// Replaces names, titles and URLs of non-public repositories. Owned
@@ -305,6 +455,12 @@ pub fn redact(ds: &Dataset) -> Dataset {
             .is_some_and(|pr| private.contains(&pr.repository_id))
         {
             t.path = None;
+        }
+    }
+    let public = public_names(ds);
+    for c in &mut out.coverage {
+        if let Some(r) = &c.reason {
+            c.reason = Some(scrub_names(r, &public));
         }
     }
     for e in &mut out.events {
@@ -368,6 +524,8 @@ pub struct PrReport {
     pub comments: metrics::CommentCounts,
     pub review_threads: ThreadCounts,
     pub participants: Vec<String>,
+    pub discussion_participants: Vec<String>,
+    pub commit_authors: Vec<metrics::AuthorCount>,
     pub timing: PrTiming,
     pub timeline: Vec<TimelineEntry>,
     pub coverage: CoverageStatus,
@@ -429,6 +587,8 @@ pub fn pr_report(
         comments: d.comments,
         review_threads: d.threads,
         participants: d.participants,
+        discussion_participants: d.discussion_participants,
+        commit_authors: d.commit_authors,
         timing: d.timing,
         timeline,
         coverage: pr.coverage,
@@ -470,4 +630,30 @@ fn event_detail(e: &ghusage_core::model::ActivityEvent) -> Option<String> {
         parts.push("no longer present".into());
     }
     (!parts.is_empty()).then(|| parts.join(", "))
+}
+
+#[cfg(test)]
+mod scrub_tests {
+    use super::scrub_names;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn only_public_repository_names_survive() {
+        let public = BTreeSet::from(["octo/app".to_string()]);
+        assert_eq!(
+            scrub_names(
+                "2 repositories not accessible: acme/secret, Octo/App; acme/secret#4: 404.",
+                &public
+            ),
+            "2 repositories not accessible: [private repository], Octo/App; [private repository]: 404."
+        );
+        assert_eq!(
+            scrub_names("searching 2026-11-01..2026-11-02 for me", &public),
+            "searching 2026-11-01..2026-11-02 for me"
+        );
+        assert_eq!(
+            scrub_names("ends with acme/x.", &public),
+            "ends with [private repository]."
+        );
+    }
 }

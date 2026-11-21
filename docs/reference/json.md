@@ -32,7 +32,7 @@ names, titles and URLs. See [Private repositories](#private-repositories).
 
 ## Report object
 
-All period reports (`overview`, `daily`, `weekly`, `monthly`, `repos`, `prs`,
+All period reports (`overview`, `daily`, `weekly`, `monthly`, `yearly`, `repos`, `prs`,
 `reviews`, `comments`, `issues`) print one JSON object with these root fields:
 
 | Field | Type | Description |
@@ -44,8 +44,8 @@ All period reports (`overview`, `daily`, `weekly`, `monthly`, `repos`, `prs`,
 | `metrics` | [Summary](#summary) | Summary of the whole period |
 | `snapshot` | [Snapshot](#snapshot) | Current-state values |
 | `repositories` | array of [RepoSummary](#reposummary) | Per-repository summaries, ordered by your activity then name |
-| `activity_breakdown` | array of [BucketSummary](#bucketsummary) | Per-bucket summaries in time order. Daily buckets unless the command is `weekly` or `monthly` |
-| `granularity` | string | `day`, `week` or `month`. Present only for `daily`, `weekly`, `monthly` |
+| `activity_breakdown` | array of [BucketSummary](#bucketsummary) | Per-bucket summaries in time order. Daily buckets unless the command is `weekly`, `monthly` or `yearly` |
+| `granularity` | string | `day`, `week`, `month` or `year`. Present only for `daily`, `weekly`, `monthly`, `yearly` |
 | `coverage` | array of [CoverageSummary](#coveragesummary) | One entry per data kind |
 | `synced_at` | timestamp or `null` | When the last sync of this account finished |
 | `private_repositories_redacted` | boolean | `true` when private names were hidden (JSON/CSV without `--include-private`) |
@@ -145,7 +145,9 @@ The report's overall coverage is `complete` only if every entry is
 | `created_at`, `merged_at` | Timestamps (`merged_at` is `null` if not merged) |
 | `events`, `events_by_subject` | Counted non-CI events in the period by anyone / by you |
 | `commits`, `reviews`, `comments`, `participants` | Counts in the period |
-| `last_activity` | Latest event time in the period |
+| `discussion_participants` | Distinct known accounts that wrote a conversation, inline or review summary comment in the period |
+| `threads` | Review threads with an inline comment in the period |
+| `last_activity` | Latest event time in the period (commits use the selected `--commit-date`) |
 | `latest_ci` | Current CI state of the head commit: `success`, `failure`, `pending`, `neutral`, `skipped`, `cancelled`, `unknown`, or `null` |
 
 Ordered by `--sort` (largest or newest first), then repository and number.
@@ -154,7 +156,7 @@ Ordered by `--sort` (largest or newest first), then repository and number.
 
 `prs` (number of pull requests), and `events_per_pr`, `reviews_per_pr`,
 `comments_per_pr`, `commits_per_pr`, `participants_per_pr`,
-`active_days_per_pr`, each a [Stats](#stats) object or `null` when there are
+`discussion_participants_per_pr`, `threads_per_pr`, `active_days_per_pr`, each a [Stats](#stats) object or `null` when there are
 no pull requests.
 
 ### TimingStats
@@ -178,6 +180,7 @@ value. See [lifecycle timing](./metrics.md#details-lifecycle-timing-your-pull-re
 | `reviewer` | Reviewer login |
 | `state` | `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED` (original state unknown), or `null` |
 | `repository` | `owner/name` |
+| `pr_id` | GitHub node ID of the reviewed pull request, or `null` |
 | `pr_number`, `pr_title` | Pull request number and title (or `null`) |
 | `url` | Link to the review, or `null` |
 
@@ -194,6 +197,7 @@ reviews by others on your pull requests. Both in time order.
 | `kind` | `conversation_comment`, `inline_comment` or `review_summary` |
 | `written_by_subject` | `true` for comments you wrote |
 | `repository`, `pr_number` | Where the comment is |
+| `pr_id` | GitHub node ID of the pull request, or `null` |
 | `edited` | Whether the comment was edited |
 | `url` | Link, or `null` |
 
@@ -228,6 +232,8 @@ Ordered by repository and number.
 | `comments` | [CommentCounts](#commentcounts) |
 | `review_threads` | `total`, `open`, `resolved`, `outdated` (current state) |
 | `participants` | Logins of known accounts with counted non-CI events, sorted |
+| `discussion_participants` | Logins of known accounts that wrote a conversation, inline or review summary comment, sorted |
+| `commit_authors` | Array of `{author, commits}`: commits currently in the pull request by commit author, most first |
 | `timing` | `time_to_first_review_secs`, `creation_to_merge_secs`, `review_to_next_author_activity_secs`, `first_to_last_activity_secs` (integers or `null`) |
 | `timeline` | Array of [TimelineEntry](#timelineentry) in event order (filtered by `--event-type`) |
 | `coverage` | Coverage status of this pull request's data |
@@ -262,7 +268,7 @@ request's life (opened, commits, force pushes, ..., merged, closed, reopened).
 | `status` | `complete` or `partial` |
 | `commits_found` | Distinct commits found by commit search and the default-branch commit lists (commits found only inside pull requests are not included) |
 | `pull_requests_found`, `pull_requests_fetched`, `pull_requests_unchanged` | Pull requests found by search / fetched / skipped as unchanged |
-| `issues_found`, `issues_fetched` | Issues found / fetched |
+| `issues_found`, `issues_fetched`, `issues_unchanged` | Issues found by search / fetched / skipped as unchanged |
 | `failures` | Descriptions of pull requests or issues that failed or were partially fetched |
 | `coverage` | Coverage records written: `kind`, `start`, `end`, `status`, `scope`, `reason`, `recorded_at` |
 | `api` | `requests`, `retries`, `rate_limit_waits`, `total_api_time_ms`, `bytes_received` |
@@ -293,7 +299,7 @@ Booleans are `true` / `false`. Free text (titles, details) has control
 characters removed, and a leading `=`, `+`, `-` or `@` is prefixed with `'`
 so spreadsheets do not evaluate it as a formula.
 
-### overview, daily, weekly, monthly
+### overview, daily, weekly, monthly, yearly
 
 One row per calendar bucket (`overview` produces daily rows):
 
@@ -314,7 +320,7 @@ repository,visibility,owned,accessible,commits,prs_created,prs_merged,reviews_su
 ### prs
 
 ```text
-repository,number,title,state,draft,author,created_at,merged_at,events,events_by_you,commits,reviews,comments,participants,last_activity,latest_ci,url,period_coverage
+repository,number,title,state,draft,author,created_at,merged_at,events,events_by_you,commits,reviews,comments,participants,discussion_participants,threads,last_activity,latest_ci,url,period_coverage
 ```
 
 ### reviews
@@ -366,6 +372,7 @@ way.
 | Pull request and issue URLs | empty string |
 | Review, comment and event URLs, repository URLs | `null` |
 | Review thread file paths, label and milestone names, previous titles, CI check names | removed |
+| Repository names in coverage reasons and in `sync` failures | `[private repository]` (any repository not known to be public) |
 
 Logins of people (yours and others') and GitHub node IDs are not hidden.
 Table output and the terminal UI always show real names, because they are

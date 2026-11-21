@@ -111,6 +111,7 @@ ghusage overview --since 30d
 ghusage daily --since 14d
 ghusage weekly                # last 8 weeks
 ghusage monthly               # last 6 calendar months
+ghusage yearly                # this year and the 2 before
 ghusage repos
 ghusage prs --details
 ghusage reviews

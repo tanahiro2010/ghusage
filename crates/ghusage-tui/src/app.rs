@@ -7,62 +7,103 @@ use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender};
 
 use chrono::{DateTime, Utc};
-use ghusage_app::report::{PrReport, QueryContext, Report, ReportKind};
+use ghusage_app::report::{IssueReport, PrReport, QueryContext, Report, ReportKind};
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::metrics::{
-    CommitDateBasis, Filter, Ownership, Participation, PrSort, ReviewDirection, VisibilityFilter,
+    CommitDateBasis, Filter, IssueRow, Ownership, Participation, PrRow, PrSort, ReviewDirection,
+    ReviewRow, VisibilityFilter,
 };
 use ghusage_core::model::{EventCategory, EventType};
 use ghusage_core::time::{Period, Zone, resolve_period};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::background::SyncMsg;
-use crate::compute::{self, Job, Outcome, Request, Response, Worker};
+use crate::compute::{self, Build, Job, Outcome, Request, Response, Worker};
 use crate::source::{DataSource, SystemInfo};
 
 /// A screen of the UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Screen {
+    Dashboard,
     Overview,
     Daily,
+    DayDetail,
     Repositories,
+    RepoDetail,
     PullRequests,
     PrDetail,
     PrTimeline,
     Reviews,
+    Issues,
+    IssueDetail,
     System,
 }
 
 impl Screen {
     /// Screens reachable with the number keys, in key order.
-    pub const TOP: [Screen; 6] = [
+    pub const TOP: [Screen; 8] = [
+        Screen::Dashboard,
         Screen::Overview,
         Screen::Daily,
         Screen::Repositories,
         Screen::PullRequests,
         Screen::Reviews,
+        Screen::Issues,
         Screen::System,
     ];
 
     pub fn title(self) -> &'static str {
         match self {
+            Screen::Dashboard => "Dashboard",
             Screen::Overview => "Overview",
             Screen::Daily => "Daily",
+            Screen::DayDetail => "Day Detail",
             Screen::Repositories => "Repositories",
+            Screen::RepoDetail => "Repository Detail",
             Screen::PullRequests => "Pull Requests",
             Screen::PrDetail => "PR Detail",
             Screen::PrTimeline => "PR Timeline",
             Screen::Reviews => "Reviews",
+            Screen::Issues => "Issues",
+            Screen::IssueDetail => "Issue Detail",
             Screen::System => "System",
         }
     }
 
-    /// The top-level screen a screen belongs to.
+    /// A shorter title for narrow terminals.
+    pub fn short_title(self) -> &'static str {
+        match self {
+            Screen::Dashboard => "Dash",
+            Screen::Overview => "Over",
+            Screen::Daily => "Daily",
+            Screen::DayDetail => "Day",
+            Screen::Repositories => "Repos",
+            Screen::RepoDetail => "Repo",
+            Screen::PullRequests => "PRs",
+            Screen::PrDetail => "PR",
+            Screen::PrTimeline => "Timeline",
+            Screen::Reviews => "Revs",
+            Screen::Issues => "Issues",
+            Screen::IssueDetail => "Issue",
+            Screen::System => "Sys",
+        }
+    }
+
+    /// The top-level screen a screen belongs to when it was not opened
+    /// from another screen.
     pub fn top(self) -> Screen {
         match self {
             Screen::PrDetail | Screen::PrTimeline => Screen::PullRequests,
+            Screen::DayDetail => Screen::Daily,
+            Screen::RepoDetail => Screen::Repositories,
+            Screen::IssueDetail => Screen::Issues,
             s => s,
         }
+    }
+
+    /// Whether the screen is opened from another one (Esc goes back).
+    pub fn is_detail(self) -> bool {
+        self.top() != self
     }
 }
 
@@ -231,25 +272,157 @@ pub enum OverviewPane {
     Repositories,
 }
 
+/// Focus on the Dashboard screen, cycled with Tab / Shift+Tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DashboardPane {
+    Summary,
+    Repositories,
+    PullRequests,
+}
+
+impl DashboardPane {
+    const CYCLE: [DashboardPane; 3] = [
+        DashboardPane::Summary,
+        DashboardPane::Repositories,
+        DashboardPane::PullRequests,
+    ];
+
+    fn step(self, delta: isize) -> Self {
+        let n = Self::CYCLE.len() as isize;
+        let i = Self::CYCLE.iter().position(|t| *t == self).unwrap_or(0) as isize;
+        Self::CYCLE[((i + delta).rem_euclid(n)) as usize]
+    }
+}
+
+/// Section of a day or repository detail, cycled with Tab / Shift+Tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DetailTab {
+    Activity,
+    Commits,
+    PullRequests,
+    Reviews,
+    Comments,
+    Issues,
+}
+
+impl DetailTab {
+    /// Section order of the day detail.
+    pub const DAY: [DetailTab; 6] = [
+        DetailTab::Activity,
+        DetailTab::Commits,
+        DetailTab::PullRequests,
+        DetailTab::Reviews,
+        DetailTab::Comments,
+        DetailTab::Issues,
+    ];
+    /// Section order of the repository detail.
+    pub const REPO: [DetailTab; 6] = [
+        DetailTab::PullRequests,
+        DetailTab::Commits,
+        DetailTab::Issues,
+        DetailTab::Reviews,
+        DetailTab::Comments,
+        DetailTab::Activity,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DetailTab::Activity => "Activity",
+            DetailTab::Commits => "Commits",
+            DetailTab::PullRequests => "Pull requests",
+            DetailTab::Reviews => "Reviews",
+            DetailTab::Comments => "Comments",
+            DetailTab::Issues => "Issues",
+        }
+    }
+
+    /// A shorter label for narrow terminals.
+    pub fn short_label(self) -> &'static str {
+        match self {
+            DetailTab::Activity => "Act",
+            DetailTab::Commits => "Commits",
+            DetailTab::PullRequests => "PRs",
+            DetailTab::Reviews => "Revs",
+            DetailTab::Comments => "Cmts",
+            DetailTab::Issues => "Issues",
+        }
+    }
+
+    pub fn list(self) -> ListId {
+        match self {
+            DetailTab::Activity => ListId::DetailActivity,
+            DetailTab::Commits => ListId::DetailCommits,
+            DetailTab::PullRequests => ListId::DetailPullRequests,
+            DetailTab::Reviews => ListId::DetailReviews,
+            DetailTab::Comments => ListId::DetailComments,
+            DetailTab::Issues => ListId::DetailIssues,
+        }
+    }
+}
+
+/// The day shown on the day detail screen.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DayScope {
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+    pub label: String,
+}
+
+/// The repository shown on the repository detail screen.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RepoScope {
+    pub id: String,
+    pub full_name: String,
+}
+
 /// A scrollable list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ListId {
+    DashboardRepos,
+    DashboardPrs,
     OverviewRepos,
     Daily,
     Repositories,
     PullRequests,
     ReviewsSubmitted,
     ReviewsReceived,
+    Issues,
+    IssueEvents,
     Timeline,
+    DetailActivity,
+    DetailCommits,
+    DetailPullRequests,
+    DetailReviews,
+    DetailComments,
+    DetailIssues,
+}
+
+impl ListId {
+    const DETAIL: [ListId; 6] = [
+        ListId::DetailActivity,
+        ListId::DetailCommits,
+        ListId::DetailPullRequests,
+        ListId::DetailReviews,
+        ListId::DetailComments,
+        ListId::DetailIssues,
+    ];
 }
 
 /// Which report a screen is built from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum Slot {
-    /// Summary, daily breakdown and repositories.
+    /// Summary, daily breakdown, repositories and recent pull requests.
     Base,
     PullRequests,
     Reviews,
+    Issues,
+    /// Every listing for one day of the period.
+    Day {
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    },
+    /// Every listing for one repository.
+    Repo(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -259,6 +432,18 @@ pub(crate) struct CacheKey {
     pub(crate) end: DateTime<Utc>,
     pub(crate) filter: FilterPreset,
 }
+
+/// Identifies an issue detail: the issue and the period it covers.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct IssueKey {
+    pub(crate) id: String,
+    pub(crate) start: DateTime<Utc>,
+    pub(crate) end: DateTime<Utc>,
+    pub(crate) filter: FilterPreset,
+}
+
+/// Deepest chain of detail screens kept for Esc.
+const MAX_NAV_DEPTH: usize = 16;
 
 /// Something the event loop must do after a key press.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -319,10 +504,18 @@ pub struct App {
     pub filter_preset: FilterPreset,
     pub review_direction: ReviewDirection,
     pub overview_pane: OverviewPane,
+    pub dashboard_pane: DashboardPane,
     pub timeline_filter: TimelineFilter,
+    pub detail_tab: DetailTab,
     /// Which commit date counts (same meaning as the CLI's `--commit-date`).
     pub commit_basis: CommitDateBasis,
     pub detail_pr: Option<String>,
+    pub detail_issue: Option<String>,
+    pub detail_day: Option<DayScope>,
+    pub detail_repo: Option<RepoScope>,
+    /// The day or repository detail last opened (whose report
+    /// [`App::detail_report`] returns).
+    scope: Option<Screen>,
     pub search_mode: bool,
     pub show_help: bool,
     pub should_quit: bool,
@@ -330,6 +523,8 @@ pub struct App {
     pub sync: SyncState,
     pub system: SystemInfo,
 
+    /// Screens to return to with Esc, oldest first.
+    nav: Vec<Screen>,
     selection: HashMap<ListId, usize>,
     search: HashMap<ListId, String>,
     /// Scroll offsets remembered between frames.
@@ -340,6 +535,7 @@ pub struct App {
     reports: HashMap<CacheKey, Report>,
     errors: HashMap<CacheKey, String>,
     pr_reports: HashMap<String, Result<Option<PrReport>, String>>,
+    issue_reports: HashMap<IssueKey, Result<Option<IssueReport>, String>>,
     report_builds: usize,
     dataset_loads: usize,
 }
@@ -382,21 +578,28 @@ impl App {
             base_filter: cfg.filter,
             zone: cfg.zone,
             background_sync: cfg.background_sync,
-            screen: Screen::Overview,
+            screen: Screen::Dashboard,
             period: cfg.period,
             time_range: TimeRange::Initial,
             filter_preset: FilterPreset::All,
             review_direction: ReviewDirection::Submitted,
             overview_pane: OverviewPane::Summary,
+            dashboard_pane: DashboardPane::Summary,
             timeline_filter: TimelineFilter::All,
+            detail_tab: DetailTab::Activity,
             commit_basis: CommitDateBasis::default(),
             detail_pr: None,
+            detail_issue: None,
+            detail_day: None,
+            detail_repo: None,
+            scope: None,
             search_mode: false,
             show_help: false,
             should_quit: false,
             message: None,
             sync: SyncState::default(),
             system,
+            nav: Vec::new(),
             selection: HashMap::new(),
             search: HashMap::new(),
             offsets: RefCell::new(HashMap::new()),
@@ -405,6 +608,7 @@ impl App {
             reports: HashMap::new(),
             errors: HashMap::new(),
             pr_reports: HashMap::new(),
+            issue_reports: HashMap::new(),
             report_builds: 0,
             dataset_loads: 0,
         }
@@ -437,14 +641,38 @@ impl App {
         }
     }
 
-    fn slot_for(screen: Screen) -> Option<Slot> {
-        match screen {
-            Screen::Overview | Screen::Daily | Screen::Repositories | Screen::System => {
-                Some(Slot::Base)
+    /// The context a report of `slot` is computed with.
+    fn context_for(&self, slot: &Slot) -> QueryContext {
+        let mut ctx = self.query_context();
+        match slot {
+            Slot::Day { start, end } => {
+                ctx.period = Period {
+                    start: *start,
+                    end: *end,
+                }
             }
+            Slot::Repo(id) => ctx.filter.repositories = vec![id.clone()],
+            _ => {}
+        }
+        ctx
+    }
+
+    fn slot_for(&self, screen: Screen) -> Option<Slot> {
+        match screen {
+            Screen::Dashboard
+            | Screen::Overview
+            | Screen::Daily
+            | Screen::Repositories
+            | Screen::System => Some(Slot::Base),
             Screen::PullRequests => Some(Slot::PullRequests),
             Screen::Reviews => Some(Slot::Reviews),
-            Screen::PrDetail | Screen::PrTimeline => None,
+            Screen::Issues => Some(Slot::Issues),
+            Screen::DayDetail => self.detail_day.as_ref().map(|d| Slot::Day {
+                start: d.start,
+                end: d.end,
+            }),
+            Screen::RepoDetail => self.detail_repo.as_ref().map(|r| Slot::Repo(r.id.clone())),
+            Screen::PrDetail | Screen::PrTimeline | Screen::IssueDetail => None,
         }
     }
 
@@ -457,15 +685,26 @@ impl App {
         }
     }
 
-    fn kind(slot: Slot) -> ReportKind {
+    fn issue_key(&self) -> Option<IssueKey> {
+        self.detail_issue.as_ref().map(|id| IssueKey {
+            id: id.clone(),
+            start: self.period.start,
+            end: self.period.end,
+            filter: self.filter_preset,
+        })
+    }
+
+    fn build_for(slot: &Slot) -> Build {
         match slot {
-            Slot::Base => ReportKind::Overview,
-            Slot::PullRequests => ReportKind::PullRequests {
+            Slot::Base => Build::Dashboard,
+            Slot::PullRequests => Build::Kind(ReportKind::PullRequests {
                 participation: Participation::Subject,
                 state: None,
                 sort: PrSort::Activity,
-            },
-            Slot::Reviews => ReportKind::Reviews,
+            }),
+            Slot::Reviews => Build::Kind(ReportKind::Reviews),
+            Slot::Issues => Build::Kind(ReportKind::Issues),
+            Slot::Day { .. } | Slot::Repo(_) => Build::Detail,
         }
     }
 
@@ -473,16 +712,17 @@ impl App {
         if self.pending.contains(&job) {
             return;
         }
-        let kind = match &job {
-            Job::Report(k) => Self::kind(k.slot),
-            _ => ReportKind::Overview,
+        let (build, ctx) = match &job {
+            Job::Report(k) => (Self::build_for(&k.slot), self.context_for(&k.slot)),
+            _ => (Build::Kind(ReportKind::Overview), self.query_context()),
         };
         let req = Request {
             job: job.clone(),
             generation: self.generation,
             foreground,
-            ctx: self.query_context(),
-            kind,
+            view: self.period,
+            ctx,
+            build,
         };
         self.pending.insert(job.clone());
         match &mut self.compute {
@@ -500,6 +740,9 @@ impl App {
                         }
                         Job::Pr(id) => {
                             self.pr_reports.insert(id, Err(e));
+                        }
+                        Job::Issue(k) => {
+                            self.issue_reports.insert(k, Err(e));
                         }
                         Job::System => self.system.error = Some(e),
                     }
@@ -531,6 +774,12 @@ impl App {
                 }
                 self.pr_reports.insert(id, r.map(|o| o.map(|b| *b)));
             }
+            (Job::Issue(k), Outcome::Issue(r)) => {
+                if r.is_ok() {
+                    self.report_builds += 1;
+                }
+                self.issue_reports.insert(k, r.map(|o| o.map(|b| *b)));
+            }
             (Job::System, Outcome::System(info)) => self.system = *info,
             _ => {}
         }
@@ -561,9 +810,14 @@ impl App {
 
     /// Whether the view on screen is still being computed.
     pub fn is_computing(&self) -> bool {
-        match Self::slot_for(self.screen) {
-            Some(slot) => self.pending.contains(&Job::Report(self.key(slot))),
-            None => self
+        if let Some(slot) = self.slot_for(self.screen) {
+            return self.pending.contains(&Job::Report(self.key(slot)));
+        }
+        match self.screen {
+            Screen::IssueDetail => self
+                .issue_key()
+                .is_some_and(|k| self.pending.contains(&Job::Issue(k))),
+            _ => self
                 .detail_pr
                 .as_ref()
                 .is_some_and(|id| self.pending.contains(&Job::Pr(id.clone()))),
@@ -601,15 +855,29 @@ impl App {
     /// Cheap when already cached; never touches the network and never
     /// waits for the computation.
     pub fn prepare(&mut self) {
-        if let Some(slot) = Self::slot_for(self.screen) {
+        if let Some(slot) = self.slot_for(self.screen) {
             let key = self.key(slot);
             if !self.reports.contains_key(&key) && !self.errors.contains_key(&key) {
                 self.send(Job::Report(key), true);
             }
-        } else if let Some(id) = self.detail_pr.clone()
-            && !self.pr_reports.contains_key(&id)
-        {
-            self.send(Job::Pr(id), true);
+            return;
+        }
+        match self.screen {
+            Screen::IssueDetail => {
+                if let Some(k) = self.issue_key()
+                    && !self.issue_reports.contains_key(&k)
+                {
+                    self.send(Job::Issue(k), true);
+                }
+            }
+            Screen::PrDetail | Screen::PrTimeline => {
+                if let Some(id) = self.detail_pr.clone()
+                    && !self.pr_reports.contains_key(&id)
+                {
+                    self.send(Job::Pr(id), true);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -618,7 +886,7 @@ impl App {
     /// Meant to be called while the UI is idle.
     pub fn warm_up(&mut self) -> bool {
         let mut sent = false;
-        for slot in [Slot::Base, Slot::PullRequests, Slot::Reviews] {
+        for slot in [Slot::Base, Slot::PullRequests, Slot::Reviews, Slot::Issues] {
             let key = self.key(slot);
             let job = Job::Report(key.clone());
             if !self.reports.contains_key(&key)
@@ -638,10 +906,11 @@ impl App {
 
     /// The report behind the current screen, if computed.
     pub fn current_report(&self) -> Option<&Report> {
-        Self::slot_for(self.screen).and_then(|s| self.report(s))
+        self.slot_for(self.screen).and_then(|s| self.report(s))
     }
 
-    /// Summary, daily breakdown and repositories for the current period.
+    /// Summary, daily breakdown, repositories and the most recently active
+    /// pull requests for the current period.
     pub fn base_report(&self) -> Option<&Report> {
         self.report(Slot::Base)
     }
@@ -654,11 +923,29 @@ impl App {
         self.report(Slot::Reviews)
     }
 
+    pub fn issues_report(&self) -> Option<&Report> {
+        self.report(Slot::Issues)
+    }
+
+    /// The report of the day or repository detail last opened.
+    pub fn detail_report(&self) -> Option<&Report> {
+        self.scope
+            .and_then(|s| self.slot_for(s))
+            .and_then(|s| self.report(s))
+    }
+
     /// Error reading the cache for the current screen.
     pub fn load_error(&self) -> Option<&str> {
-        match Self::slot_for(self.screen) {
-            Some(slot) => self.errors.get(&self.key(slot)).map(String::as_str),
-            None => self
+        if let Some(slot) = self.slot_for(self.screen) {
+            return self.errors.get(&self.key(slot)).map(String::as_str);
+        }
+        match self.screen {
+            Screen::IssueDetail => self
+                .issue_key()
+                .and_then(|k| self.issue_reports.get(&k))
+                .and_then(|r| r.as_ref().err())
+                .map(String::as_str),
+            _ => self
                 .detail_pr
                 .as_ref()
                 .and_then(|id| self.pr_reports.get(id))
@@ -676,10 +963,25 @@ impl App {
             .and_then(|r| r.as_ref())
     }
 
+    /// The issue shown on the issue detail screen.
+    pub fn issue_report(&self) -> Option<&IssueReport> {
+        self.issue_key()
+            .and_then(|k| self.issue_reports.get(&k))
+            .and_then(|r| r.as_ref().ok())
+            .and_then(|r| r.as_ref())
+    }
+
+    /// Whether the issue detail lookup finished (found or not).
+    pub fn issue_lookup_done(&self) -> bool {
+        self.issue_key()
+            .is_some_and(|k| self.issue_reports.contains_key(&k))
+    }
+
     /// Coverage of the data on screen.
     pub fn coverage(&self) -> Option<CoverageStatus> {
         match self.screen {
             Screen::PrDetail | Screen::PrTimeline => self.pr_report().map(|r| r.coverage),
+            Screen::IssueDetail => self.base_report().map(|r| r.overall_coverage()),
             _ => self.current_report().map(|r| r.overall_coverage()),
         }
     }
@@ -691,6 +993,7 @@ impl App {
         self.reports.clear();
         self.errors.clear();
         self.pr_reports.clear();
+        self.issue_reports.clear();
         self.send(Job::System, true);
         self.prepare();
     }
@@ -702,11 +1005,128 @@ impl App {
             .is_some_and(|id| self.pr_reports.contains_key(id))
     }
 
+    // ----- navigation -------------------------------------------------
+
+    /// The numbered tab the current screen was reached from.
+    pub fn tab(&self) -> Screen {
+        self.nav.first().copied().unwrap_or(self.screen).top()
+    }
+
+    /// Detail screens opened from the tab, in order, ending with the
+    /// current screen. Empty on a tab itself.
+    pub fn breadcrumb(&self) -> Vec<Screen> {
+        if self.nav.is_empty() {
+            return if self.screen.is_detail() {
+                vec![self.screen]
+            } else {
+                Vec::new()
+            };
+        }
+        let mut out: Vec<Screen> = self.nav[1..].to_vec();
+        out.push(self.screen);
+        out
+    }
+
+    fn open(&mut self, screen: Screen) {
+        if self.nav.len() >= MAX_NAV_DEPTH {
+            self.nav.remove(0);
+        }
+        self.nav.push(self.screen);
+        self.screen = screen;
+    }
+
+    fn go_to_tab(&mut self, screen: Screen) {
+        self.nav.clear();
+        self.screen = screen;
+    }
+
+    fn open_pr(&mut self, id: String) {
+        if self.detail_pr.as_ref() != Some(&id) {
+            self.timeline_filter = TimelineFilter::All;
+            self.search.remove(&ListId::Timeline);
+            self.reset_list(ListId::Timeline);
+        }
+        self.detail_pr = Some(id);
+        self.open(Screen::PrDetail);
+    }
+
+    fn open_issue(&mut self, id: String) {
+        if self.detail_issue.as_ref() != Some(&id) {
+            self.search.remove(&ListId::IssueEvents);
+            self.reset_list(ListId::IssueEvents);
+        }
+        self.detail_issue = Some(id);
+        self.open(Screen::IssueDetail);
+    }
+
+    fn reset_detail_lists(&mut self, first: DetailTab) {
+        for l in ListId::DETAIL {
+            self.search.remove(&l);
+            self.reset_list(l);
+        }
+        self.detail_tab = first;
+    }
+
+    fn open_day(&mut self, day: DayScope) {
+        if self.scope != Some(Screen::DayDetail) || self.detail_day.as_ref() != Some(&day) {
+            self.reset_detail_lists(DetailTab::DAY[0]);
+        }
+        self.detail_day = Some(day);
+        self.scope = Some(Screen::DayDetail);
+        self.open(Screen::DayDetail);
+    }
+
+    fn open_repo(&mut self, repo: RepoScope) {
+        if self.scope != Some(Screen::RepoDetail) || self.detail_repo.as_ref() != Some(&repo) {
+            self.reset_detail_lists(DetailTab::REPO[0]);
+        }
+        self.detail_repo = Some(repo);
+        self.scope = Some(Screen::RepoDetail);
+        self.open(Screen::RepoDetail);
+    }
+
+    fn back(&mut self) {
+        if let Some(prev) = self.nav.pop() {
+            self.screen = prev;
+            return;
+        }
+        if self.screen.is_detail() {
+            self.screen = self.screen.top();
+            return;
+        }
+        if let Some(list) = self.current_list()
+            && self.search.remove(&list).is_some()
+        {
+            self.reset_list(list);
+        }
+    }
+
+    /// Leaves day details: the day may not be part of a new period.
+    fn leave_day_detail(&mut self) {
+        if self.screen == Screen::DayDetail || self.nav.contains(&Screen::DayDetail) {
+            let tab = self.tab();
+            self.go_to_tab(tab);
+        }
+    }
+
+    /// Section order of the current day or repository detail.
+    pub fn detail_tabs(&self) -> &'static [DetailTab] {
+        match self.scope {
+            Some(Screen::RepoDetail) => &DetailTab::REPO,
+            _ => &DetailTab::DAY,
+        }
+    }
+
     // ----- lists ------------------------------------------------------
 
     /// The list that keys act on, if any.
     pub fn current_list(&self) -> Option<ListId> {
         match self.screen {
+            Screen::Dashboard => match self.dashboard_pane {
+                DashboardPane::Summary => None,
+                DashboardPane::Repositories => Some(ListId::DashboardRepos),
+                DashboardPane::PullRequests => Some(ListId::DashboardPrs),
+            },
             Screen::Overview => {
                 (self.overview_pane == OverviewPane::Repositories).then_some(ListId::OverviewRepos)
             }
@@ -717,6 +1137,9 @@ impl App {
                 ReviewDirection::Submitted => ListId::ReviewsSubmitted,
                 ReviewDirection::Received => ListId::ReviewsReceived,
             }),
+            Screen::Issues => Some(ListId::Issues),
+            Screen::IssueDetail => Some(ListId::IssueEvents),
+            Screen::DayDetail | Screen::RepoDetail => Some(self.detail_tab.list()),
             Screen::PrTimeline => Some(ListId::Timeline),
             Screen::PrDetail | Screen::System => None,
         }
@@ -730,24 +1153,50 @@ impl App {
         self.selection.get(&list).copied().unwrap_or(0)
     }
 
+    /// Reviews of the day or repository detail: submitted, then received.
+    pub fn detail_reviews(&self) -> Vec<(ReviewDirection, &ReviewRow)> {
+        let Some(r) = self.detail_report() else {
+            return Vec::new();
+        };
+        let sub = r.reviews_submitted.iter().flatten();
+        let rec = r.reviews_received.iter().flatten();
+        sub.map(|x| (ReviewDirection::Submitted, x))
+            .chain(rec.map(|x| (ReviewDirection::Received, x)))
+            .collect()
+    }
+
     /// Indices into the underlying rows that are visible after search and
     /// filters, in display order.
     pub fn visible(&self, list: ListId) -> Vec<usize> {
         let q = self.search_query(list).to_lowercase();
         let hit =
             |parts: &[&str]| q.is_empty() || parts.iter().any(|p| p.to_lowercase().contains(&q));
+        let pr_hit = |p: &PrRow| {
+            let num = format!("#{}", p.number);
+            hit(&[&p.title, &p.repository, &num, &p.author])
+        };
+        let issue_hit = |x: &IssueRow| {
+            let num = format!("#{}", x.number);
+            hit(&[&x.title, &x.repository, &num])
+        };
+        let indices =
+            |n: usize, keep: &dyn Fn(usize) -> bool| (0..n).filter(|i| keep(*i)).collect();
         match list {
-            ListId::OverviewRepos | ListId::Repositories => self
+            ListId::DashboardRepos | ListId::OverviewRepos => self
+                .base_report()
+                .map(|r| (0..r.repositories.len()).collect())
+                .unwrap_or_default(),
+            ListId::DashboardPrs => self
+                .base_report()
+                .and_then(|r| r.pull_requests.as_ref())
+                .map(|rows| (0..rows.len()).collect())
+                .unwrap_or_default(),
+            ListId::Repositories => self
                 .base_report()
                 .map(|r| {
-                    let rows = r.repositories.iter().enumerate();
-                    if list == ListId::OverviewRepos {
-                        rows.map(|(i, _)| i).collect()
-                    } else {
-                        rows.filter(|(_, x)| hit(&[&x.full_name]))
-                            .map(|(i, _)| i)
-                            .collect()
-                    }
+                    indices(r.repositories.len(), &|i| {
+                        hit(&[&r.repositories[i].full_name])
+                    })
                 })
                 .unwrap_or_default(),
             ListId::Daily => self
@@ -763,16 +1212,7 @@ impl App {
             ListId::PullRequests => self
                 .pr_list_report()
                 .and_then(|r| r.pull_requests.as_ref())
-                .map(|rows| {
-                    rows.iter()
-                        .enumerate()
-                        .filter(|(_, p)| {
-                            let num = format!("#{}", p.number);
-                            hit(&[&p.title, &p.repository, &num, &p.author])
-                        })
-                        .map(|(i, _)| i)
-                        .collect()
-                })
+                .map(|rows| indices(rows.len(), &|i| pr_hit(&rows[i])))
                 .unwrap_or_default(),
             ListId::ReviewsSubmitted | ListId::ReviewsReceived => self
                 .reviews_report()
@@ -784,17 +1224,28 @@ impl App {
                     }
                 })
                 .map(|rows| {
-                    rows.iter()
-                        .enumerate()
-                        .filter(|(_, x)| {
-                            hit(&[
-                                &x.reviewer,
-                                &x.repository,
-                                x.pr_title.as_deref().unwrap_or(""),
-                            ])
-                        })
-                        .map(|(i, _)| i)
-                        .collect()
+                    indices(rows.len(), &|i| {
+                        let x = &rows[i];
+                        hit(&[
+                            &x.reviewer,
+                            &x.repository,
+                            x.pr_title.as_deref().unwrap_or(""),
+                        ])
+                    })
+                })
+                .unwrap_or_default(),
+            ListId::Issues => self
+                .issues_report()
+                .and_then(|r| r.issues.as_ref())
+                .map(|rows| indices(rows.len(), &|i| issue_hit(&rows[i])))
+                .unwrap_or_default(),
+            ListId::IssueEvents => self
+                .issue_report()
+                .map(|r| {
+                    indices(r.events.len(), &|i| {
+                        let e = &r.events[i];
+                        hit(&[&e.actor, e.event_type.label()])
+                    })
                 })
                 .unwrap_or_default(),
             ListId::Timeline => self
@@ -810,6 +1261,69 @@ impl App {
                         .map(|(i, _)| i)
                         .collect()
                 })
+                .unwrap_or_default(),
+            ListId::DetailActivity => self
+                .detail_report()
+                .and_then(|r| r.activity.as_ref())
+                .map(|rows| {
+                    // Newest first.
+                    (0..rows.len())
+                        .rev()
+                        .filter(|i| {
+                            let a = &rows[*i];
+                            hit(&[
+                                &a.actor,
+                                a.event_type.label(),
+                                &a.repository,
+                                a.title.as_deref().unwrap_or(""),
+                            ])
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            ListId::DetailCommits => self
+                .detail_report()
+                .and_then(|r| r.commits.as_ref())
+                .map(|rows| {
+                    (0..rows.len())
+                        .rev()
+                        .filter(|i| {
+                            let c = &rows[*i];
+                            hit(&[c.sha.as_deref().unwrap_or(""), &c.repository])
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            ListId::DetailPullRequests => self
+                .detail_report()
+                .and_then(|r| r.pull_requests.as_ref())
+                .map(|rows| indices(rows.len(), &|i| pr_hit(&rows[i])))
+                .unwrap_or_default(),
+            ListId::DetailReviews => {
+                let rows = self.detail_reviews();
+                indices(rows.len(), &|i| {
+                    let x = rows[i].1;
+                    hit(&[
+                        &x.reviewer,
+                        &x.repository,
+                        x.pr_title.as_deref().unwrap_or(""),
+                    ])
+                })
+            }
+            ListId::DetailComments => self
+                .detail_report()
+                .and_then(|r| r.comments.as_ref())
+                .map(|rows| {
+                    indices(rows.len(), &|i| {
+                        let c = &rows[i];
+                        hit(&[&c.author, &c.repository, c.kind.label()])
+                    })
+                })
+                .unwrap_or_default(),
+            ListId::DetailIssues => self
+                .detail_report()
+                .and_then(|r| r.issues.as_ref())
+                .map(|rows| indices(rows.len(), &|i| issue_hit(&rows[i])))
                 .unwrap_or_default(),
         }
     }
@@ -883,9 +1397,9 @@ impl App {
                 self.should_quit = true;
                 return Some(Effect::Quit);
             }
-            KeyCode::Char(c @ '1'..='6') => {
+            KeyCode::Char(c @ '1'..='8') => {
                 let i = (c as u8 - b'1') as usize;
-                self.screen = Screen::TOP[i];
+                self.go_to_tab(Screen::TOP[i]);
             }
             KeyCode::Enter => self.enter(),
             KeyCode::Esc => self.back(),
@@ -898,8 +1412,10 @@ impl App {
             KeyCode::Tab => self.switch_pane(1),
             KeyCode::BackTab => self.switch_pane(-1),
             KeyCode::Char('/') => match self.current_list() {
-                Some(_) if self.screen != Screen::Overview => self.search_mode = true,
-                _ => self.message = Some("search works on lists (screens 2–5, timeline)".into()),
+                Some(_) if !matches!(self.screen, Screen::Overview | Screen::Dashboard) => {
+                    self.search_mode = true
+                }
+                _ => self.message = Some("search works on lists (screens 3–7, details)".into()),
             },
             KeyCode::Char('r') => return self.refresh(),
             KeyCode::Char('t') => self.cycle_time_range(),
@@ -937,8 +1453,62 @@ impl App {
         }
     }
 
+    fn selected_repo(&self, list: ListId) -> Option<RepoScope> {
+        let i = self.selected_row(list)?;
+        let r = self.base_report()?.repositories.get(i)?;
+        Some(RepoScope {
+            id: r.repository_id.clone(),
+            full_name: r.full_name.clone(),
+        })
+    }
+
     fn enter(&mut self) {
         match self.screen {
+            Screen::Dashboard => match self.dashboard_pane {
+                DashboardPane::Summary => {}
+                DashboardPane::Repositories => {
+                    if let Some(r) = self.selected_repo(ListId::DashboardRepos) {
+                        self.open_repo(r);
+                    }
+                }
+                DashboardPane::PullRequests => {
+                    let id = self.selected_row(ListId::DashboardPrs).and_then(|i| {
+                        self.base_report()
+                            .and_then(|r| r.pull_requests.as_ref())
+                            .and_then(|rows| rows.get(i))
+                            .map(|p| p.pr_id.clone())
+                    });
+                    if let Some(id) = id {
+                        self.open_pr(id);
+                    }
+                }
+            },
+            Screen::Overview => {
+                if self.overview_pane == OverviewPane::Repositories
+                    && let Some(r) = self.selected_repo(ListId::OverviewRepos)
+                {
+                    self.open_repo(r);
+                }
+            }
+            Screen::Repositories => {
+                if let Some(r) = self.selected_repo(ListId::Repositories) {
+                    self.open_repo(r);
+                }
+            }
+            Screen::Daily => {
+                let day = self.selected_row(ListId::Daily).and_then(|i| {
+                    self.base_report()
+                        .and_then(|r| r.activity_breakdown.get(i))
+                        .map(|b| DayScope {
+                            start: b.bucket.start,
+                            end: b.bucket.end,
+                            label: b.bucket.label.clone(),
+                        })
+                });
+                if let Some(day) = day {
+                    self.open_day(day);
+                }
+            }
             Screen::PullRequests => {
                 let id = self.selected_row(ListId::PullRequests).and_then(|i| {
                     self.pr_list_report()
@@ -947,61 +1517,114 @@ impl App {
                         .map(|p| p.pr_id.clone())
                 });
                 if let Some(id) = id {
-                    if self.detail_pr.as_ref() != Some(&id) {
-                        self.timeline_filter = TimelineFilter::All;
-                        self.search.remove(&ListId::Timeline);
-                        self.reset_list(ListId::Timeline);
-                    }
-                    self.detail_pr = Some(id);
-                    self.screen = Screen::PrDetail;
+                    self.open_pr(id);
                 }
             }
             Screen::PrDetail => {
                 if self.pr_report().is_some() {
-                    self.screen = Screen::PrTimeline;
+                    self.open(Screen::PrTimeline);
                 }
             }
-            Screen::Repositories | Screen::Overview => {
-                let list = if self.screen == Screen::Overview {
-                    if self.overview_pane != OverviewPane::Repositories {
-                        return;
-                    }
-                    ListId::OverviewRepos
-                } else {
-                    ListId::Repositories
+            Screen::Reviews => {
+                let Some(list) = self.current_list() else {
+                    return;
                 };
-                let name = self.selected_row(list).and_then(|i| {
-                    self.base_report()
-                        .and_then(|r| r.repositories.get(i))
-                        .map(|r| r.full_name.clone())
+                let id = self.selected_row(list).and_then(|i| {
+                    self.reviews_report()
+                        .and_then(|r| {
+                            if list == ListId::ReviewsSubmitted {
+                                r.reviews_submitted.as_ref()
+                            } else {
+                                r.reviews_received.as_ref()
+                            }
+                        })
+                        .and_then(|rows| rows.get(i))
+                        .and_then(|x| x.pr_id.clone())
                 });
-                if let Some(name) = name {
-                    // Show this repository's pull requests.
-                    self.search.insert(ListId::PullRequests, name);
-                    self.reset_list(ListId::PullRequests);
-                    self.screen = Screen::PullRequests;
+                match id {
+                    Some(id) => self.open_pr(id),
+                    None if self.selected_row(list).is_some() => {
+                        self.message = Some("this review's pull request is not cached".into())
+                    }
+                    None => {}
                 }
             }
-            _ => {}
+            Screen::Issues => {
+                let id = self.selected_row(ListId::Issues).and_then(|i| {
+                    self.issues_report()
+                        .and_then(|r| r.issues.as_ref())
+                        .and_then(|rows| rows.get(i))
+                        .map(|x| x.issue_id.clone())
+                });
+                if let Some(id) = id {
+                    self.open_issue(id);
+                }
+            }
+            Screen::DayDetail | Screen::RepoDetail => self.enter_detail_row(),
+            Screen::PrTimeline | Screen::IssueDetail | Screen::System => {}
         }
     }
 
-    fn back(&mut self) {
-        match self.screen {
-            Screen::PrTimeline => self.screen = Screen::PrDetail,
-            Screen::PrDetail => self.screen = Screen::PullRequests,
-            _ => {
-                if let Some(list) = self.current_list()
-                    && self.search.remove(&list).is_some()
-                {
-                    self.reset_list(list);
-                }
+    /// Opens the pull request or issue behind the selected detail row.
+    fn enter_detail_row(&mut self) {
+        enum Target {
+            Pr(String),
+            Issue(String),
+        }
+        let list = self.detail_tab.list();
+        let Some(i) = self.selected_row(list) else {
+            return;
+        };
+        let Some(r) = self.detail_report() else {
+            return;
+        };
+        let target = match self.detail_tab {
+            DetailTab::Activity => r
+                .activity
+                .as_ref()
+                .and_then(|rows| rows.get(i))
+                .and_then(|a| {
+                    a.pr_id
+                        .clone()
+                        .map(Target::Pr)
+                        .or_else(|| a.issue_id.clone().map(Target::Issue))
+                }),
+            DetailTab::Commits => None,
+            DetailTab::PullRequests => r
+                .pull_requests
+                .as_ref()
+                .and_then(|rows| rows.get(i))
+                .map(|p| Target::Pr(p.pr_id.clone())),
+            DetailTab::Reviews => self
+                .detail_reviews()
+                .get(i)
+                .and_then(|(_, x)| x.pr_id.clone())
+                .map(Target::Pr),
+            DetailTab::Comments => r
+                .comments
+                .as_ref()
+                .and_then(|rows| rows.get(i))
+                .and_then(|c| c.pr_id.clone())
+                .map(Target::Pr),
+            DetailTab::Issues => r
+                .issues
+                .as_ref()
+                .and_then(|rows| rows.get(i))
+                .map(|x| Target::Issue(x.issue_id.clone())),
+        };
+        match target {
+            Some(Target::Pr(id)) => self.open_pr(id),
+            Some(Target::Issue(id)) => self.open_issue(id),
+            None if self.detail_tab == DetailTab::Commits => {
+                self.message = Some("press o to open the commit on GitHub".into())
             }
+            None => self.message = Some("nothing to open for this row".into()),
         }
     }
 
     fn switch_pane(&mut self, delta: isize) {
         match self.screen {
+            Screen::Dashboard => self.dashboard_pane = self.dashboard_pane.step(delta),
             Screen::Overview => {
                 self.overview_pane = match self.overview_pane {
                     OverviewPane::Summary => OverviewPane::Repositories,
@@ -1017,6 +1640,12 @@ impl App {
             Screen::PrTimeline => {
                 self.timeline_filter = self.timeline_filter.step(delta);
                 self.reset_list(ListId::Timeline);
+            }
+            Screen::DayDetail | Screen::RepoDetail => {
+                let tabs = self.detail_tabs();
+                let n = tabs.len() as isize;
+                let i = tabs.iter().position(|t| *t == self.detail_tab).unwrap_or(0) as isize;
+                self.detail_tab = tabs[((i + delta).rem_euclid(n)) as usize];
             }
             _ => {}
         }
@@ -1064,12 +1693,14 @@ impl App {
             }
             next = next.next();
         }
+        self.leave_day_detail();
         self.reset_selection();
         self.message = Some(format!("time range: {}", self.time_range.label()));
     }
 
     fn cycle_filter(&mut self) {
         self.filter_preset = self.filter_preset.next();
+        self.leave_day_detail();
         self.reset_selection();
         self.message = Some(format!("repositories: {}", self.filter_preset.label()));
     }
@@ -1083,12 +1714,23 @@ impl App {
                     .map(|r| format!("https://github.com/{}", r.full_name))
             })
         };
+        let row = |list| self.selected_row(list);
         match self.screen {
+            Screen::Dashboard => match self.dashboard_pane {
+                DashboardPane::Summary => None,
+                DashboardPane::Repositories => repo_url(ListId::DashboardRepos),
+                DashboardPane::PullRequests => row(ListId::DashboardPrs).and_then(|i| {
+                    self.base_report()
+                        .and_then(|r| r.pull_requests.as_ref())
+                        .and_then(|rows| rows.get(i))
+                        .map(|p| p.url.clone())
+                }),
+            },
             Screen::Overview if self.overview_pane == OverviewPane::Repositories => {
                 repo_url(ListId::OverviewRepos)
             }
             Screen::Repositories => repo_url(ListId::Repositories),
-            Screen::PullRequests => self.selected_row(ListId::PullRequests).and_then(|i| {
+            Screen::PullRequests => row(ListId::PullRequests).and_then(|i| {
                 self.pr_list_report()
                     .and_then(|r| r.pull_requests.as_ref())
                     .and_then(|rows| rows.get(i))
@@ -1097,7 +1739,7 @@ impl App {
             Screen::PrDetail => self.pr_report().map(|r| r.url.clone()),
             Screen::PrTimeline => {
                 let r = self.pr_report()?;
-                self.selected_row(ListId::Timeline)
+                row(ListId::Timeline)
                     .and_then(|i| r.timeline.get(i))
                     .and_then(|e| e.url.clone())
                     .or_else(|| Some(r.url.clone()))
@@ -1111,9 +1753,40 @@ impl App {
                         r.reviews_received.as_ref()
                     }
                 })?;
-                self.selected_row(list)
+                row(list)
                     .and_then(|i| rows.get(i))
                     .and_then(|x| x.url.clone())
+            }
+            Screen::Issues => row(ListId::Issues).and_then(|i| {
+                self.issues_report()
+                    .and_then(|r| r.issues.as_ref())
+                    .and_then(|rows| rows.get(i))
+                    .map(|x| x.url.clone())
+            }),
+            Screen::IssueDetail => {
+                let r = self.issue_report()?;
+                row(ListId::IssueEvents)
+                    .and_then(|i| r.events.get(i))
+                    .and_then(|e| e.url.clone())
+                    .or_else(|| Some(r.url.clone()))
+            }
+            Screen::DayDetail | Screen::RepoDetail => {
+                let r = self.detail_report()?;
+                let i = row(self.detail_tab.list());
+                let url = i.and_then(|i| match self.detail_tab {
+                    DetailTab::Activity => r.activity.as_ref()?.get(i)?.url.clone(),
+                    DetailTab::Commits => r.commits.as_ref()?.get(i)?.url.clone(),
+                    DetailTab::PullRequests => Some(r.pull_requests.as_ref()?.get(i)?.url.clone()),
+                    DetailTab::Reviews => self.detail_reviews().get(i)?.1.url.clone(),
+                    DetailTab::Comments => r.comments.as_ref()?.get(i)?.url.clone(),
+                    DetailTab::Issues => Some(r.issues.as_ref()?.get(i)?.url.clone()),
+                });
+                url.or_else(|| match (self.screen, &self.detail_repo) {
+                    (Screen::RepoDetail, Some(repo)) => {
+                        Some(format!("https://github.com/{}", repo.full_name))
+                    }
+                    _ => None,
+                })
             }
             _ => None,
         }

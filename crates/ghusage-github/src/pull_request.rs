@@ -1,4 +1,6 @@
-//! Pull request fetching (GraphQL plus REST checks) and normalization.
+//! Pull request fetching and normalization. Everything comes from GraphQL
+//! except commit statuses (and check runs that do not fit in the main
+//! query), which come from REST.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -20,7 +22,8 @@ use crate::{ApiError, PrBundle};
 /// GitHub records as part of merging.
 const MERGE_CLOSE_WINDOW_SECS: i64 = 60;
 
-/// GraphQL collections of a pull request (checks come from REST).
+/// GraphQL collections of a pull request whose errors make only themselves
+/// partial (checks have their own REST fallback).
 const GRAPHQL_COLLECTIONS: [Collection; 5] = [
     Collection::Commits,
     Collection::Reviews,
@@ -64,6 +67,36 @@ struct HeadCommitNode {
 struct HeadCommit {
     oid: Option<String>,
     status_check_rollup: Option<Rollup>,
+    /// `null` when the commit has no commit statuses at all.
+    status: Option<Value>,
+    check_suites: Option<Connection>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct GqlCheckSuite {
+    database_id: Option<u64>,
+    app: Option<GqlApp>,
+    check_runs: Option<Connection>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct GqlApp {
+    id: Option<String>,
+    slug: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct GqlCheckRun {
+    id: Option<String>,
+    name: Option<String>,
+    status: Option<String>,
+    conclusion: Option<String>,
+    started_at: Option<String>,
+    completed_at: Option<String>,
+    permalink: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -224,6 +257,42 @@ struct RestApp {
     slug: Option<String>,
 }
 
+impl RestCheckRun {
+    fn into_record(self) -> CheckRunRecord {
+        CheckRunRecord {
+            node_id: self.node_id,
+            name: self.name,
+            status: self.status,
+            conclusion: self.conclusion,
+            started_at: self.started_at,
+            completed_at: self.completed_at,
+            url: self.html_url,
+            suite_id: self.check_suite.and_then(|s| s.id),
+            app: self.app.map(|a| (a.node_id, a.slug)),
+            source: Source::Rest,
+        }
+    }
+}
+
+/// A check run of the head commit, from either REST or GraphQL. The GraphQL
+/// fields map one to one: `id` is the REST `node_id`, `permalink` the REST
+/// `html_url`, the suite's `databaseId` the REST `check_suite.id` and the
+/// suite's app the run's app.
+#[derive(Debug)]
+struct CheckRunRecord {
+    node_id: Option<String>,
+    name: Option<String>,
+    status: Option<String>,
+    conclusion: Option<String>,
+    started_at: Option<String>,
+    completed_at: Option<String>,
+    url: Option<String>,
+    suite_id: Option<u64>,
+    /// Node id and slug of the app.
+    app: Option<(Option<String>, Option<String>)>,
+    source: Source,
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct RestStatus {
@@ -310,6 +379,11 @@ fn mark_errors(errors: &[GraphqlError], tracker: &mut Tracker) {
             Some("reviewThreads") => vec![Collection::ReviewComments],
             Some("comments") => vec![Collection::Comments],
             Some("timelineItems") => vec![Collection::Timeline],
+            // Errors in the head commit's checks or statuses only make them
+            // fall back to REST (see `graphql_checks`).
+            Some("headCommit") if path.contains(&"checkSuites") || path.contains(&"status") => {
+                vec![]
+            }
             Some("headCommit") => {
                 tracker.note(format!("latest CI state unavailable: {}", e.message()));
                 vec![]
@@ -471,33 +545,114 @@ async fn collect_thread_comments(
     Ok((nodes, total))
 }
 
+#[derive(Default)]
 struct ChecksResult {
-    runs: Vec<Value>,
+    runs: Vec<CheckRunRecord>,
+    /// Check runs that could not be read.
+    bad_runs: usize,
     statuses: Vec<Value>,
 }
 
+/// What the pull request query returned about the head commit's checks.
+struct GraphqlChecks {
+    runs: Vec<CheckRunRecord>,
+    /// Whether the commit has commit statuses (which only REST lists in
+    /// full: GraphQL keeps just the latest status of each context).
+    has_statuses: bool,
+}
+
+/// The head commit's check runs from the pull request query, or `None` when
+/// they are not known completely there (more than one page, GraphQL errors,
+/// unexpected shapes) and must be fetched over REST instead.
+fn graphql_checks(head: &HeadCommit, errors: &[GraphqlError]) -> Option<GraphqlChecks> {
+    let affects_checks = errors.iter().any(|e| {
+        let path = e.field_path();
+        let pos = path.iter().position(|p| *p == "pullRequest");
+        let field = pos.and_then(|i| path.get(i + 1)).copied();
+        !matches!(
+            field,
+            Some("commits" | "reviews" | "reviewThreads" | "comments" | "timelineItems")
+        )
+    });
+    if affects_checks {
+        return None;
+    }
+    let suites = head.check_suites.as_ref()?;
+    if !matches!(suites.next_cursor(), Ok(None)) {
+        return None;
+    }
+    let mut runs = Vec::new();
+    for suite in suites.nodes.as_ref()? {
+        let suite: GqlCheckSuite = serde_json::from_value(suite.clone()).ok()?;
+        let conn = suite.check_runs.as_ref()?;
+        if !matches!(conn.next_cursor(), Ok(None)) {
+            return None;
+        }
+        for run in conn.nodes.as_ref()? {
+            let run: GqlCheckRun = serde_json::from_value(run.clone()).ok()?;
+            runs.push(CheckRunRecord {
+                node_id: run.id,
+                name: run.name,
+                status: run.status,
+                conclusion: run.conclusion,
+                started_at: run.started_at,
+                completed_at: run.completed_at,
+                url: run.permalink,
+                suite_id: suite.database_id,
+                app: suite.app.as_ref().map(|a| (a.id.clone(), a.slug.clone())),
+                source: Source::Graphql,
+            });
+        }
+    }
+    Some(GraphqlChecks {
+        runs,
+        has_statuses: head.status.as_ref().is_some_and(|v| !v.is_null()),
+    })
+}
+
+/// Fetches the head commit's check runs over REST unless the pull request
+/// query already returned them all, and its commit statuses unless it has
+/// none.
 async fn fetch_checks(
     t: &Transport,
     owner: &str,
     name: &str,
     sha: &str,
+    from_graphql: Option<GraphqlChecks>,
     tracker: &mut Tracker,
 ) -> Result<ChecksResult, ApiError> {
-    let mut out = ChecksResult {
-        runs: Vec::new(),
-        statuses: Vec::new(),
+    let mut out = ChecksResult::default();
+    let fetch_statuses = match from_graphql {
+        Some(g) => {
+            out.runs = g.runs;
+            g.has_statuses
+        }
+        None => {
+            let runs_url = t.rest_url(
+                &["repos", owner, name, "commits", sha, "check-runs"],
+                // Every attempt, not only the latest run of each name (the
+                // endpoint's default): a failure that was re-run happened.
+                &[("per_page", "100"), ("filter", "all")],
+            );
+            match t
+                .get_paginated(runs_url, |v| v.get("check_runs")?.as_array().cloned())
+                .await
+            {
+                Ok(v) => {
+                    let (runs, bad) = parse_values::<RestCheckRun>(v);
+                    out.runs = runs.into_iter().map(RestCheckRun::into_record).collect();
+                    out.bad_runs = bad;
+                }
+                Err(e) if is_fatal(&e) => return Err(e),
+                Err(e) => {
+                    tracker.partial(Collection::Checks, format!("check runs not fetched: {e}"))
+                }
+            }
+            true
+        }
     };
-    let runs_url = t.rest_url(
-        &["repos", owner, name, "commits", sha, "check-runs"],
-        &[("per_page", "100")],
-    );
-    match t
-        .get_paginated(runs_url, |v| v.get("check_runs")?.as_array().cloned())
-        .await
-    {
-        Ok(v) => out.runs = v,
-        Err(e) if is_fatal(&e) => return Err(e),
-        Err(e) => tracker.partial(Collection::Checks, format!("check runs not fetched: {e}")),
+    if !fetch_statuses {
+        return Ok(out);
     }
     let statuses_url = t.rest_url(
         &["repos", owner, name, "commits", sha, "statuses"],
@@ -560,6 +715,18 @@ pub(crate) async fn fetch(
     // Remaining GraphQL pages and REST checks run concurrently.
     let mut checks_tracker = Tracker::default();
     let head_sha = pr.head_ref_oid.clone();
+    let head_commit = pr
+        .head_commit
+        .as_ref()
+        .map(|c| c.parse_nodes::<HeadCommitNode>().0)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|n| n.commit)
+        .find(|c| head_sha.is_none() || c.oid == head_sha);
+    let checks_from_graphql = head_commit
+        .as_ref()
+        .filter(|_| head_sha.is_some())
+        .and_then(|c| graphql_checks(c, &resp.errors));
     let graphql_pages = async {
         let commits = collect_connection(
             t,
@@ -619,16 +786,23 @@ pub(crate) async fn fetch(
     };
     let checks = async {
         match head_sha.as_deref() {
-            Some(sha) => fetch_checks(t, owner, name, sha, &mut checks_tracker).await,
+            Some(sha) => {
+                fetch_checks(
+                    t,
+                    owner,
+                    name,
+                    sha,
+                    checks_from_graphql,
+                    &mut checks_tracker,
+                )
+                .await
+            }
             None => {
                 checks_tracker.partial(
                     Collection::Checks,
                     "head commit unknown; checks not fetched",
                 );
-                Ok(ChecksResult {
-                    runs: Vec::new(),
-                    statuses: Vec::new(),
-                })
+                Ok(ChecksResult::default())
             }
         }
     };
@@ -930,15 +1104,26 @@ pub(crate) async fn fetch(
         bad += bad_c;
         let mut first_author = None;
         let mut fetched = 0u32;
+        let mut pending = 0u32;
         for c in comment_nodes {
             fetched += 1;
-            if first_author.is_none() {
-                first_author = Some(actor_of(&c.author));
-            }
             match inline_comment(&mut b, &c, Some(&thread_id), None) {
-                CommentOutcome::Added | CommentOutcome::Pending => {}
+                CommentOutcome::Added => {
+                    if first_author.is_none() {
+                        first_author = Some(actor_of(&c.author));
+                    }
+                }
+                // Unsubmitted comments are visible only to their author's
+                // token and are not part of the thread yet.
+                CommentOutcome::Pending => pending += 1,
                 CommentOutcome::Bad => bad += 1,
             }
+        }
+        let fetched_all = total.is_none_or(|n| n <= u64::from(fetched));
+        if fetched_all && pending == fetched {
+            // A thread made only of unsubmitted comments does not exist for
+            // anyone else.
+            continue;
         }
         out_threads.push(ReviewThread {
             id: thread_id,
@@ -947,7 +1132,10 @@ pub(crate) async fn fetch(
             is_outdated: th.is_outdated.unwrap_or(false),
             resolved_by: th.resolved_by.as_ref().map(GqlActor::actor),
             path: th.path.clone(),
-            comment_count: total.map(|n| n as u32).unwrap_or(fetched),
+            comment_count: total
+                .map(|n| n as u32)
+                .unwrap_or(fetched)
+                .saturating_sub(pending),
             first_comment_author: first_author,
         });
     }
@@ -989,10 +1177,9 @@ pub(crate) async fn fetch(
     tracker.skipped(Collection::Comments, "comments", bad);
 
     // Checks.
-    let (runs, bad) = parse_values::<RestCheckRun>(checks.runs);
-    tracker.skipped(Collection::Checks, "check runs", bad);
+    tracker.skipped(Collection::Checks, "check runs", checks.bad_runs);
     let mut bad = 0;
-    for r in runs {
+    for r in checks.runs {
         let Some(node_id) = r.node_id.clone() else {
             bad += 1;
             continue;
@@ -1006,8 +1193,7 @@ pub(crate) async fn fetch(
         let Some(at) = at else { continue };
         let actor = r
             .app
-            .as_ref()
-            .map(|a| Actor::new(a.node_id.clone(), a.slug.clone(), Some("Bot")))
+            .map(|(id, slug)| Actor::new(id, slug, Some("Bot")))
             .unwrap_or_else(Actor::unknown);
         b.push(
             EventType::CheckRun,
@@ -1015,22 +1201,18 @@ pub(crate) async fn fetch(
             actor,
             node_id,
             at,
-            r.html_url.clone(),
+            r.url,
             EventMeta {
                 sha: head_sha.clone(),
-                check_name: r.name.clone(),
+                check_name: r.name,
                 check_outcome: Some(CheckOutcome::from_github(
                     r.status.as_deref(),
                     r.conclusion.as_deref(),
                 )),
-                check_suite_id: r
-                    .check_suite
-                    .as_ref()
-                    .and_then(|s| s.id)
-                    .map(|id| id.to_string()),
+                check_suite_id: r.suite_id.map(|id| id.to_string()),
                 ..EventMeta::default()
             },
-            Source::Rest,
+            r.source,
         );
     }
     let (statuses, bad_s) = parse_values::<RestStatus>(checks.statuses);
@@ -1065,14 +1247,7 @@ pub(crate) async fn fetch(
     tracker.skipped(Collection::Checks, "checks", bad);
 
     // Latest CI state of the head commit.
-    let latest_ci = pr
-        .head_commit
-        .as_ref()
-        .map(|c| c.parse_nodes::<HeadCommitNode>().0)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|n| n.commit)
-        .find(|c| head_sha.is_none() || c.oid == head_sha)
+    let latest_ci = head_commit
         .and_then(|c| c.status_check_rollup)
         .and_then(|r| r.state)
         .map(|s| CheckOutcome::from_github(None, Some(&s)));

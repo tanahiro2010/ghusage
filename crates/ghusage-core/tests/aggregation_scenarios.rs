@@ -181,6 +181,28 @@ fn author_date_basis_moves_commit_to_author_day() {
     assert_eq!(author, vec![0, 1, 0, 0]);
 }
 
+#[test]
+fn pr_row_last_activity_follows_the_commit_date_basis() {
+    // The only PR event is a commit authored 11-18 and committed 11-20.
+    let c = with_meta(
+        pr_commit("R_tool", "P1", "abc", me(), "2026-11-20T10:00:00Z"),
+        |m| m.author_date = Some(utc("2026-11-18T09:00:00Z")),
+    );
+    let ds = dataset(
+        vec![tool()],
+        vec![pull("P1", "R_tool", 1, me())],
+        vec![],
+        vec![c],
+    );
+    let mut opts = november_utc();
+    let row = &pr_rows(&ds, &opts, Participation::All, None, PrSort::Updated)[0];
+    assert_eq!(row.last_activity, Some(utc("2026-11-20T10:00:00Z")));
+    opts.commit_basis = CommitDateBasis::Author;
+    let row = &pr_rows(&ds, &opts, Participation::All, None, PrSort::Updated)[0];
+    assert_eq!(row.last_activity, Some(utc("2026-11-18T09:00:00Z")));
+    assert_eq!(summary(&ds, &opts).last_activity, row.last_activity);
+}
+
 // ---------------------------------------------------------------------------
 // Commit identity
 // ---------------------------------------------------------------------------
@@ -1772,4 +1794,985 @@ fn hundred_thousand_events_aggregate_to_expected_totals() {
             .sum::<u64>(),
         20_000
     );
+}
+
+// ---------------------------------------------------------------------------
+// Commit authors, discussion participants and threads of a pull request
+// ---------------------------------------------------------------------------
+
+/// PR P1: alice commits a1 and a2 (a1 seen twice), bob commits b1, carol's
+/// c1 was force-pushed away. carol only adds a label. alice writes a
+/// conversation comment; bob writes two inline comments in thread T1; dave
+/// writes one inline comment in thread T2.
+fn discussion_dataset() -> Dataset {
+    let removed = with_meta(
+        pr_commit("R_tool", "P1", "c1", user("carol"), "2026-11-02T09:00:00Z"),
+        |m| m.removed_observed_at = Some(utc("2026-11-03T00:00:00Z")),
+    );
+    let events = vec![
+        pr_commit("R_tool", "P1", "a1", user("alice"), "2026-11-02T10:00:00Z"),
+        pr_commit("R_tool", "P1", "A1", user("alice"), "2026-11-02T10:00:00Z"),
+        pr_commit("R_tool", "P1", "a2", user("alice"), "2026-11-02T11:00:00Z"),
+        pr_commit("R_tool", "P1", "b1", user("bob"), "2026-11-02T12:00:00Z"),
+        removed,
+        lifecycle(
+            EventId::timeline("label-1"),
+            EventType::Labeled,
+            "R_tool",
+            "P1",
+            user("carol"),
+            "2026-11-03T09:00:00Z",
+        ),
+        comment(
+            EventType::ConversationComment,
+            "R_tool",
+            "P1",
+            "ic1",
+            user("alice"),
+            "2026-11-03T10:00:00Z",
+        ),
+        inline_reply(
+            "R_tool",
+            "P1",
+            "rc1",
+            "T1",
+            None,
+            user("bob"),
+            "2026-11-03T11:00:00Z",
+        ),
+        inline_reply(
+            "R_tool",
+            "P1",
+            "rc2",
+            "T1",
+            Some("rc1"),
+            user("bob"),
+            "2026-11-03T12:00:00Z",
+        ),
+        inline_reply(
+            "R_tool",
+            "P1",
+            "rc3",
+            "T2",
+            None,
+            user("dave"),
+            "2026-11-03T13:00:00Z",
+        ),
+    ];
+    dataset(
+        vec![tool()],
+        vec![pull("P1", "R_tool", 1, user("alice"))],
+        vec![],
+        events,
+    )
+}
+
+#[test]
+fn pr_detail_breaks_commits_down_by_author() {
+    let d = pr_detail(&discussion_dataset(), "P1", &[]).unwrap();
+    // a1 (once), a2 by alice; b1 by bob; carol's c1 is no longer in the PR.
+    assert_eq!(d.commits, 3);
+    let authors: Vec<(String, u64)> = d
+        .commit_authors
+        .iter()
+        .map(|a| (a.author.clone(), a.commits))
+        .collect();
+    assert_eq!(
+        authors,
+        vec![("alice".to_string(), 2), ("bob".to_string(), 1)]
+    );
+}
+
+#[test]
+fn discussion_participants_count_only_comment_authors() {
+    let ds = discussion_dataset();
+    let d = pr_detail(&ds, "P1", &[]).unwrap();
+    // carol only labeled (and her commit was removed); not part of the discussion.
+    assert_eq!(d.discussion_participants, vec!["alice", "bob", "dave"]);
+    assert_eq!(d.participants, vec!["alice", "bob", "carol", "dave"]);
+    let row = &pr_rows(
+        &ds,
+        &november_utc(),
+        Participation::All,
+        None,
+        PrSort::Activity,
+    )[0];
+    assert_eq!(row.discussion_participants, 3);
+    assert_eq!(row.participants, 4);
+}
+
+#[test]
+fn intensity_reports_threads_per_pr() {
+    let ds = discussion_dataset();
+    let opts = november_utc();
+    let row = &pr_rows(&ds, &opts, Participation::All, None, PrSort::Activity)[0];
+    // Inline comments in T1 (twice) and T2.
+    assert_eq!(row.threads, 2);
+    let i = metrics::intensity(&ds, &opts, Participation::All);
+    assert_eq!(i.threads_per_pr.unwrap().max, 2.0);
+    assert_eq!(i.discussion_participants_per_pr.unwrap().max, 3.0);
+}
+
+// ---------------------------------------------------------------------------
+// Pull request lifecycle timings
+// ---------------------------------------------------------------------------
+
+/// A pull request by the user with its opened and (optional) merge events;
+/// the user merges it.
+fn timed_pull(
+    id: &str,
+    number: u64,
+    created: &str,
+    merged: Option<&str>,
+) -> (ghusage_core::model::PullRequest, Vec<ActivityEvent>) {
+    let mut pr = pull(id, "R_tool", number, me());
+    pr.created_at = utc(created);
+    let mut events = vec![lifecycle(
+        EventId::pr_created(id),
+        EventType::PrOpened,
+        "R_tool",
+        id,
+        me(),
+        created,
+    )];
+    if let Some(m) = merged {
+        pr.state = PrState::Merged;
+        pr.merged_at = Some(utc(m));
+        events.push(lifecycle(
+            EventId::pr_merged(id),
+            EventType::PrMerged,
+            "R_tool",
+            id,
+            me(),
+            m,
+        ));
+    }
+    (pr, events)
+}
+
+#[test]
+fn creation_to_merge_time_is_merged_minus_created() {
+    // P1: 11-03 09:00 -> 11-05 15:30 = 2 days 6 h 30 min
+    //     = 2*86400 + 6*3600 + 30*60 = 172800 + 21600 + 1800 = 196200 s.
+    let (p1, e1) = timed_pull(
+        "P1",
+        1,
+        "2026-11-03T09:00:00Z",
+        Some("2026-11-05T15:30:00Z"),
+    );
+    // P2: still open -> no creation-to-merge time.
+    let (p2, e2) = timed_pull("P2", 2, "2026-11-10T00:00:00Z", None);
+    // P3: 11-06 00:00 -> 01:00 = 3600 s.
+    let (p3, e3) = timed_pull(
+        "P3",
+        3,
+        "2026-11-06T00:00:00Z",
+        Some("2026-11-06T01:00:00Z"),
+    );
+    let events = [e1, e2, e3].concat();
+    let ds = dataset(vec![tool()], vec![p1, p2, p3], vec![], events);
+
+    let t1 = metrics::pr_timing(&ds, &ds.pull_requests["P1"]);
+    assert_eq!(t1.creation_to_merge_secs, Some(196_200));
+    let t2 = metrics::pr_timing(&ds, &ds.pull_requests["P2"]);
+    assert_eq!(t2.creation_to_merge_secs, None);
+    assert_eq!(
+        pr_detail(&ds, "P1", &[])
+            .unwrap()
+            .timing
+            .creation_to_merge_secs,
+        Some(196_200)
+    );
+
+    // Over the period only merged pull requests contribute: {3600, 196200}.
+    // count 2, min 3600, max 196200, median = mean = (3600 + 196200) / 2 = 99900.
+    let stats = metrics::timing_stats(&ds, &november_utc())
+        .creation_to_merge
+        .unwrap();
+    assert_eq!(stats.count, 2);
+    assert_eq!(stats.min, 3_600.0);
+    assert_eq!(stats.max, 196_200.0);
+    assert_eq!(stats.median, 99_900.0);
+    assert_eq!(stats.mean, 99_900.0);
+}
+
+#[test]
+fn time_to_first_review_ignores_own_and_unknown_reviews() {
+    let (pr, mut events) = timed_pull("P1", 1, "2026-11-03T09:00:00Z", None);
+    events.extend([
+        // the author's own review is not a review by someone else
+        review(
+            "R_tool",
+            "P1",
+            "rv-me",
+            me(),
+            ReviewState::Commented,
+            "2026-11-03T09:05:00Z",
+        ),
+        // an unknown reviewer (deleted account) cannot be told apart from the author
+        review(
+            "R_tool",
+            "P1",
+            "rv-ghost",
+            Actor::unknown(),
+            ReviewState::Approved,
+            "2026-11-03T09:20:00Z",
+        ),
+        // first review by someone else: 10:15 - 09:00 = 75 min = 4500 s
+        review(
+            "R_tool",
+            "P1",
+            "rv-bob",
+            user("bob"),
+            ReviewState::Approved,
+            "2026-11-03T10:15:00Z",
+        ),
+        review(
+            "R_tool",
+            "P1",
+            "rv-alice",
+            user("alice"),
+            ReviewState::Approved,
+            "2026-11-03T11:00:00Z",
+        ),
+    ]);
+    let ds = dataset(vec![tool()], vec![pr], vec![], events);
+    let t = metrics::pr_timing(&ds, &ds.pull_requests["P1"]);
+    assert_eq!(t.time_to_first_review_secs, Some(4_500));
+    let stats = metrics::timing_stats(&ds, &november_utc())
+        .time_to_first_review
+        .unwrap();
+    assert_eq!(stats.count, 1);
+    assert_eq!(stats.median, 4_500.0);
+}
+
+#[test]
+fn pr_timing_uses_observed_events_only() {
+    let (pr, mut events) = timed_pull(
+        "P1",
+        1,
+        "2026-11-03T09:00:00Z",
+        Some("2026-11-03T12:00:00Z"),
+    );
+    events.extend([
+        // 09:10 self-review: ignored for the first review
+        review(
+            "R_tool",
+            "P1",
+            "rv-me",
+            me(),
+            ReviewState::Commented,
+            "2026-11-03T09:10:00Z",
+        ),
+        // 09:30 carol's pending review was never submitted
+        review(
+            "R_tool",
+            "P1",
+            "rv-carol",
+            user("carol"),
+            ReviewState::Pending,
+            "2026-11-03T09:30:00Z",
+        ),
+        // 09:45 dave's review only carries a reply in an existing thread
+        review(
+            "R_tool",
+            "P1",
+            "rv-dave",
+            user("dave"),
+            ReviewState::Commented,
+            "2026-11-03T09:45:00Z",
+        ),
+        with_meta(
+            inline_reply(
+                "R_tool",
+                "P1",
+                "c-dave",
+                "T1",
+                Some("c-root"),
+                user("dave"),
+                "2026-11-03T09:45:00Z",
+            ),
+            |m| m.review_id = Some("rv-dave".into()),
+        ),
+        // 10:00 alice's review: the first real review by someone else
+        review(
+            "R_tool",
+            "P1",
+            "rv-alice",
+            user("alice"),
+            ReviewState::ChangesRequested,
+            "2026-11-03T10:00:00Z",
+        ),
+        // 10:30 the author's next activity after that review
+        pr_commit("R_tool", "P1", "c1", me(), "2026-11-03T10:30:00Z"),
+        // 12:30 a check run is automation, not activity
+        with_meta(
+            event(
+                EventId::check_run("cr1"),
+                EventType::CheckRun,
+                bot("github-actions[bot]"),
+                "R_tool",
+                Some("P1"),
+                utc("2026-11-03T12:30:00Z"),
+            ),
+            |m| m.check_outcome = Some(ghusage_core::model::CheckOutcome::Success),
+        ),
+        // 13:00 a commit later force-pushed away is no longer observed
+        with_meta(
+            pr_commit("R_tool", "P1", "c2", me(), "2026-11-03T13:00:00Z"),
+            |m| m.removed_observed_at = Some(utc("2026-11-04T00:00:00Z")),
+        ),
+    ]);
+    let ds = dataset(vec![tool()], vec![pr], vec![], events);
+    let t = metrics::pr_timing(&ds, &ds.pull_requests["P1"]);
+    // first review: 10:00 - 09:00 = 3600 s (the 09:10 own, 09:30 pending and
+    // 09:45 reply-only reviews are skipped)
+    assert_eq!(t.time_to_first_review_secs, Some(3_600));
+    // review -> next author activity: 10:30 - 10:00 = 1800 s
+    assert_eq!(t.review_to_next_author_activity_secs, Some(1_800));
+    // creation -> merge: 12:00 - 09:00 = 10800 s
+    assert_eq!(t.creation_to_merge_secs, Some(10_800));
+    // first -> last observed activity: opened 09:00 .. merged 12:00 = 10800 s
+    // (the 12:30 check run and the removed 13:00 commit do not count)
+    assert_eq!(t.first_to_last_activity_secs, Some(10_800));
+}
+
+// ---------------------------------------------------------------------------
+// Pull requests spanning a period boundary
+// ---------------------------------------------------------------------------
+
+fn opened_in_october_merged_at(merged: &str) -> Dataset {
+    let (pr, events) = timed_pull("P1", 1, "2026-10-28T10:00:00Z", Some(merged));
+    dataset(vec![tool()], vec![pr], vec![], events)
+}
+
+#[test]
+fn pr_created_before_the_period_and_merged_inside_counts_only_the_merge() {
+    // Opened 10-28 (October), merged by the user 11-02: November sees only
+    // the merge. The user's merge is activity on the PR, so it is active.
+    let ds = opened_in_october_merged_at("2026-11-02T10:00:00Z");
+    let s = summary(&ds, &november_utc());
+    assert_eq!(s.prs_created, 0);
+    assert_eq!(s.prs_merged, 1);
+    assert_eq!(s.merges_performed, 1);
+    assert_eq!(s.active_prs, 1);
+    let rows = pr_rows(
+        &ds,
+        &november_utc(),
+        Participation::Subject,
+        None,
+        PrSort::Activity,
+    );
+    assert_eq!(rows.len(), 1);
+    // October sees only the creation.
+    let october = options("2026-10-01T00:00:00Z", "2026-11-01T00:00:00Z", zone("UTC"));
+    let s = summary(&ds, &october);
+    assert_eq!(s.prs_created, 1);
+    assert_eq!(s.prs_merged, 0);
+
+    // Periods are half-open [start, end): a merge exactly at the start of
+    // November belongs to November ...
+    let ds = opened_in_october_merged_at("2026-11-01T00:00:00Z");
+    assert_eq!(summary(&ds, &november_utc()).prs_merged, 1);
+    assert_eq!(summary(&ds, &october).prs_merged, 0);
+    // ... and a merge exactly at its end belongs to December.
+    let ds = opened_in_october_merged_at("2026-12-01T00:00:00Z");
+    assert_eq!(summary(&ds, &november_utc()).prs_merged, 0);
+    let december = options("2026-12-01T00:00:00Z", "2027-01-01T00:00:00Z", zone("UTC"));
+    assert_eq!(summary(&ds, &december).prs_merged, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Commit authorship
+// ---------------------------------------------------------------------------
+
+#[test]
+fn author_and_committer_both_the_user_count_once() {
+    let events = vec![
+        // authored and committed by the user
+        with_meta(commit("R_tool", "aaa", me(), "2026-11-10T10:00:00Z"), |m| {
+            m.committer = Some(me());
+        }),
+        // the same commit inside a pull request (sync stores both)
+        pr_commit("R_tool", "P1", "aaa", me(), "2026-11-10T10:00:00Z"),
+        // authored by alice and only committed by the user: not the user's commit
+        with_meta(
+            commit("R_tool", "bbb", user("alice"), "2026-11-10T11:00:00Z"),
+            |m| m.committer = Some(me()),
+        ),
+    ];
+    let ds = dataset(
+        vec![tool()],
+        vec![pull("P1", "R_tool", 1, me())],
+        vec![],
+        events,
+    );
+    let s = summary(&ds, &november_utc());
+    // {aaa} once; bbb is alice's
+    assert_eq!(s.commits, 1);
+    assert_eq!(s.pr_commits, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Issues
+// ---------------------------------------------------------------------------
+
+fn issue_event(id: EventId, t: EventType, repo_id: &str, actor: Actor, at: &str) -> ActivityEvent {
+    event(id, t, actor, repo_id, None, utc(at))
+}
+
+#[test]
+fn issue_opened_counts_on_its_creation_day_in_the_zone() {
+    let mut i1 = issue("I1", "R_tool", 1, me());
+    i1.created_at = utc("2026-11-14T15:30:00Z");
+    i1.is_open = false;
+    i1.closed_at = Some(utc("2026-11-16T03:00:00Z"));
+    let mut events = vec![
+        issue_event(
+            EventId::issue_created("I1"),
+            EventType::IssueOpened,
+            "R_tool",
+            me(),
+            "2026-11-14T15:30:00Z",
+        ),
+        issue_event(
+            EventId::timeline("close-1"),
+            EventType::IssueClosed,
+            "R_tool",
+            me(),
+            "2026-11-16T03:00:00Z",
+        ),
+        // someone else's issue is not the user's
+        issue_event(
+            EventId::issue_created("I2"),
+            EventType::IssueOpened,
+            "R_tool",
+            user("alice"),
+            "2026-11-14T15:30:00Z",
+        ),
+    ];
+    // Issue events refer to their issue.
+    events[0].entity_id = "I1".into();
+    events[1].entity_id = "I1".into();
+    events[2].entity_id = "I2".into();
+    let ds = Dataset::new(
+        subject(),
+        true,
+        vec![tool()],
+        vec![],
+        vec![i1],
+        vec![],
+        events,
+        Vec::new(),
+    );
+    let per_day = |zone_name: &str| -> Vec<(u64, u64)> {
+        let opts = local_days("2026-11-14", "2026-11-17", zone(zone_name));
+        metrics::breakdown(&ds, &opts, Granularity::Day)
+            .iter()
+            .map(|d| (d.summary.issues_opened, d.summary.issues_closed))
+            .collect()
+    };
+    // Tokyo (UTC+9): opened 11-14 15:30Z = 11-15 00:30; closed 11-16 03:00Z
+    // = 11-16 12:00. Days 14, 15, 16.
+    assert_eq!(per_day("Asia/Tokyo"), vec![(0, 0), (1, 0), (0, 1)]);
+    // UTC: opened 11-14, closed 11-16.
+    assert_eq!(per_day("UTC"), vec![(1, 0), (0, 0), (0, 1)]);
+
+    // The closing day alone has no opening.
+    let close_day = local_days("2026-11-16", "2026-11-17", zone("Asia/Tokyo"));
+    let s = summary(&ds, &close_day);
+    assert_eq!((s.issues_opened, s.issues_closed), (0, 1));
+    let rows = metrics::issue_rows(
+        &ds,
+        &local_days("2026-11-15", "2026-11-16", zone("Asia/Tokyo")),
+    );
+    let row = rows.iter().find(|r| r.issue_id == "I1").unwrap();
+    assert!(row.opened_in_period);
+    assert_eq!(row.closed_in_period, 0);
+}
+
+#[test]
+fn issues_are_counted_per_repository() {
+    let app = repo("R_app", "acme", "app", Visibility::Public);
+    let events = vec![
+        issue_event(
+            EventId::issue_created("I1"),
+            EventType::IssueOpened,
+            "R_tool",
+            me(),
+            "2026-11-02T10:00:00Z",
+        ),
+        issue_event(
+            EventId::issue_created("I2"),
+            EventType::IssueOpened,
+            "R_tool",
+            me(),
+            "2026-11-03T10:00:00Z",
+        ),
+        issue_event(
+            EventId::timeline("close-i1"),
+            EventType::IssueClosed,
+            "R_tool",
+            me(),
+            "2026-11-04T10:00:00Z",
+        ),
+        issue_event(
+            EventId::issue_created("I3"),
+            EventType::IssueOpened,
+            "R_app",
+            me(),
+            "2026-11-05T10:00:00Z",
+        ),
+        // bob's issue in acme/app is not the user's
+        issue_event(
+            EventId::issue_created("I4"),
+            EventType::IssueOpened,
+            "R_app",
+            user("bob"),
+            "2026-11-05T11:00:00Z",
+        ),
+    ];
+    let ds = dataset(vec![tool(), app], vec![], vec![], events);
+    let opts = november_utc();
+    let rows = by_repository(&ds, &opts);
+    let of = |name: &str| {
+        let s = &rows.iter().find(|r| r.full_name == name).unwrap().summary;
+        (s.issues_opened, s.issues_closed)
+    };
+    // me/tool: opened I1, I2 and closed I1; acme/app: opened I3.
+    assert_eq!(of("me/tool"), (2, 1));
+    assert_eq!(of("acme/app"), (1, 0));
+    let s = summary(&ds, &opts);
+    assert_eq!((s.issues_opened, s.issues_closed), (3, 1));
+}
+
+// ---------------------------------------------------------------------------
+// Commits and threads shared or repeated
+// ---------------------------------------------------------------------------
+
+#[test]
+fn same_commit_in_two_pull_requests_keeps_both_links() {
+    let events = vec![
+        commit("R_tool", "s1", me(), "2026-11-10T10:00:00Z"),
+        pr_commit("R_tool", "P1", "s1", me(), "2026-11-10T10:00:00Z"),
+        pr_commit("R_tool", "P2", "s1", me(), "2026-11-10T10:00:00Z"),
+    ];
+    let ds = dataset(
+        vec![tool()],
+        vec![pull("P1", "R_tool", 1, me()), pull("P2", "R_tool", 2, me())],
+        vec![],
+        events,
+    );
+    let s = summary(&ds, &november_utc());
+    // One commit globally, linked to two pull requests: (P1, s1), (P2, s1).
+    assert_eq!(s.commits, 1);
+    assert_eq!(s.pr_commits, 2);
+    assert_eq!(pr_detail(&ds, "P1", &[]).unwrap().commits, 1);
+    assert_eq!(pr_detail(&ds, "P2", &[]).unwrap().commits, 1);
+    let rows = pr_rows(
+        &ds,
+        &november_utc(),
+        Participation::All,
+        None,
+        PrSort::Activity,
+    );
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|r| r.commits == 1));
+}
+
+#[test]
+fn duplicate_review_thread_counts_once() {
+    let opener = inline_reply(
+        "R_tool",
+        "P1",
+        "c1",
+        "T1",
+        None,
+        user("alice"),
+        "2026-11-10T10:00:00Z",
+    );
+    let events = vec![
+        lifecycle(
+            EventId::pr_created("P1"),
+            EventType::PrOpened,
+            "R_tool",
+            "P1",
+            me(),
+            "2026-11-10T09:00:00Z",
+        ),
+        opener.clone(),
+        // the same comment fetched again
+        opener,
+    ];
+    let t = thread("T1", "P1", Some(user("alice")));
+    let ds = dataset(
+        vec![tool()],
+        vec![pull("P1", "R_tool", 1, me())],
+        vec![t.clone(), t],
+        events,
+    );
+    // One thread id -> one thread; one comment id -> one comment.
+    assert_eq!(snapshot(&ds, &november_utc()).threads.total, 1);
+    let d = pr_detail(&ds, "P1", &[]).unwrap();
+    assert_eq!(d.threads.total, 1);
+    assert_eq!(d.comments.inline, 1);
+    let row = &pr_rows(
+        &ds,
+        &november_utc(),
+        Participation::All,
+        None,
+        PrSort::Activity,
+    )[0];
+    assert_eq!(row.threads, 1);
+    assert_eq!(row.comments, 1);
+    assert_eq!(summary(&ds, &november_utc()).comments_received.inline, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Other people's coordination
+// ---------------------------------------------------------------------------
+
+#[test]
+fn others_coordination_is_shown_but_not_counted() {
+    let events = vec![
+        lifecycle(
+            EventId::pr_created("P1"),
+            EventType::PrOpened,
+            "R_tool",
+            "P1",
+            me(),
+            "2026-11-10T09:00:00Z",
+        ),
+        with_meta(
+            lifecycle(
+                EventId::timeline("rr-1"),
+                EventType::ReviewRequested,
+                "R_tool",
+                "P1",
+                user("alice"),
+                "2026-11-10T09:05:00Z",
+            ),
+            |m| m.target = Some("bob".into()),
+        ),
+        with_meta(
+            lifecycle(
+                EventId::timeline("as-1"),
+                EventType::Assigned,
+                "R_tool",
+                "P1",
+                user("alice"),
+                "2026-11-10T09:06:00Z",
+            ),
+            |m| m.target = Some("me".into()),
+        ),
+        lifecycle(
+            EventId::timeline("as-2"),
+            EventType::Assigned,
+            "R_tool",
+            "P1",
+            Actor::unknown(),
+            "2026-11-10T09:07:00Z",
+        ),
+        lifecycle(
+            EventId::timeline("lb-1"),
+            EventType::Labeled,
+            "R_tool",
+            "P1",
+            user("alice"),
+            "2026-11-10T09:08:00Z",
+        ),
+    ];
+    let ds = dataset(
+        vec![tool()],
+        vec![pull("P1", "R_tool", 1, me())],
+        vec![],
+        events,
+    );
+    let s = summary(&ds, &november_utc());
+    // Being assigned or having reviewers requested by alice (or by an
+    // unknown actor) is not the user's action, even on the user's own PR.
+    assert_eq!(s.coordination_actions, 0);
+    assert_eq!(s.metadata_actions, 0);
+    // The user's only pull request event is opening it.
+    assert_eq!(s.pr_internal_events, 1);
+    // All five events are on the timeline, in time order.
+    let types: Vec<EventType> = metrics::timeline(&ds, "P1", &[])
+        .iter()
+        .map(|e| e.event_type)
+        .collect();
+    assert_eq!(
+        types,
+        vec![
+            EventType::PrOpened,
+            EventType::ReviewRequested,
+            EventType::Assigned,
+            EventType::Assigned,
+            EventType::Labeled,
+        ]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Activity intensity
+// ---------------------------------------------------------------------------
+
+/// P1 (user's): opened only (plus a check run, which is automation).
+///   events 1, reviews 0, comments 0, commits 0, participants 1, days 1
+/// P2 (user's): opened and commit c1 on 11-03; alice approves and comments
+///   on 11-04.
+///   events 4, reviews 1, comments 1, commits 1, participants 2, days 2
+/// P3 (alice's): alice commits, opens and requests a review on 11-05; the
+///   user reviews on 11-05 and comments inline on 11-06; alice replies on
+///   11-06; bob comments on 11-07.
+///   events 7, reviews 1, comments 3, commits 1, participants 3, days 3
+/// P4 (bob's): bob opens and comments on 11-08; the user is not involved.
+///   events 2, reviews 0, comments 1, commits 0, participants 1, days 1
+fn intensity_dataset() -> Dataset {
+    let events = vec![
+        lifecycle(
+            EventId::pr_created("P1"),
+            EventType::PrOpened,
+            "R_tool",
+            "P1",
+            me(),
+            "2026-11-02T10:00:00Z",
+        ),
+        with_meta(
+            event(
+                EventId::check_run("cr1"),
+                EventType::CheckRun,
+                bot("github-actions[bot]"),
+                "R_tool",
+                Some("P1"),
+                utc("2026-11-02T10:05:00Z"),
+            ),
+            |m| m.check_outcome = Some(ghusage_core::model::CheckOutcome::Success),
+        ),
+        lifecycle(
+            EventId::pr_created("P2"),
+            EventType::PrOpened,
+            "R_tool",
+            "P2",
+            me(),
+            "2026-11-03T10:00:00Z",
+        ),
+        pr_commit("R_tool", "P2", "c1", me(), "2026-11-03T11:00:00Z"),
+        review(
+            "R_tool",
+            "P2",
+            "rv-a",
+            user("alice"),
+            ReviewState::Approved,
+            "2026-11-04T10:00:00Z",
+        ),
+        comment(
+            EventType::ConversationComment,
+            "R_tool",
+            "P2",
+            "ic-a",
+            user("alice"),
+            "2026-11-04T11:00:00Z",
+        ),
+        pr_commit("R_tool", "P3", "a1", user("alice"), "2026-11-05T09:00:00Z"),
+        lifecycle(
+            EventId::pr_created("P3"),
+            EventType::PrOpened,
+            "R_tool",
+            "P3",
+            user("alice"),
+            "2026-11-05T10:00:00Z",
+        ),
+        lifecycle(
+            EventId::timeline("rr-p3"),
+            EventType::ReviewRequested,
+            "R_tool",
+            "P3",
+            user("alice"),
+            "2026-11-05T10:30:00Z",
+        ),
+        review(
+            "R_tool",
+            "P3",
+            "rv-me",
+            me(),
+            ReviewState::Commented,
+            "2026-11-05T12:00:00Z",
+        ),
+        inline_reply(
+            "R_tool",
+            "P3",
+            "rc-me",
+            "T3",
+            None,
+            me(),
+            "2026-11-06T10:00:00Z",
+        ),
+        inline_reply(
+            "R_tool",
+            "P3",
+            "rc-a",
+            "T3",
+            Some("rc-me"),
+            user("alice"),
+            "2026-11-06T11:00:00Z",
+        ),
+        comment(
+            EventType::ConversationComment,
+            "R_tool",
+            "P3",
+            "ic-b",
+            user("bob"),
+            "2026-11-07T10:00:00Z",
+        ),
+        lifecycle(
+            EventId::pr_created("P4"),
+            EventType::PrOpened,
+            "R_tool",
+            "P4",
+            user("bob"),
+            "2026-11-08T10:00:00Z",
+        ),
+        comment(
+            EventType::ConversationComment,
+            "R_tool",
+            "P4",
+            "ic-b4",
+            user("bob"),
+            "2026-11-08T11:00:00Z",
+        ),
+    ];
+    dataset(
+        vec![tool()],
+        vec![
+            pull("P1", "R_tool", 1, me()),
+            pull("P2", "R_tool", 2, me()),
+            pull("P3", "R_tool", 3, user("alice")),
+            pull("P4", "R_tool", 4, user("bob")),
+        ],
+        vec![thread("T3", "P3", Some(me()))],
+        events,
+    )
+}
+
+/// (count, min, median, mean, p90, max)
+fn stat(s: Option<metrics::Stats>) -> (u64, f64, f64, f64, f64, f64) {
+    let s = s.expect("statistics");
+    (s.count, s.min, s.median, s.mean, s.p90, s.max)
+}
+
+#[test]
+fn intensity_statistics_over_active_prs() {
+    let ds = intensity_dataset();
+    let opts = november_utc();
+
+    // The user took part in P1, P2 and P3.
+    let i = metrics::intensity(&ds, &opts, Participation::Subject);
+    assert_eq!(i.prs, 3);
+    // events {1, 4, 7}: median 4, mean 12/3 = 4, p90 = rank ceil(2.7) = 3 -> 7
+    assert_eq!(stat(i.events_per_pr), (3, 1.0, 4.0, 4.0, 7.0, 7.0));
+    // reviews {0, 1, 1}: mean 2/3
+    assert_eq!(stat(i.reviews_per_pr), (3, 0.0, 1.0, 2.0 / 3.0, 1.0, 1.0));
+    // comments {0, 1, 3}: mean 4/3
+    assert_eq!(stat(i.comments_per_pr), (3, 0.0, 1.0, 4.0 / 3.0, 3.0, 3.0));
+    // commits {0, 1, 1}
+    assert_eq!(stat(i.commits_per_pr), (3, 0.0, 1.0, 2.0 / 3.0, 1.0, 1.0));
+    // participants {1, 2, 3}
+    assert_eq!(stat(i.participants_per_pr), (3, 1.0, 2.0, 2.0, 3.0, 3.0));
+    // active days {1, 2, 3}
+    assert_eq!(stat(i.active_days_per_pr), (3, 1.0, 2.0, 2.0, 3.0, 3.0));
+
+    // All participants adds bob's P4.
+    let i = metrics::intensity(&ds, &opts, Participation::All);
+    assert_eq!(i.prs, 4);
+    // events {1, 2, 4, 7}: median (2 + 4) / 2 = 3, mean 14/4 = 3.5,
+    // p90 = rank ceil(3.6) = 4 -> 7
+    assert_eq!(stat(i.events_per_pr), (4, 1.0, 3.0, 3.5, 7.0, 7.0));
+    // active days {1, 2, 3, 1}: sorted {1, 1, 2, 3}, median 1.5, mean 7/4
+    assert_eq!(stat(i.active_days_per_pr), (4, 1.0, 1.5, 1.75, 3.0, 3.0));
+}
+
+#[test]
+fn intensity_is_empty_without_pull_request_activity() {
+    let ds = dataset(vec![tool()], vec![], vec![], vec![]);
+    let i = metrics::intensity(&ds, &november_utc(), Participation::All);
+    assert_eq!(i.prs, 0);
+    assert_eq!(i.events_per_pr, None);
+    assert_eq!(i.active_days_per_pr, None);
+}
+
+#[test]
+fn statistics_use_the_middle_pair_and_a_nearest_rank_percentile() {
+    use metrics::Stats;
+    assert_eq!(Stats::from_values(vec![]), None);
+    // sorted {1, 2, 3, 4}: median (2 + 3) / 2 = 2.5, mean 2.5,
+    // p90 = rank ceil(3.6) = 4 -> 4
+    assert_eq!(
+        stat(Stats::from_values(vec![4.0, 1.0, 3.0, 2.0])),
+        (4, 1.0, 2.5, 2.5, 4.0, 4.0)
+    );
+    // a single value is every statistic
+    assert_eq!(
+        stat(Stats::from_values(vec![5.0])),
+        (1, 5.0, 5.0, 5.0, 5.0, 5.0)
+    );
+    // 1..=10: median (5 + 6) / 2 = 5.5, mean 5.5, p90 = rank 9 -> 9
+    assert_eq!(
+        stat(Stats::from_values((1..=10).map(f64::from).collect())),
+        (10, 1.0, 5.5, 5.5, 9.0, 10.0)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Reviews on their submission days
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reviews_land_on_their_submission_days() {
+    let events = vec![
+        // Tokyo 11-20 10:00
+        lifecycle(
+            EventId::pr_created("P1"),
+            EventType::PrOpened,
+            "R_tool",
+            "P1",
+            me(),
+            "2026-11-20T01:00:00Z",
+        ),
+        // Tokyo 11-21 12:00
+        review(
+            "R_tool",
+            "P1",
+            "rv-a",
+            user("alice"),
+            ReviewState::Approved,
+            "2026-11-21T03:00:00Z",
+        ),
+        // Tokyo 11-22 01:00 (still 11-21 in UTC)
+        review(
+            "R_tool",
+            "P1",
+            "rv-b",
+            user("bob"),
+            ReviewState::Commented,
+            "2026-11-21T16:00:00Z",
+        ),
+    ];
+    let ds = dataset(
+        vec![tool()],
+        vec![pull("P1", "R_tool", 1, me())],
+        vec![],
+        events,
+    );
+    let per_day = |zone_name: &str| -> (Vec<u64>, Vec<u64>) {
+        let opts = local_days("2026-11-20", "2026-11-23", zone(zone_name));
+        let days = metrics::breakdown(&ds, &opts, Granularity::Day);
+        (
+            days.iter()
+                .map(|d| d.summary.reviews_received.total)
+                .collect(),
+            days.iter().map(|d| d.summary.prs_created).collect(),
+        )
+    };
+    assert_eq!(per_day("Asia/Tokyo"), (vec![0, 1, 1], vec![1, 0, 0]));
+    assert_eq!(per_day("UTC"), (vec![0, 2, 0], vec![1, 0, 0]));
 }

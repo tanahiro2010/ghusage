@@ -58,13 +58,28 @@ pub fn open_store(cfg: &SessionConfig) -> Result<(Store, Option<PathBuf>)> {
     let dir = paths::data_dir(cfg.data_dir.clone()).ok_or_else(|| {
         AppError::Other("cannot determine a data directory; use --data-dir".into())
     })?;
-    std::fs::create_dir_all(&dir).map_err(|e| {
-        AppError::Storage(ghusage_storage::StorageError::Io(std::io::Error::new(
-            e.kind(),
-            format!("cannot create data directory {}: {e}", dir.display()),
-        )))
+    ghusage_storage::create_private_dir(&dir).map_err(|e| match e {
+        ghusage_storage::StorageError::Io(e) => {
+            AppError::Storage(ghusage_storage::StorageError::Io(std::io::Error::new(
+                e.kind(),
+                format!("cannot create data directory {}: {e}", dir.display()),
+            )))
+        }
+        other => AppError::Storage(other),
     })?;
-    Ok((Store::open(&paths::db_path(&dir))?, Some(dir)))
+    let path = paths::db_path(&dir);
+    let store = match Store::open(&path) {
+        Ok(s) => s,
+        // Without write access the cache can still be read; any write
+        // (such as a sync) then fails with a cache error.
+        Err(e) if e.is_read_only() && path.is_file() => {
+            let s = Store::open_read_only(&path).map_err(|_| e)?;
+            tracing::warn!(path = %path.display(), "cache is not writable; opened read-only");
+            s
+        }
+        Err(e) => return Err(e.into()),
+    };
+    Ok((store, Some(dir)))
 }
 
 impl Session {
@@ -139,6 +154,20 @@ impl Session {
                 .status
                 .is_complete()
         }))
+    }
+
+    /// End of the longest leading part of `period` that every data kind has
+    /// completely synced, or `None` when even its start is missing.
+    pub fn synced_until(&self, period: Period) -> Result<Option<DateTime<Utc>>> {
+        let records = self.coverage()?;
+        let mut until = period.end;
+        for k in DataKind::ALL {
+            let summary = coverage::summarize(&records, k, period.start, period.end);
+            if let Some(gap) = summary.gaps().map(|g| g.start).min() {
+                until = until.min(gap);
+            }
+        }
+        Ok((until > period.start).then_some(until))
     }
 
     /// Syncs `period` (only missing ranges unless `full`).

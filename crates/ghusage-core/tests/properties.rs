@@ -554,6 +554,35 @@ proptest! {
         }
     }
 
+    /// Every event belongs to exactly one repository, so per-repository rows
+    /// add up to the period summary for every additive count. A pull request
+    /// also lives in one repository, so unique pull request counts add up too.
+    #[test]
+    fn repository_rows_sum_to_the_summary(w in world(), o in opts_strategy()) {
+        let ds = w.dataset();
+        let whole = metrics::summary(&ds, &o);
+        let rows = metrics::by_repository(&ds, &o);
+        let ids: HashSet<&str> = rows.iter().map(|r| r.repository_id.as_str()).collect();
+        prop_assert_eq!(ids.len(), rows.len(), "one row per repository");
+        prop_assert_eq!(sum_additive(rows.iter().map(|r| &r.summary)), additive(&whole));
+        let unique = |f: fn(&Summary) -> u64| rows.iter().map(|r| f(&r.summary)).sum::<u64>();
+        prop_assert_eq!(unique(|s| s.reviewed_prs), whole.reviewed_prs);
+        prop_assert_eq!(unique(|s| s.active_prs), whole.active_prs);
+        prop_assert_eq!(
+            unique(|s| s.active_prs_all_participants),
+            whole.active_prs_all_participants
+        );
+        prop_assert_eq!(
+            rows.iter().filter_map(|r| r.summary.last_activity).max(),
+            whole.last_activity
+        );
+        // Active days are not additive (one day can have activity in two
+        // repositories) but no repository can have more than the whole.
+        for r in &rows {
+            prop_assert!(r.summary.active_days <= whole.active_days);
+        }
+    }
+
     /// Converting UTC instants into any zone loses no event: per-day counts in
     /// every zone add up to the same totals.
     #[test]

@@ -134,13 +134,13 @@ fn first_render_and_interaction_latency_on_100k_events() {
     // First visits to every screen, PR detail and timeline, and time range
     // and filter cycling, each followed by first visits again. No warm-up,
     // so every new view is computed while the UI keeps running.
-    let script: Vec<KeyCode> = "2345614"
+    let script: Vec<KeyCode> = "3456825"
         .chars()
         .map(KeyCode::Char)
         .chain([KeyCode::Enter, KeyCode::Enter, KeyCode::Esc, KeyCode::Esc])
         .chain("j/t".chars().map(KeyCode::Char))
         .chain([KeyCode::Esc])
-        .chain("t12345f345tt4ff5ftt3".chars().map(KeyCode::Char))
+        .chain("t23456f456tt5ff6ftt4".chars().map(KeyCode::Char))
         .chain([KeyCode::Enter])
         .chain("jjkk".chars().map(KeyCode::Char))
         .collect();

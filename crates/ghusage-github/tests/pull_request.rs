@@ -76,7 +76,7 @@ fn rich_pr() -> Value {
         "headRefOid": oid(3),
         "author": user("alice"),
         "mergedBy": user("bob"),
-        "headCommit": { "nodes": [ { "commit": { "oid": oid(3), "statusCheckRollup": { "state": "SUCCESS" } } } ] },
+        "headCommit": { "nodes": [ { "commit": head_commit_checks() } ] },
         "commits": connection(vec![
             pr_commit("acme", "widget", 42, &oid(1), Some("alice"), "2024-02-28T23:00:00Z", "2024-03-01T08:00:00Z", 1),
             pr_commit("acme", "widget", 42, &oid(3), Some("alice"), "2024-03-02T09:00:00Z", "2024-03-02T09:59:00Z", 1),
@@ -125,6 +125,41 @@ fn pr_response(pr: Value) -> Value {
     gql_data(json!({ "repository": r }))
 }
 
+/// The head commit as the pull request query returns it: the same check runs
+/// as `check_runs()` (a failed build re-run in a new suite and a queued
+/// lint) and the fact that it has commit statuses.
+fn head_commit_checks() -> Value {
+    let app = json!({ "id": "MDM6QXBwMTUzNjg=", "slug": "github-actions" });
+    let suite = |db_id: u64, runs: Vec<Value>| json!({ "databaseId": db_id, "app": app, "checkRuns": connection(runs, false, Some("Y3Vyc29yOnYyOpHPAAAAAQ==")) });
+    json!({
+        "oid": oid(3),
+        "statusCheckRollup": { "state": "SUCCESS" },
+        "status": { "state": "SUCCESS" },
+        "checkSuites": connection(vec![
+            suite(901, vec![json!({
+                "id": "CR_1", "name": "build", "status": "COMPLETED", "conclusion": "FAILURE",
+                "startedAt": "2024-03-02T10:00:30Z", "completedAt": "2024-03-02T10:00:50Z",
+                "permalink": "https://github.com/acme/widget/actions/runs/1/job/1"
+            })]),
+            suite(902, vec![json!({
+                "id": "CR_2", "name": "build", "status": "COMPLETED", "conclusion": "SUCCESS",
+                "startedAt": "2024-03-02T10:01:00Z", "completedAt": "2024-03-02T10:05:00Z",
+                "permalink": "https://github.com/acme/widget/actions/runs/2/job/2"
+            })]),
+            suite(903, vec![json!({
+                "id": "CR_3", "name": "lint", "status": "QUEUED", "conclusion": null,
+                "startedAt": null, "completedAt": null,
+                "permalink": "https://github.com/acme/widget/actions/runs/3/job/3"
+            })]),
+            // An app that was asked to check the commit but created no runs.
+            json!({ "databaseId": 904, "app": { "id": "MDM6QXBwOTQyNg==", "slug": "dependabot" },
+                    "checkRuns": connection(vec![], false, None) }),
+        ], false, Some("Y3Vyc29yOnYyOpHPAAAABA==")),
+    })
+}
+
+/// REST check runs of the head commit, used when the pull request query
+/// cannot return them all.
 fn check_runs() -> Value {
     let app = json!({ "id": 15368, "slug": "github-actions", "node_id": "MDM6QXBwMTUzNjg=", "name": "GitHub Actions", "owner": rest_user("github", "O_github", "Organization") });
     json!({
@@ -173,6 +208,8 @@ async fn mount_main(server: &MockServer, body: Value) {
         .await;
 }
 
+/// Mounts the REST checks of the head commit: commit statuses and, for the
+/// fallback path, check runs.
 async fn mount_checks(server: &MockServer, head: &str) {
     Mock::given(method("GET"))
         .and(path(format!(
@@ -542,7 +579,7 @@ async fn checks_and_statuses_of_the_head_commit() {
     assert_eq!(ok.meta.check_name.as_deref(), Some("build"));
     assert_eq!(ok.meta.check_suite_id.as_deref(), Some("902"));
     assert_eq!(ok.occurred_at, ts("2024-03-02T10:05:00Z"));
-    assert_eq!(ok.source, Source::Rest);
+    assert_eq!(ok.source, Source::Graphql);
     assert!(ok.actor.is_bot());
     let failed = find(&b, &EventId::check_run("CR_1"));
     assert_eq!(failed.meta.check_outcome, Some(CheckOutcome::Failure));
@@ -558,6 +595,321 @@ async fn checks_and_statuses_of_the_head_commit() {
             .count()
             == 3
     );
+}
+
+/// REST paths requested from the server, in order.
+async fn rest_paths(server: &MockServer) -> Vec<String> {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() != "/graphql")
+        .map(|r| r.url.path().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn head_commit_check_runs_come_from_the_pull_request_query() {
+    let server = MockServer::start().await;
+    mount_main(&server, pr_response(rich_pr())).await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/repos/acme/widget/commits/{}/check-runs",
+            oid(3)
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(check_runs()))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/repos/acme/widget/commits/{}/statuses",
+            oid(3)
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(statuses()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    assert_eq!(b.status, CoverageStatus::Complete, "{:?}", b.notes);
+    // Only the statuses, which GraphQL cannot list in full, use REST.
+    assert_eq!(
+        rest_paths(&server).await,
+        vec![format!("/repos/acme/widget/commits/{}/statuses", oid(3))]
+    );
+    let runs = of_type(&b, EventType::CheckRun);
+    assert_eq!(runs.len(), 2);
+    assert!(runs.iter().all(|r| r.source == Source::Graphql));
+    let ok = find(&b, &EventId::check_run("CR_2"));
+    assert_eq!(ok.actor.id.as_deref(), Some("MDM6QXBwMTUzNjg="));
+    assert_eq!(ok.actor.login.as_deref(), Some("github-actions"));
+    assert_eq!(
+        ok.url.as_deref(),
+        Some("https://github.com/acme/widget/actions/runs/2/job/2")
+    );
+    assert_eq!(ok.meta.sha.as_deref(), Some(oid(3).as_str()));
+    let status = find(&b, &EventId::commit_status("SC_11"));
+    assert_eq!(status.source, Source::Rest);
+}
+
+#[tokio::test]
+async fn head_commit_without_statuses_needs_no_rest_request() {
+    let server = MockServer::start().await;
+    let mut pr = rich_pr();
+    pr["headCommit"]["nodes"][0]["commit"]["status"] = Value::Null;
+    mount_main(&server, pr_response(pr)).await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    assert_eq!(b.status, CoverageStatus::Complete, "{:?}", b.notes);
+    assert!(rest_paths(&server).await.is_empty());
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    assert_eq!(of_type(&b, EventType::CheckRun).len(), 2);
+    assert!(of_type(&b, EventType::CommitStatus).is_empty());
+}
+
+/// Fetches the rich pull request with a modified head commit and returns
+/// the bundle and the REST paths requested.
+async fn fetch_with_head_commit(
+    edit: impl FnOnce(&mut Value),
+    errors: Option<Value>,
+) -> (PrBundle, Vec<String>) {
+    let server = MockServer::start().await;
+    let mut pr = rich_pr();
+    edit(&mut pr["headCommit"]["nodes"][0]["commit"]);
+    let mut body = pr_response(pr);
+    if let Some(errors) = errors {
+        body["errors"] = errors;
+    }
+    mount_main(&server, body).await;
+    mount_checks(&server, &oid(3)).await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    (b, rest_paths(&server).await)
+}
+
+/// A change to the head commit of the pull request query.
+type HeadCommitEdit = Box<dyn FnOnce(&mut Value)>;
+
+#[tokio::test]
+async fn incomplete_check_data_in_the_query_falls_back_to_rest() {
+    let runs_path = format!("/repos/acme/widget/commits/{}/check-runs", oid(3));
+    let statuses_path = format!("/repos/acme/widget/commits/{}/statuses", oid(3));
+    let cases: Vec<(&str, HeadCommitEdit, Option<Value>)> = vec![
+        (
+            "more check runs in a suite than one page",
+            Box::new(|c: &mut Value| {
+                c["checkSuites"]["nodes"][1]["checkRuns"]["pageInfo"]["hasNextPage"] = json!(true)
+            }),
+            None,
+        ),
+        (
+            "more check suites than one page",
+            Box::new(|c: &mut Value| c["checkSuites"]["pageInfo"]["hasNextPage"] = json!(true)),
+            None,
+        ),
+        (
+            "check suites not returned",
+            Box::new(|c: &mut Value| {
+                c.as_object_mut().unwrap().remove("checkSuites");
+            }),
+            None,
+        ),
+        (
+            "null check run",
+            Box::new(|c: &mut Value| {
+                c["checkSuites"]["nodes"][0]["checkRuns"]["nodes"][0] = Value::Null
+            }),
+            None,
+        ),
+        (
+            "error inside the check suites",
+            Box::new(|c: &mut Value| c["checkSuites"] = Value::Null),
+            Some(json!([{
+                "type": "FORBIDDEN",
+                "path": ["repository", "pullRequest", "headCommit", "nodes", 0, "commit", "checkSuites"],
+                "locations": [{ "line": 1, "column": 1 }],
+                "message": "Resource not accessible by integration"
+            }])),
+        ),
+        (
+            "error without a path",
+            Box::new(|_: &mut Value| {}),
+            Some(json!([{ "message": "Something went wrong while executing your query." }])),
+        ),
+    ];
+    for (what, edit, errors) in cases {
+        let (b, paths) = fetch_with_head_commit(edit, errors).await;
+        // The REST runs are the same as the GraphQL ones; none are lost
+        // and none are counted twice.
+        assert_eq!(
+            paths,
+            vec![runs_path.clone(), statuses_path.clone()],
+            "{what}"
+        );
+        let runs = of_type(&b, EventType::CheckRun);
+        assert_eq!(runs.len(), 2, "{what}");
+        assert!(runs.iter().all(|r| r.source == Source::Rest), "{what}");
+        assert_eq!(
+            find(&b, &EventId::check_run("CR_2"))
+                .meta
+                .check_suite_id
+                .as_deref(),
+            Some("902"),
+            "{what}"
+        );
+        assert!(
+            b.complete_collections.contains(&Collection::Checks),
+            "{what}"
+        );
+        assert!(
+            !b.notes.iter().any(|n| n.contains("latest CI state")),
+            "{what}: {:?}",
+            b.notes
+        );
+    }
+}
+
+/// CI counts of a fetched pull request, as the summary reports them.
+fn ci_counts(b: &PrBundle) -> ghusage_core::metrics::CiCounts {
+    use ghusage_core::metrics::{CommitDateBasis, Dataset, Filter, Options, summary};
+    let ds = Dataset::new(
+        ghusage_core::model::Subject {
+            id: None,
+            login: "alice".into(),
+        },
+        true,
+        vec![b.repository.clone()],
+        vec![b.pull_request.clone()],
+        vec![],
+        b.threads.clone(),
+        b.events.clone(),
+        vec![],
+    );
+    let opts = Options {
+        period: ghusage_core::time::Period::new(
+            ts("2024-03-01T00:00:00Z"),
+            ts("2024-04-01T00:00:00Z"),
+        )
+        .unwrap(),
+        zone: ghusage_core::time::Zone::utc(),
+        filter: Filter::default(),
+        commit_basis: CommitDateBasis::default(),
+    };
+    summary(&ds, &opts).ci
+}
+
+#[tokio::test]
+async fn check_runs_request_all_attempts_not_only_latest() {
+    // A build that failed and was re-run successfully in the same suite:
+    // both attempts happened and both are counted.
+    let attempt = |id: &str, conclusion: &str, done: &str| {
+        json!({ "id": id, "name": "build", "status": "COMPLETED", "conclusion": conclusion,
+                "startedAt": "2024-03-02T10:00:00Z", "completedAt": done,
+                "permalink": format!("https://github.com/acme/widget/runs/{id}") })
+    };
+    let rerun_suite = |more: bool| {
+        connection(
+            vec![
+                json!({ "databaseId": 77, "app": null, "checkRuns": connection(
+                vec![
+                    attempt("CR_try1", "FAILURE", "2024-03-02T10:01:00Z"),
+                    attempt("CR_try2", "SUCCESS", "2024-03-02T10:09:00Z"),
+                ],
+                more,
+                Some("Y3Vyc29yOnYyOpHPAAAAAg=="),
+            ) }),
+            ],
+            false,
+            Some("Y3Vyc29yOnYyOpHPAAAAAQ=="),
+        )
+    };
+    let runs_path = format!("/repos/acme/widget/commits/{}/check-runs", oid(3));
+    let statuses_path = format!("/repos/acme/widget/commits/{}/statuses", oid(3));
+    let assert_both_attempts = |b: &PrBundle, source: Source, what: &str| {
+        assert_eq!(b.status, CoverageStatus::Complete, "{what}: {:?}", b.notes);
+        let runs = of_type(b, EventType::CheckRun);
+        assert_eq!(runs.len(), 2, "{what}");
+        assert!(runs.iter().all(|r| r.source == source), "{what}");
+        assert_eq!(
+            find(b, &EventId::check_run("CR_try1")).meta.check_outcome,
+            Some(CheckOutcome::Failure),
+            "{what}"
+        );
+        assert_eq!(
+            find(b, &EventId::check_run("CR_try2")).meta.check_outcome,
+            Some(CheckOutcome::Success),
+            "{what}"
+        );
+        let ci = ci_counts(b);
+        assert_eq!((ci.failed, ci.passed), (1, 1), "{what}");
+    };
+
+    // From the pull request query: it must ask for every attempt.
+    let server = MockServer::start().await;
+    let mut pr = rich_pr();
+    pr["headCommit"]["nodes"][0]["commit"]["checkSuites"] = rerun_suite(false);
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query PullRequestDetail"))
+        .and(body_string_contains("checkType: ALL"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(pr_response(pr)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(statuses_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    assert_both_attempts(&b, Source::Graphql, "pull request query");
+
+    // From the REST fallback: it must ask for `filter=all` (the endpoint's
+    // default returns only the latest run of each name).
+    let server = MockServer::start().await;
+    let mut pr = rich_pr();
+    pr["headCommit"]["nodes"][0]["commit"]["checkSuites"] = rerun_suite(true);
+    mount_main(&server, pr_response(pr)).await;
+    let rest_run = |id: u64, node: &str, conclusion: &str, done: &str| {
+        json!({ "id": id, "node_id": node, "head_sha": oid(3), "name": "build", "status": "completed",
+                "conclusion": conclusion, "started_at": "2024-03-02T10:00:00Z", "completed_at": done,
+                "html_url": format!("https://github.com/acme/widget/runs/{id}"),
+                "check_suite": { "id": 77 }, "app": null })
+    };
+    Mock::given(method("GET"))
+        .and(path(runs_path.clone()))
+        .and(wiremock::matchers::query_param("filter", "all"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "total_count": 2,
+            "check_runs": [
+                rest_run(2, "CR_try2", "success", "2024-03-02T10:09:00Z"),
+                rest_run(1, "CR_try1", "failure", "2024-03-02T10:01:00Z"),
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(statuses_path))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    assert_both_attempts(&b, Source::Rest, "REST fallback");
 }
 
 #[tokio::test]
@@ -987,7 +1339,16 @@ async fn cross_repository_contribution_belongs_to_the_base_repository() {
 #[tokio::test]
 async fn forbidden_checks_leave_only_checks_partial() {
     let server = MockServer::start().await;
-    mount_main(&server, pr_response(rich_pr())).await;
+    let mut pr = rich_pr();
+    pr["headCommit"]["nodes"][0]["commit"]["checkSuites"] = Value::Null;
+    let mut body = pr_response(pr);
+    body["errors"] = json!([{
+        "type": "FORBIDDEN",
+        "path": ["repository", "pullRequest", "headCommit", "nodes", 0, "commit", "checkSuites"],
+        "locations": [{ "line": 1, "column": 1 }],
+        "message": "Resource not accessible by personal access token"
+    }]);
+    mount_main(&server, body).await;
     Mock::given(method("GET"))
         .and(path(format!(
             "/repos/acme/widget/commits/{}/check-runs",
@@ -1022,7 +1383,23 @@ async fn forbidden_checks_leave_only_checks_partial() {
 #[tokio::test]
 async fn paginated_check_runs_are_all_fetched() {
     let server = MockServer::start().await;
-    mount_main(&server, pr_response(rich_pr())).await;
+    // The query returns the first 100 runs of one suite; the rest are
+    // fetched over REST rather than truncated.
+    let mut pr = rich_pr();
+    let first_page: Vec<Value> = (1..=100)
+        .map(|i| {
+            json!({ "id": format!("CR_p{i}"), "name": format!("job{i}"), "status": "COMPLETED",
+                    "conclusion": "SUCCESS", "startedAt": "2024-03-02T10:00:00Z",
+                    "completedAt": "2024-03-02T10:01:00Z", "permalink": "https://github.com/acme/widget/runs/1" })
+        })
+        .collect();
+    pr["headCommit"]["nodes"][0]["commit"]["checkSuites"] = connection(
+        vec![json!({ "databaseId": 1, "app": null,
+                     "checkRuns": connection(first_page, true, Some("Y3Vyc29yOnYyOpHPAAAAZA==")) })],
+        false,
+        Some("Y3Vyc29yOnYyOpHPAAAAAQ=="),
+    );
+    mount_main(&server, pr_response(pr)).await;
     let runs_path = format!("/repos/acme/widget/commits/{}/check-runs", oid(3));
     let mk = |i: u64| {
         json!({ "id": i, "node_id": format!("CR_p{i}"), "name": format!("job{i}"), "status": "completed",
@@ -1364,4 +1741,376 @@ async fn saml_protected_repository_is_forbidden() {
     let err = client(&server).repository("acme", "sso").await.unwrap_err();
     assert!(matches!(err, ApiError::Forbidden(_)), "{err:?}");
     assert!(!err.is_auth());
+}
+
+#[tokio::test]
+async fn unknown_fields_and_enum_values_are_tolerated() {
+    let baseline = fetch_rich().await;
+    let server = MockServer::start().await;
+    let mut pr = rich_pr();
+    // Fields GitHub may add at any level.
+    pr["brandNewField"] = json!({ "nested": [1, 2, 3] });
+    pr["commits"]["nodes"][0]["commit"]["newCommitField"] = json!("x");
+    pr["reviews"]["nodes"][0]["reviewNewField"] = json!(true);
+    pr["reviewThreads"]["nodes"][0]["threadNewField"] = json!(null);
+    pr["comments"]["nodes"][0]["reactionGroups"] = json!([]);
+    // A review in a state this version does not know. It has a submission
+    // time, so it is a submitted review whose state is unknown.
+    let mut reviews = pr["reviews"]["nodes"].as_array().unwrap().clone();
+    reviews.push(review(
+        "PRR_6",
+        "SOME_FUTURE_STATE",
+        "",
+        Some("2024-03-03T09:00:00Z"),
+        user("erin"),
+        vec![],
+    ));
+    pr["reviews"] = connection(reviews, false, Some("r6"));
+    mount_main(&server, pr_response(pr)).await;
+    mount_checks(&server, &oid(3)).await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    // Every known collection is still complete.
+    assert_eq!(b.status, CoverageStatus::Complete, "{:?}", b.notes);
+    // Every event type keeps its count, except one more submitted review.
+    for t in EventType::ALL {
+        let expected = of_type(&baseline, t).len() + usize::from(t == EventType::ReviewSubmitted);
+        assert_eq!(of_type(&b, t).len(), expected, "{t:?}");
+    }
+    let r6 = find(&b, &EventId::review("PRR_6"));
+    assert_eq!(r6.meta.review_state, None);
+    assert_eq!(r6.actor.login.as_deref(), Some("erin"));
+    assert_eq!(b.threads.len(), baseline.threads.len());
+}
+
+/// A pull request whose commits, reviews and review threads all exceed one
+/// page: 250 commits, 120 reviews and 110 threads.
+///
+/// Pages as GitHub returns them (commits and reviews 100 per page, threads
+/// 50 per page):
+/// - commits: 100 (cursor `c-100`) + 100 (`c-200`) + 50 = 250
+/// - reviews: 100 (`r-100`) + 20 = 120
+/// - threads: 50 (`t-50`) + 50 (`t-100`) + 10 = 110
+struct BigPr {
+    main: Value,
+    commit_pages: [Vec<Value>; 3],
+    review_page: Vec<Value>,
+    thread_pages: [Vec<Value>; 3],
+}
+
+fn big_commit(i: u64) -> Value {
+    // The last commit is the head commit of the pull request.
+    let o = if i == 249 { oid(3) } else { oid(10_000 + i) };
+    let t = format!(
+        "2024-03-0{}T{:02}:{:02}:00Z",
+        1 + i / 100,
+        (i / 60) % 24,
+        i % 60
+    );
+    pr_commit("acme", "widget", 42, &o, Some("alice"), &t, &t, 1)
+}
+
+fn big_review(i: u64) -> Value {
+    let t = format!("2024-03-03T{:02}:{:02}:00Z", i / 60, i % 60);
+    // An empty body: each review is one submission and no summary comment.
+    review(
+        &format!("PRR_big_{i}"),
+        "COMMENTED",
+        "",
+        Some(&t),
+        user("bob"),
+        vec![],
+    )
+}
+
+fn big_thread(i: u64) -> Value {
+    let t = format!("2024-03-03T{:02}:{:02}:30Z", i / 60, i % 60);
+    let c = review_comment(
+        &format!("PRRC_big_{i}"),
+        user("carol"),
+        &t,
+        &format!("PRR_big_{}", i % 120),
+        None,
+        None,
+    );
+    thread(
+        &format!("PRRT_big_{i}"),
+        false,
+        false,
+        None,
+        "src/big.rs",
+        vec![c],
+    )
+}
+
+fn big_pr() -> BigPr {
+    let commits: Vec<Value> = (0..250).map(big_commit).collect();
+    let reviews: Vec<Value> = (0..120).map(big_review).collect();
+    let threads: Vec<Value> = (0..110).map(big_thread).collect();
+    let mut pr = rich_pr();
+    pr["commits"] = connection(commits[0..100].to_vec(), true, Some("c-100"));
+    pr["reviews"] = connection(reviews[0..100].to_vec(), true, Some("r-100"));
+    pr["reviewThreads"] = connection(threads[0..50].to_vec(), true, Some("t-50"));
+    // The dismissal in the timeline refers to a review that is not part of
+    // this fixture; it is dropped so only the paged reviews remain.
+    let timeline: Vec<Value> = pr["timelineItems"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| n["__typename"] != "ReviewDismissedEvent")
+        .cloned()
+        .collect();
+    pr["timelineItems"] = connection(timeline, false, Some("tl16"));
+    BigPr {
+        main: pr_response(pr),
+        commit_pages: [
+            commits[0..100].to_vec(),
+            commits[100..200].to_vec(),
+            commits[200..250].to_vec(),
+        ],
+        review_page: reviews[100..120].to_vec(),
+        thread_pages: [
+            threads[0..50].to_vec(),
+            threads[50..100].to_vec(),
+            threads[100..110].to_vec(),
+        ],
+    }
+}
+
+fn node_page(field: &str, nodes: Vec<Value>, next: Option<&str>) -> Value {
+    let conn = connection(nodes, next.is_some(), Some(next.unwrap_or("end")));
+    gql_data(json!({ "node": { field: conn } }))
+}
+
+/// Mounts every follow-up page of `big_pr` except those after the cursors
+/// in `skip`.
+async fn mount_big_pages(server: &MockServer, big: &BigPr, skip: &[&str]) {
+    let pages: Vec<(&str, &str, Value)> = vec![
+        (
+            "PullRequestCommitsPage",
+            "c-100",
+            node_page("commits", big.commit_pages[1].clone(), Some("c-200")),
+        ),
+        (
+            "PullRequestCommitsPage",
+            "c-200",
+            node_page("commits", big.commit_pages[2].clone(), None),
+        ),
+        (
+            "PullRequestReviewsPage",
+            "r-100",
+            node_page("reviews", big.review_page.clone(), None),
+        ),
+        (
+            "PullRequestReviewThreadsPage",
+            "t-50",
+            node_page("reviewThreads", big.thread_pages[1].clone(), Some("t-100")),
+        ),
+        (
+            "PullRequestReviewThreadsPage",
+            "t-100",
+            node_page("reviewThreads", big.thread_pages[2].clone(), None),
+        ),
+    ];
+    for (query, after, body) in pages {
+        if !skip.contains(&after) {
+            mount_page(server, query, after, body).await;
+        }
+    }
+}
+
+/// The `after` cursors of all follow-up requests, sorted.
+async fn follow_up_cursors(server: &MockServer) -> Vec<String> {
+    let mut afters: Vec<String> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+        .filter_map(|b| b["variables"]["after"].as_str().map(str::to_string))
+        .collect();
+    afters.sort();
+    afters
+}
+
+#[tokio::test]
+async fn pull_request_commits_reviews_and_threads_beyond_100_are_paginated() {
+    let server = MockServer::start().await;
+    let big = big_pr();
+    assert_eq!(big.thread_pages[0].len(), 50);
+    mount_main(&server, big.main.clone()).await;
+    mount_checks(&server, &oid(3)).await;
+    mount_big_pages(&server, &big, &[]).await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    assert_eq!(b.status, CoverageStatus::Complete, "{:?}", b.notes);
+    assert_eq!(b.complete_collections.len(), Collection::ALL.len());
+    // 100 + 100 + 50 commits, each a distinct SHA, the last one the head.
+    assert_eq!(of_type(&b, EventType::PrCommit).len(), 250);
+    let shas: std::collections::HashSet<_> = b.current_commit_shas.iter().collect();
+    assert_eq!(b.current_commit_shas.len(), 250);
+    assert_eq!(shas.len(), 250);
+    assert!(b.current_commit_shas.contains(&oid(3)));
+    // 100 + 20 submitted reviews; none has a body, so no summaries.
+    assert_eq!(of_type(&b, EventType::ReviewSubmitted).len(), 120);
+    assert!(of_type(&b, EventType::ReviewSummary).is_empty());
+    // 50 + 50 + 10 threads with one inline comment each.
+    assert_eq!(b.threads.len(), 110);
+    assert_eq!(
+        of_type(&b, EventType::InlineComment)
+            .iter()
+            .filter(|e| e.entity_id.starts_with("PRRC_big_"))
+            .count(),
+        110
+    );
+    // Follow-up pages: commits 2, reviews 1, threads 2; each asked once.
+    assert_eq!(
+        follow_up_cursors(&server).await,
+        ["c-100", "c-200", "r-100", "t-100", "t-50"]
+    );
+}
+
+#[tokio::test]
+async fn failing_later_page_of_commits_reviews_or_threads_is_partial() {
+    // Each case fails one later page with a persistent server error and
+    // expects that collection, and only it, to be incomplete, keeping the
+    // items of the pages fetched before it.
+    let cases: [(&str, &str, Collection, EventType, &str, usize); 3] = [
+        // Only the first page of commits (100) was fetched.
+        (
+            "c-100",
+            "PullRequestCommitsPage",
+            Collection::Commits,
+            EventType::PrCommit,
+            "",
+            100,
+        ),
+        // The 20 reviews of the second page are missing: 100 remain.
+        (
+            "r-100",
+            "PullRequestReviewsPage",
+            Collection::Reviews,
+            EventType::ReviewSubmitted,
+            "PRR_big_",
+            100,
+        ),
+        // Threads pages one and two (50 + 50) were fetched, the third failed.
+        (
+            "t-100",
+            "PullRequestReviewThreadsPage",
+            Collection::ReviewComments,
+            EventType::InlineComment,
+            "PRRC_big_",
+            100,
+        ),
+    ];
+    for (after, query, collection, ty, prefix, fetched) in cases {
+        let server = MockServer::start().await;
+        let big = big_pr();
+        mount_main(&server, big.main.clone()).await;
+        mount_checks(&server, &oid(3)).await;
+        mount_big_pages(&server, &big, &[after]).await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains(format!("query {query}")))
+            .and(body_partial_json(
+                json!({ "variables": { "after": after } }),
+            ))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let b = client(&server)
+            .fetch_pull_request("acme", "widget", 42)
+            .await
+            .unwrap();
+        assert_eq!(b.status, CoverageStatus::Partial, "{after}: {:?}", b.notes);
+        assert!(!b.complete_collections.contains(&collection), "{after}");
+        assert_eq!(
+            b.complete_collections.len(),
+            Collection::ALL.len() - 1,
+            "{after}: {:?}",
+            b.complete_collections
+        );
+        let events: Vec<_> = of_type(&b, ty)
+            .into_iter()
+            .filter(|e| e.entity_id.starts_with(prefix))
+            .collect();
+        assert_eq!(events.len(), fetched, "{after}");
+        assert!(
+            events.iter().all(|e| e.coverage == CoverageStatus::Partial),
+            "{after}"
+        );
+        // The server error was retried a bounded number of times: the test
+        // client allows 3 attempts.
+        let tries = follow_up_cursors(&server)
+            .await
+            .into_iter()
+            .filter(|c| c == after)
+            .count();
+        assert_eq!(tries, 3, "{after}");
+    }
+}
+
+#[tokio::test]
+async fn threads_with_only_pending_comments_are_not_counted() {
+    // Thread 1 gets an extra unsubmitted reply; thread 3 holds only an
+    // unsubmitted comment, which only its author's token can see.
+    let mut pending_reply = review_comment(
+        "PRRC_P1",
+        user("dave"),
+        "2024-03-03T09:00:00Z",
+        "PRR_4",
+        Some("PRRC_1"),
+        None,
+    );
+    pending_reply["state"] = json!("PENDING");
+    let mut pending_only = review_comment(
+        "PRRC_P2",
+        user("dave"),
+        "2024-03-03T09:05:00Z",
+        "PRR_4",
+        None,
+        None,
+    );
+    pending_only["state"] = json!("PENDING");
+    let mut pr = rich_pr();
+    let mut t1 = pr["reviewThreads"]["nodes"][0].clone();
+    t1["comments"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(pending_reply);
+    t1["comments"]["totalCount"] = json!(3);
+    pr["reviewThreads"]["nodes"][0] = t1;
+    pr["reviewThreads"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(thread(
+            "PRRT_3",
+            false,
+            false,
+            None,
+            "src/new.rs",
+            vec![pending_only],
+        ));
+    pr["reviewThreads"]["totalCount"] = json!(3);
+
+    let server = MockServer::start().await;
+    mount_main(&server, pr_response(pr)).await;
+    mount_checks(&server, &oid(3)).await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    let mut ids: Vec<&str> = b.threads.iter().map(|t| t.id.as_str()).collect();
+    ids.sort();
+    // Only the two threads with submitted comments.
+    assert_eq!(ids, vec!["PRRT_1", "PRRT_2"]);
+    let t1 = b.threads.iter().find(|t| t.id == "PRRT_1").unwrap();
+    // PRRC_1 and PRRC_2; the pending reply is not counted.
+    assert_eq!(t1.comment_count, 2);
+    assert_eq!(b.status, CoverageStatus::Complete);
 }

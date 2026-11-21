@@ -35,7 +35,7 @@ use ghusage_core::model::{
     PullRequest, Repository, ReviewThread, Source, Subject, Visibility,
 };
 use ghusage_core::time::Period;
-use rusqlite::{Connection, ErrorCode, OptionalExtension, Row, Transaction, params};
+use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, Row, Transaction, params};
 
 use codec::{
     actor, actor_kind_str, from_json, nanos, opt_from_json, opt_nanos, opt_secs, opt_time,
@@ -62,6 +62,21 @@ pub enum StorageError {
     Data(String),
 }
 
+impl StorageError {
+    /// True when the error comes from missing write access to the cache
+    /// file or its directory.
+    pub fn is_read_only(&self) -> bool {
+        match self {
+            StorageError::Sqlite(e) => matches!(
+                e.sqlite_error_code(),
+                Some(ErrorCode::ReadOnly | ErrorCode::CannotOpen | ErrorCode::PermissionDenied)
+            ),
+            StorageError::Io(e) => e.kind() == std::io::ErrorKind::PermissionDenied,
+            _ => false,
+        }
+    }
+}
+
 /// Links a pull request to a commit. `is_current` is false when a resync
 /// observed that the commit is no longer part of the pull request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +95,10 @@ pub struct PrSnapshot {
     /// Collections fetched completely in this sync. For each, stored events
     /// of this PR in that collection whose ids are not in `present` get
     /// `removed_observed_at = observed_at`; present ones get it cleared.
+    /// `Checks` covers only the pull request's head commit (its `head_sha`
+    /// as stored, including this batch's update): check runs and commit
+    /// statuses of earlier head commits are history and are never marked
+    /// removed by a later fetch.
     /// For `ReviewComments`, stored threads of this PR not in
     /// `present_threads` are deleted. For `Commits`, stored commit links of
     /// this PR that are not sent as current links in the same batch are
@@ -187,6 +206,64 @@ fn probe(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn wal_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push("-wal");
+    PathBuf::from(name)
+}
+
+/// `file:` URI that opens `path` as immutable (no locking, no WAL access).
+fn immutable_uri(path: &Path) -> Result<String> {
+    let abs = std::path::absolute(path)?;
+    let s = abs.to_str().ok_or_else(|| {
+        StorageError::Data(format!("cache path is not UTF-8: {}", path.display()))
+    })?;
+    let mut uri = String::from("file:");
+    if !s.starts_with('/') {
+        // Windows drive paths: file:/C:/...
+        uri.push('/');
+    }
+    for b in s.bytes() {
+        match b {
+            b'\\' => uri.push('/'),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' | b':' => {
+                uri.push(b as char)
+            }
+            _ => uri.push_str(&format!("%{b:02X}")),
+        }
+    }
+    uri.push_str("?immutable=1");
+    Ok(uri)
+}
+
+/// Creates `dir` (and its parents) if missing; a directory created here is
+/// readable only by the user.
+pub fn create_private_dir(dir: &Path) -> Result<()> {
+    if dir.is_dir() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dir)?;
+    restrict_to_user(dir, 0o700);
+    Ok(())
+}
+
+/// Best effort: on Unix, sets `path`'s permission bits to `mode`. Fails
+/// silently, e.g. for a read-only file the user does not own.
+fn restrict_to_user(path: &Path, mode: u32) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path)
+            && meta.permissions().mode() & 0o777 != mode
+            && meta.permissions().mode() & 0o200 != 0
+        {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (path, mode);
+}
+
 fn check_header(path: &Path) -> Result<()> {
     let file = match File::open(path) {
         Ok(f) => f,
@@ -215,10 +292,13 @@ impl Store {
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
-            std::fs::create_dir_all(parent)?;
+            create_private_dir(parent)?;
         }
         check_header(path)?;
         let mut conn = Connection::open(path)?;
+        // The cache holds private repository names and titles. SQLite gives
+        // its journal files the same permissions as the database.
+        restrict_to_user(path, 0o600);
         configure(&conn)?;
         schema::migrate(&mut conn, schema::MIGRATIONS, Some(path))?;
         probe(&conn)?;
@@ -226,6 +306,70 @@ impl Store {
             conn,
             path: Some(path.to_path_buf()),
         })
+    }
+
+    /// Opens an existing database for reading only, for when the file or
+    /// its directory is not writable. Every write through the returned
+    /// store fails. The schema must already be current.
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        Self::open_read_only_inner(path).map_err(classify)
+    }
+
+    fn open_read_only_inner(path: &Path) -> Result<Self> {
+        if !path.is_file() {
+            return Err(StorageError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("{} does not exist", path.display()),
+            )));
+        }
+        check_header(path)?;
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let conn = match Connection::open_with_flags(path, flags) {
+            Ok(c) if Self::readable(&c) => c,
+            _ => {
+                // A WAL database cannot be read without creating its shared
+                // memory file. When no write-ahead log is left over, the main
+                // file holds every committed change and can be read as
+                // immutable.
+                let wal = wal_path(path);
+                if std::fs::metadata(&wal).is_ok_and(|m| m.len() > 0) {
+                    return Err(StorageError::Data(format!(
+                        "{} has unsaved changes in {} and cannot be read without write access",
+                        path.display(),
+                        wal.display()
+                    )));
+                }
+                Connection::open_with_flags(
+                    immutable_uri(path)?,
+                    flags | OpenFlags::SQLITE_OPEN_URI,
+                )?
+            }
+        };
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        let version = schema::user_version(&conn)?;
+        if version > schema::CURRENT_VERSION {
+            return Err(StorageError::TooNew {
+                found: version,
+                supported: schema::CURRENT_VERSION,
+            });
+        }
+        if version < schema::CURRENT_VERSION {
+            return Err(StorageError::Migration {
+                from: version,
+                to: schema::CURRENT_VERSION,
+                message: "the cache needs upgrading but is not writable".into(),
+            });
+        }
+        probe(&conn)?;
+        Ok(Self {
+            conn,
+            path: Some(path.to_path_buf()),
+        })
+    }
+
+    fn readable(conn: &Connection) -> bool {
+        conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
+            .is_ok()
     }
 
     pub fn open_in_memory() -> Result<Self> {
@@ -390,6 +534,32 @@ impl Store {
                     period.contains(e.occurred_at)
                         || e.meta.author_date.is_some_and(|d| period.contains(d))
                 });
+                // Pull requests active in the period come with all their
+                // events, so lifetime timings see what happened before the
+                // period. Counting always applies the period itself.
+                let mut seen: HashSet<String> =
+                    events.iter().map(|e| e.event_id.0.clone()).collect();
+                let active: HashSet<String> = events
+                    .iter()
+                    .filter_map(|e| e.parent_pr_id.clone())
+                    .collect();
+                let mut stmt = self.conn.prepare_cached(&format!(
+                    "SELECT {EVENT_COLS} FROM activity_events e \
+                     JOIN account_events ae ON ae.event_id = e.event_id \
+                     WHERE ae.account_id = ?1 AND e.parent_pr_id = ?2"
+                ))?;
+                let mut active: Vec<String> = active.into_iter().collect();
+                active.sort();
+                for pr in active {
+                    let rows =
+                        stmt.query_map(params![account_id, pr], |r| Ok(event_from_row(r)))?;
+                    for row in rows {
+                        let e = row??;
+                        if seen.insert(e.event_id.0.clone()) {
+                            events.push(e);
+                        }
+                    }
+                }
                 events
             }
         };
@@ -1165,15 +1335,31 @@ fn apply_snapshot(
         return Ok(());
     }
     let complete: HashSet<Collection> = s.complete_collections.iter().copied().collect();
-    let stored: Vec<(String, String, bool)> = {
-        let mut stmt = tx.prepare(
-            "SELECT event_id, event_type, removed_observed_at IS NOT NULL \
-             FROM activity_events WHERE parent_pr_id = ?1",
-        )?;
-        stmt.query_map(params![s.pr_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-            .collect::<rusqlite::Result<_>>()?
+    // Checks are only fetched for the current head commit, so a complete
+    // checks fetch says nothing about the checks of earlier heads.
+    let head_sha: Option<String> = if complete.contains(&Collection::Checks) {
+        tx.query_row(
+            "SELECT head_sha FROM pull_requests WHERE id = ?1",
+            params![s.pr_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten()
+        .map(|h| h.to_ascii_lowercase())
+    } else {
+        None
     };
-    for (id, ty, removed) in stored {
+    let stored: Vec<(String, String, bool, Option<String>)> = {
+        let mut stmt = tx.prepare(
+            "SELECT event_id, event_type, removed_observed_at IS NOT NULL, \
+             json_extract(meta, '$.sha') FROM activity_events WHERE parent_pr_id = ?1",
+        )?;
+        stmt.query_map(params![s.pr_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?
+    };
+    for (id, ty, removed, sha) in stored {
         let ty = EventType::parse(&ty)
             .ok_or_else(|| StorageError::Data(format!("unknown stored event type {ty:?}")))?;
         let Some(coll) = Collection::of(ty) else {
@@ -1190,7 +1376,14 @@ fn apply_snapshot(
                 params![id],
             )?;
         } else if !present && !removed {
-            mark_removed(tx, &id, s.observed_at)?;
+            let of_fetched_head = coll != Collection::Checks
+                || matches!(
+                    (&head_sha, &sha),
+                    (Some(head), Some(sha)) if sha.eq_ignore_ascii_case(head)
+                );
+            if of_fetched_head {
+                mark_removed(tx, &id, s.observed_at)?;
+            }
         }
     }
 
@@ -1435,14 +1628,13 @@ impl SyncLock {
     /// Acquires `<dir>/sync.lock` without blocking; fails with
     /// [`StorageError::Locked`] if another process holds it.
     pub fn acquire(dir: &Path) -> Result<Self> {
-        std::fs::create_dir_all(dir)?;
+        create_private_dir(dir)?;
         let path = dir.join("sync.lock");
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)?;
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(&path)?;
         match fs4::FileExt::try_lock(&file) {
             Ok(()) => {}
             Err(fs4::TryLockError::WouldBlock) => return Err(StorageError::Locked(path)),

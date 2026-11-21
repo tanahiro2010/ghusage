@@ -301,8 +301,18 @@ async fn forbidden_private_repository_is_partial_not_an_auth_error() {
         r.expect_code(4).assert_clean();
         let s = r.json();
         assert_eq!(s["status"], "partial");
-        assert!(s["failures"].to_string().contains("acme/secret#4"), "{s}");
+        // The private repository is not named unless asked for.
+        assert!(!s.to_string().contains("acme/secret"), "{s}");
+        assert!(
+            s["failures"].to_string().contains("[private repository]"),
+            "{s}"
+        );
         assert_eq!(cached_prs(&env).await, vec![3, 10, 20]);
+        let named = env.sync(&["--full", "--include-private"]).await.json();
+        assert!(
+            named["failures"].to_string().contains("acme/secret#4"),
+            "{named}"
+        );
         let o = env.offline_json(&["overview"]).await.json();
         assert_eq!(coverage_status(&o, "pull_requests"), "partial");
     }
@@ -594,6 +604,10 @@ async fn a_second_sync_is_refused_while_one_is_running() {
         "{}",
         second.stderr
     );
+    // Clearing the cache under a running sync is refused too.
+    let clear = env.run(&["cache", "clear"]).await;
+    clear.expect_code(5).assert_clean();
+    assert!(clear.stderr.contains("already running"), "{}", clear.stderr);
 
     let out = tokio::task::spawn_blocking(move || first.wait_with_output().unwrap())
         .await
@@ -719,6 +733,23 @@ fn permissions_enforced(file: &std::path::Path) -> bool {
     std::fs::OpenOptions::new().write(true).open(file).is_err()
 }
 
+/// Says loudly that a permission test checked nothing. As root (or with a
+/// capability that bypasses file modes) a read-only cache cannot be
+/// simulated, so the test is skipped rather than reported as verified.
+/// The message goes to stderr, which `cargo test -- --nocapture` shows; set
+/// `GHUSAGE_REQUIRE_PERMISSION_TESTS=1` to turn the skip into a failure.
+#[cfg(unix)]
+fn report_skipped(test: &str) {
+    let msg = format!(
+        "SKIPPED {test}: file permissions are not enforced for this user \
+         (running as root?); nothing was verified"
+    );
+    if std::env::var_os("GHUSAGE_REQUIRE_PERMISSION_TESTS").is_some_and(|v| !v.is_empty()) {
+        panic!("{msg}");
+    }
+    eprintln!("{msg}");
+}
+
 #[cfg(unix)]
 fn set_mode(p: &std::path::Path, mode: u32) {
     use std::os::unix::fs::PermissionsExt;
@@ -739,7 +770,7 @@ async fn read_only_cache_is_a_cache_error_and_data_survives() {
     if !permissions_enforced(&env.db_path()) {
         set_mode(env.data_dir(), 0o755);
         set_mode(&env.db_path(), 0o644);
-        eprintln!("skipping: file permissions are not enforced for this user");
+        report_skipped("read_only_cache_is_a_cache_error_and_data_survives");
         return;
     }
     let mut results = Vec::new();
@@ -786,17 +817,15 @@ async fn reading_a_read_only_cache_works_offline() {
     set_mode(env.data_dir(), 0o755);
     set_mode(&env.db_path(), 0o644);
     if !enforced {
+        report_skipped("reading_a_read_only_cache_works_offline");
         return;
     }
     r.assert_clean();
     st.assert_clean();
-    // Either the data is shown, or a cache error (exit 5) explains why not.
-    match r.code {
-        Some(0) => assert_eq!(r.json()["metrics"], before["metrics"]),
-        Some(5) => {}
-        other => panic!("unexpected exit {other:?}: {}", r.stderr),
-    }
-    assert!(matches!(st.code, Some(0) | Some(5)), "{}", st.stderr);
+    // Reading needs no write access: the cached data is shown unchanged.
+    assert_eq!(r.code, Some(0), "{}", r.stderr);
+    assert_eq!(r.json()["metrics"], before["metrics"]);
+    assert_eq!(st.code, Some(0), "{}", st.stderr);
 }
 
 /// Runs `ghusage` with a tiny file size limit, so every database write
@@ -886,4 +915,98 @@ async fn failing_issue_history_page_is_not_reported_complete() {
         "issue history is missing a page"
     );
     assert_eq!(r.code, Some(4), "{}", r.stdout);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn request_timeout_makes_sync_partial_and_a_rerun_completes_it() {
+    let world = World::base();
+    let server = serve(&world).await;
+    // PR #20's detail answers only after 3 s; the client gives up on a
+    // request after 300 ms.
+    let slow = world.pr_body(world.prs.iter().find(|p| p.number == 20).unwrap());
+    pr_detail_mock(
+        "acme",
+        "widget",
+        20,
+        ResponseTemplate::new(200)
+            .set_body_json(slow)
+            .set_delay(Duration::from_secs(3)),
+        1,
+    )
+    .mount(&server)
+    .await;
+    let env = Env::new(&server);
+    let timed_sync = || {
+        let mut c = env.command(&[
+            "sync", "--since", SINCE, "--until", UNTIL, "--format", "json",
+        ]);
+        c.env("GHUSAGE_TIMEOUT_MS", "300");
+        c
+    };
+
+    let start = Instant::now();
+    let r = env.run_command(timed_sync()).await;
+    // 5 attempts x 300 ms plus tiny backoffs: far below a single default
+    // 30 s timeout, so the setting took effect.
+    assert!(
+        start.elapsed() < Duration::from_secs(20),
+        "{:?}",
+        start.elapsed()
+    );
+    r.expect_code(4).assert_clean();
+    let s = r.json();
+    assert_eq!(s["status"], "partial");
+    // #3 and #10 were fetched; #20 timed out.
+    assert_eq!(s["pull_requests_fetched"], 2, "{s}");
+    let failures = s["failures"].to_string();
+    assert!(failures.contains("acme/widget#20"), "{failures}");
+    assert!(failures.contains("timed out"), "{failures}");
+    // The client tries one request at most 5 times (its default attempt
+    // limit); the other pull requests need a single request each.
+    let reqs = requests(&server).await;
+    assert_eq!(pr_detail_requests(&reqs, 20), 5);
+    assert_eq!(pr_detail_requests(&reqs, 10), 1);
+    assert_eq!(pr_detail_requests(&reqs, 3), 1);
+
+    // What did arrive is stored and the gap is visible.
+    assert_eq!(cached_prs(&env).await, vec![3, 10]);
+    let o = env.offline_json(&["overview"]).await;
+    o.expect_code(0).assert_clean();
+    let o = o.json();
+    assert_eq!(coverage_status(&o, "pull_requests"), "partial");
+    assert_eq!(coverage_status(&o, "commits"), "complete");
+    // Commits are unaffected: search sha 1, 2, 3 plus my pull request
+    // commits sha 11, 12 (#10) and 21 (#3) = 6, as after a clean sync.
+    assert_eq!(o["metrics"]["commits"], 6);
+    env.run(&[
+        "overview",
+        "--since",
+        SINCE,
+        "--until",
+        UNTIL,
+        "--offline",
+        "--require-complete",
+    ])
+    .await
+    .expect_code(6);
+
+    // GitHub answers promptly again: the rerun fills the gap.
+    reserve(&server, &world).await;
+    let r = env.run_command(timed_sync()).await;
+    r.expect_code(0).assert_clean();
+    let s = r.json();
+    assert_eq!(s["status"], "complete");
+    assert_eq!(s["pull_requests_fetched"], 1, "{s}");
+    assert_eq!(cached_prs(&env).await, vec![3, 10, 20]);
+    env.run(&[
+        "overview",
+        "--since",
+        SINCE,
+        "--until",
+        UNTIL,
+        "--offline",
+        "--require-complete",
+    ])
+    .await
+    .expect_code(0);
 }

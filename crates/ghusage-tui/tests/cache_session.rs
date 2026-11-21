@@ -63,7 +63,7 @@ fn cached_data_is_shown_with_the_same_numbers_as_in_memory() {
     );
     assert_eq!(from_disk.base_report().unwrap().metrics.commits, 3);
 
-    for k in ['4', '5'] {
+    for k in ['5', '6'] {
         hit(&mut from_disk, key(k));
         in_memory.handle_key(key(k));
     }
@@ -73,13 +73,13 @@ fn cached_data_is_shown_with_the_same_numbers_as_in_memory() {
     );
 
     // PR detail is read from the cache by id.
-    hit(&mut from_disk, key('4'));
+    hit(&mut from_disk, key('5'));
     hit(&mut from_disk, code(KeyCode::Enter));
     assert_eq!(from_disk.screen, Screen::PrDetail);
     assert!(from_disk.pr_report().is_some());
     assert_clean(&from_disk, 120, 40);
 
-    hit(&mut from_disk, key('6'));
+    hit(&mut from_disk, key('8'));
     let text = screen_text(&from_disk, 140, 40);
     assert!(text.contains("alice (authenticated user)"), "{text}");
     assert!(text.contains("events"), "{text}");

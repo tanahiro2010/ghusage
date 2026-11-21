@@ -1,4 +1,5 @@
 mod cli;
+mod progress;
 mod render;
 
 use std::io::{IsTerminal, Write};
@@ -8,7 +9,6 @@ use chrono::Utc;
 use clap::Parser;
 use ghusage_app::report::{self, QueryContext, ReportKind};
 use ghusage_app::session::{self, Session, SessionConfig};
-use ghusage_app::sync::SyncProgress;
 use ghusage_app::{AppError, Result, csv_out, exit};
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::metrics::{
@@ -49,7 +49,7 @@ fn main() -> ExitCode {
     match runtime.block_on(run(cli)) {
         Ok(code) => ExitCode::from(code as u8),
         Err(e) => {
-            eprintln!("error: {e}");
+            eprintln!("error: {}", clean(&e));
             ExitCode::from(e.exit_code() as u8)
         }
     }
@@ -115,6 +115,13 @@ fn client_config(g: &GlobalArgs) -> ClientConfig {
     {
         c.backoff_base = std::time::Duration::from_millis(ms);
     }
+    if let Some(ms) = std::env::var("GHUSAGE_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|ms| *ms > 0)
+    {
+        c.request_timeout = std::time::Duration::from_millis(ms);
+    }
     c
 }
 
@@ -144,6 +151,7 @@ fn default_since(cmd: &Command) -> &'static str {
     match cmd {
         Command::Weekly => "8w",
         Command::Monthly => "6m",
+        Command::Yearly => "3y",
         Command::Sync(_) | Command::Tui => "30d",
         _ => "7d",
     }
@@ -159,24 +167,10 @@ fn period(g: &GlobalArgs, cmd: &Command, zone: Zone) -> Result<Period> {
     )?)
 }
 
-/// Progress on stderr only when it is a terminal.
-fn progress_printer() -> impl Fn(SyncProgress) {
-    let tty = std::io::stderr().is_terminal();
-    move |p| {
-        if !tty {
-            return;
-        }
-        let msg = match p {
-            SyncProgress::Searching(k) => format!("searching {}…", k.as_str()),
-            SyncProgress::Fetching { kind, done, total } => {
-                format!("fetching {} {done}/{total}", kind.as_str())
-            }
-            SyncProgress::Finished => String::new(),
-        };
-        let mut err = std::io::stderr();
-        let _ = write!(err, "\r\u{1b}[2K{msg}");
-        let _ = err.flush();
-    }
+/// Text from errors, which may quote GitHub responses, made safe for the
+/// terminal.
+fn clean(e: &dyn std::fmt::Display) -> String {
+    ghusage_core::sanitize::sanitize_line(&e.to_string())
 }
 
 fn print_stdout(s: &str) -> Result<()> {
@@ -195,9 +189,83 @@ fn to_json<T: serde::Serialize>(v: &T) -> Result<String> {
         .map_err(|e| AppError::Other(e.to_string()))
 }
 
+/// The command as typed, for messages.
+fn command_name(cmd: &Command) -> &'static str {
+    match cmd {
+        Command::Overview => "overview",
+        Command::Daily => "daily",
+        Command::Weekly => "weekly",
+        Command::Monthly => "monthly",
+        Command::Yearly => "yearly",
+        Command::Repos => "repos",
+        Command::Prs(_) => "prs",
+        Command::Reviews => "reviews",
+        Command::Comments => "comments",
+        Command::Issues => "issues",
+        Command::Pr(_) => "pr",
+        Command::Tui => "tui",
+        Command::Sync(_) => "sync",
+        Command::Doctor => "doctor",
+        Command::Auth {
+            command: AuthCommand::Status,
+        } => "auth status",
+        Command::Cache {
+            command: CacheCommand::Status,
+        } => "cache status",
+        Command::Cache {
+            command: CacheCommand::Clear,
+        } => "cache clear",
+    }
+}
+
+/// Global options that were given but that `cmd` does not use.
+fn unused_options(g: &GlobalArgs, cmd: &Command) -> Vec<&'static str> {
+    // Reports and the TUI use everything; sync uses the period only.
+    let (period, filters) = match cmd {
+        Command::Sync(_) => (true, false),
+        Command::Pr(_) | Command::Doctor | Command::Auth { .. } | Command::Cache { .. } => {
+            (false, false)
+        }
+        _ => (true, true),
+    };
+    let mut unused = Vec::new();
+    if !period {
+        if g.since.is_some() {
+            unused.push("--since");
+        }
+        if g.until.is_some() {
+            unused.push("--until");
+        }
+    }
+    if !filters {
+        if !g.repos.is_empty() {
+            unused.push("--repo");
+        }
+        if !g.owners.is_empty() {
+            unused.push("--owner");
+        }
+        if g.visibility.is_some() {
+            unused.push("--visibility");
+        }
+        if g.ownership.is_some() {
+            unused.push("--ownership");
+        }
+        if g.commit_date != cli::CommitDateArg::Committer {
+            unused.push("--commit-date");
+        }
+    }
+    unused
+}
+
 async fn run(cli: Cli) -> Result<i32> {
     let g = cli.global.clone();
     let cmd = cli.command.unwrap_or(Command::Overview);
+    for option in unused_options(&g, &cmd) {
+        eprintln!(
+            "warning: {option} has no effect on `{}`",
+            command_name(&cmd)
+        );
+    }
     if g.format == Format::Csv
         && matches!(
             cmd,
@@ -245,6 +313,16 @@ async fn run(cli: Cli) -> Result<i32> {
             )
             .await
         }
+        Command::Yearly => {
+            report_cmd(
+                &g,
+                &cmd,
+                zone,
+                ReportKind::Breakdown(Granularity::Year),
+                false,
+            )
+            .await
+        }
         Command::Repos => report_cmd(&g, &cmd, zone, ReportKind::Repositories, false).await,
         Command::Reviews => report_cmd(&g, &cmd, zone, ReportKind::Reviews, false).await,
         Command::Comments => report_cmd(&g, &cmd, zone, ReportKind::Comments, false).await,
@@ -282,31 +360,56 @@ async fn run(cli: Cli) -> Result<i32> {
     }
 }
 
-/// Opens a session and fills gaps for `period` unless offline.
-async fn prepared_session(g: &GlobalArgs, period: Period) -> Result<Session> {
+/// Opens a session and fills gaps for `period` unless offline. Returns the
+/// period to report: when the cache was synced within `--max-age`, it ends
+/// at that sync instead of fetching the last few minutes again.
+async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<(Session, Period)> {
     let mut s = Session::open(session_config(g)).await?;
     if let Some(reason) = &s.offline_reason {
-        eprintln!("warning: GitHub is not reachable ({reason}); showing cached data");
+        eprintln!(
+            "warning: GitHub is not reachable ({}); showing cached data",
+            clean(reason)
+        );
     }
     if !s.is_offline() && s.needs_sync(period)? {
-        let printer = progress_printer();
-        match s
-            .sync(period, false, g.concurrency as usize, &printer)
-            .await
+        let now = Utc::now();
+        let max_age = chrono::Duration::from_std(g.max_age).unwrap_or(chrono::Duration::MAX);
+        if let Some(until) = s.synced_until(period)?
+            && until < period.end
+            && now - until <= max_age
         {
+            let mins = (now - until).num_minutes();
+            eprintln!(
+                "note: showing data synced {} ago (up to {}); use --max-age 0 to fetch the latest",
+                if mins < 1 {
+                    "less than a minute".to_string()
+                } else {
+                    format!("{mins} min")
+                },
+                zone.format(until, "%Y-%m-%d %H:%M")
+            );
+            return Ok((s, Period::new(period.start, until)?));
+        }
+        let progress = progress::Progress::start();
+        let synced = s
+            .sync(period, false, g.concurrency as usize, &|p| {
+                progress.update(p)
+            })
+            .await;
+        drop(progress);
+        match synced {
             Ok(r) => {
-                printer(SyncProgress::Finished);
                 for f in r.failures.iter().take(5) {
                     eprintln!("warning: {}", ghusage_core::sanitize::sanitize_line(f));
                 }
             }
             Err(e @ (AppError::AuthRejected(_) | AppError::Auth(_))) => return Err(e),
             Err(e) => {
-                eprintln!("warning: sync failed, showing cached data: {e}");
+                eprintln!("warning: sync failed, showing cached data: {}", clean(&e));
             }
         }
     }
-    Ok(s)
+    Ok((s, period))
 }
 
 fn require_complete(g: &GlobalArgs, status: CoverageStatus) -> i32 {
@@ -328,8 +431,7 @@ async fn report_cmd(
     kind: ReportKind,
     details: bool,
 ) -> Result<i32> {
-    let period = period(g, cmd, zone)?;
-    let s = prepared_session(g, period).await?;
+    let (s, period) = prepared_session(g, period(g, cmd, zone)?, zone).await?;
     let ds = s.dataset(Some(period))?;
     let ctx = QueryContext {
         period,
@@ -376,9 +478,14 @@ async fn pr_cmd(g: &GlobalArgs, a: &cli::PrArgs, zone: Zone) -> Result<i32> {
     }
     let mut s = Session::open(session_config(g)).await?;
     if let Some(reason) = &s.offline_reason {
-        eprintln!("warning: GitHub is not reachable ({reason}); showing cached data");
+        eprintln!(
+            "warning: GitHub is not reachable ({}); showing cached data",
+            clean(reason)
+        );
     }
-    // A single pull request is always refreshed when online.
+    // A single pull request is always refreshed when online. GitHub resolves
+    // old URLs of renamed repositories, so the fetched id is authoritative.
+    let mut fetched_id = None;
     if let Some(client) = &s.client {
         let bundle = client
             .fetch_pull_request(&owner, &name, number)
@@ -386,6 +493,7 @@ async fn pr_cmd(g: &GlobalArgs, a: &cli::PrArgs, zone: Zone) -> Result<i32> {
             .map_err(AppError::from);
         match bundle {
             Ok(b) => {
+                fetched_id = Some(b.pull_request.id.clone());
                 let involved = ghusage_app::sync::involves(&s.subject, &b);
                 let mut batch = ghusage_app::sync::pr_batch(&s.subject, b);
                 if !involved {
@@ -404,13 +512,20 @@ async fn pr_cmd(g: &GlobalArgs, a: &cli::PrArgs, zone: Zone) -> Result<i32> {
                 if s.store.find_pr(&owner, &name, number)?.is_none() {
                     return Err(e);
                 }
-                eprintln!("warning: could not refresh pull request, showing cached data: {e}");
+                eprintln!(
+                    "warning: could not refresh pull request, showing cached data: {}",
+                    clean(&e)
+                );
             }
         }
     }
-    let Some(pr_id) = s.store.find_pr(&owner, &name, number)? else {
-        let hint = if g.offline {
-            "run without --offline to fetch it"
+    let pr_id = match fetched_id {
+        Some(id) => Some(id),
+        None => s.store.find_pr(&owner, &name, number)?,
+    };
+    let Some(pr_id) = pr_id else {
+        let hint = if s.client.is_none() {
+            "run without --offline to fetch it; if the repository was renamed, use its current URL"
         } else {
             "it could not be fetched from GitHub"
         };
@@ -444,16 +559,32 @@ async fn sync_cmd(g: &GlobalArgs, cmd: &Command, zone: Zone, full: bool) -> Resu
             reason.clone(),
         )));
     }
-    let printer = progress_printer();
-    let r = s
-        .sync(period, full, g.concurrency as usize, &printer)
-        .await?;
-    printer(SyncProgress::Finished);
+    let progress = progress::Progress::start();
+    let synced = s
+        .sync(period, full, g.concurrency as usize, &|p| {
+            progress.update(p)
+        })
+        .await;
+    drop(progress);
+    let mut r = synced?;
     let out = match g.format {
-        Format::Json => to_json(&r)?,
+        Format::Json => {
+            if !g.include_private {
+                let public = report::public_names(&s.dataset(Some(period))?);
+                for f in &mut r.failures {
+                    *f = report::scrub_names(f, &public);
+                }
+                for c in &mut r.coverage {
+                    if let Some(reason) = &c.reason {
+                        c.reason = Some(report::scrub_names(reason, &public));
+                    }
+                }
+            }
+            to_json(&r)?
+        }
         _ => {
             let mut o = format!(
-                "Synced {} for {} → {}\n  commits found: {}\n  pull requests found: {} (fetched {}, unchanged {})\n  issues found: {} (fetched {})\n  API requests: {} (retries {}, {} ms)\n",
+                "Synced {} for {} → {}\n  commits found: {}\n  pull requests found: {} (fetched {}, unchanged {})\n  issues found: {} (fetched {}, unchanged {})\n  API requests: {} (retries {}, {} ms)\n",
                 ghusage_core::sanitize::sanitize_line(&s.subject.login),
                 zone.format(period.start, "%Y-%m-%d %H:%M"),
                 zone.format(period.end, "%Y-%m-%d %H:%M"),
@@ -463,6 +594,7 @@ async fn sync_cmd(g: &GlobalArgs, cmd: &Command, zone: Zone, full: bool) -> Resu
                 r.pull_requests_unchanged,
                 r.issues_found,
                 r.issues_fetched,
+                r.issues_unchanged,
                 r.api.requests,
                 r.api.retries,
                 r.api.total_api_time_ms,
@@ -583,6 +715,11 @@ fn cache_cmd(g: &GlobalArgs, c: CacheCommand, zone: Zone) -> Result<i32> {
     let (mut store, dir) = session::open_store(&cfg)?;
     match c {
         CacheCommand::Clear => {
+            // Never clear underneath a running sync.
+            let _lock = match &dir {
+                Some(d) => Some(ghusage_storage::SyncLock::acquire(d)?),
+                None => None,
+            };
             store.clear()?;
             print_stdout("Cache cleared. Credentials were not changed.\n")?;
             Ok(exit::SUCCESS)

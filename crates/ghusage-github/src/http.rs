@@ -346,6 +346,14 @@ impl Transport {
         };
         let elapsed = started.elapsed().as_millis() as u64;
         let bytes = result.as_ref().map(|r| r.body.len() as u64).unwrap_or(0);
+        tracing::debug!(
+            %method,
+            path = url.path(),
+            status = result.as_ref().map(|r| r.status).unwrap_or(0),
+            elapsed_ms = elapsed,
+            bytes,
+            "GitHub request"
+        );
         self.with_stats(|s| {
             s.requests += 1;
             s.total_api_time_ms += elapsed;
@@ -569,6 +577,33 @@ mod tests {
         );
         let h = r#"<https://api.github.com/x?page=1>; rel="prev", <https://api.github.com/x?page=1>; rel="first""#;
         assert_eq!(parse_next_link(h), None);
+    }
+
+    #[test]
+    fn backoff_doubles_from_the_base_and_is_capped_at_one_minute() {
+        // The default base is one second. Without jitter, retry n waits
+        // 2^(n-1) seconds: 1, 2, 4, 8, 16, 32, then 64 is capped to 60.
+        let t = Transport::new(None, ClientConfig::default()).unwrap();
+        assert_eq!(t.config.backoff_base, Duration::from_secs(1));
+        let nominal = [1u64, 2, 4, 8, 16, 32, 60, 60, 60, 60];
+        for (i, secs) in nominal.into_iter().enumerate() {
+            let attempt = i as u32 + 1;
+            let full = Duration::from_secs(secs);
+            for _ in 0..200 {
+                let d = t.backoff(attempt);
+                // Jitter only shortens a wait, by at most half, so the
+                // doubling stays visible and the cap is never exceeded.
+                assert!(d <= full, "attempt {attempt}: {d:?} > {full:?}");
+                assert!(d >= full / 2, "attempt {attempt}: {d:?} < {:?}", full / 2);
+                assert!(d <= MAX_BACKOFF);
+            }
+        }
+        // Very late attempts neither overflow nor exceed the cap.
+        for attempt in [20, 32, 64, u32::MAX] {
+            let d = t.backoff(attempt);
+            assert!(d <= Duration::from_secs(60), "attempt {attempt}: {d:?}");
+            assert!(d >= Duration::from_secs(30), "attempt {attempt}: {d:?}");
+        }
     }
 
     #[test]
