@@ -1190,6 +1190,7 @@ dependencies = [
  "ghusage-github",
  "ghusage-storage",
  "ghusage-tui",
+ "libc",
  "predicates",
  "ratatui",
  "serde",
