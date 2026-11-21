@@ -3,9 +3,10 @@ name: Release
 # Builds release binaries for every supported platform, assembles the npm
 # packages, installs them on each platform and (optionally) publishes them.
 #
-# - Pushing a tag `vX.Y.Z` runs everything and publishes.
+# - Pushing a tag `vX.Y.Z` on a commit of the `release` branch runs
+#   everything and publishes. Tags on other commits are refused.
 # - Running the workflow manually builds and verifies; it publishes only
-#   when the `publish` input is checked.
+#   when the `publish` input is checked and the run is on `release`.
 
 on:
   push:
@@ -25,8 +26,26 @@ env:
   RUST_TOOLCHAIN: "1.94.0"
 
 jobs:
+  source:
+    name: check the release source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+      - name: Releases come only from the release branch
+        if: github.ref_type == 'tag' || inputs.publish
+        run: |
+          git fetch --no-tags origin release
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/release; then
+            echo "$GITHUB_SHA is not on the release branch; merge it into release first." >&2
+            exit 1
+          fi
+
   build:
     name: build (${{ matrix.target }})
+    needs: source
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
