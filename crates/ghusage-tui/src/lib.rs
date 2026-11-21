@@ -43,6 +43,8 @@ pub struct TuiOptions {
     /// Fill missing data from GitHub in the background.
     pub background_sync: bool,
     pub concurrency: usize,
+    /// Which commit date counts for daily totals and period membership.
+    pub commit_basis: ghusage_core::metrics::CommitDateBasis,
 }
 
 /// Why the UI could not run.
@@ -93,6 +95,7 @@ fn run_here(opts: TuiOptions) -> Result<(), TuiError> {
             background_sync: opts.background_sync,
         },
     )?;
+    app.commit_basis = opts.commit_basis;
     app.prepare();
 
     term::install_panic_hook();

@@ -170,3 +170,16 @@ async fn rejected_token_exits_3_and_never_prints_the_token() {
     assert!(!all.contains(SENTINEL_TOKEN), "token leaked: {all}");
     assert!(!all.contains("sentinelTOKEN"));
 }
+
+#[test]
+fn csv_is_rejected_for_commands_without_tables() {
+    let d = tempfile::tempdir().unwrap();
+    for args in [["cache", "status"], ["doctor", "--offline"]] {
+        ghusage(&d)
+            .args(args)
+            .args(["--format", "csv"])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("--format csv is not available"));
+    }
+}

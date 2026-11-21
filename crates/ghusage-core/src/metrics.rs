@@ -270,6 +270,7 @@ fn selected<'a>(ds: &'a Dataset, opts: &'a Options) -> impl Iterator<Item = &'a 
 /// Comment counts by type.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommentCounts {
+    pub total: u64,
     pub conversation: u64,
     pub inline: u64,
     pub review_summary: u64,
@@ -277,9 +278,15 @@ pub struct CommentCounts {
 
 impl CommentCounts {
     pub fn total(&self) -> u64 {
-        self.conversation + self.inline + self.review_summary
+        self.total
     }
     fn add(&mut self, t: EventType) {
+        if matches!(
+            t,
+            EventType::ConversationComment | EventType::InlineComment | EventType::ReviewSummary
+        ) {
+            self.total += 1;
+        }
         match t {
             EventType::ConversationComment => self.conversation += 1,
             EventType::InlineComment => self.inline += 1,
@@ -397,7 +404,7 @@ fn summarize_events<'a>(
         }
         if by_subject && !t.is_automation() {
             days.insert(zone.local_date(event_time(e, basis)));
-            s.last_activity = s.last_activity.max(Some(e.occurred_at));
+            s.last_activity = s.last_activity.max(Some(event_time(e, basis)));
             if t.is_pr_event() {
                 s.pr_internal_events += 1;
             }

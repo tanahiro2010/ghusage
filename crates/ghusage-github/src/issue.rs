@@ -177,7 +177,8 @@ pub(crate) async fn fetch(
             event_type,
             actor: actor_of(&item.actor),
             repository_id: repository.id.clone(),
-            entity_id: node_id,
+            // The entity is the issue; the timeline node id is in event_id.
+            entity_id: id.clone(),
             parent_pr_id: None,
             occurred_at: at,
             observed_at: now,

@@ -96,7 +96,12 @@ fn client_config(g: &GlobalArgs) -> ClientConfig {
         .filter(|v| !v.is_empty())
     {
         c.api_base = url.trim_end_matches('/').to_string();
-        c.graphql_url = format!("{}/graphql", c.api_base);
+        // GitHub Enterprise Server serves REST at /api/v3 and GraphQL at
+        // /api/graphql; github.com-style bases append /graphql.
+        c.graphql_url = match c.api_base.strip_suffix("/api/v3") {
+            Some(host) => format!("{host}/api/graphql"),
+            None => format!("{}/graphql", c.api_base),
+        };
     }
     if let Some(url) = std::env::var("GHUSAGE_GRAPHQL_URL")
         .ok()
@@ -125,6 +130,13 @@ fn filter(g: &GlobalArgs) -> Filter {
             cli::OwnershipArg::Owned => Ownership::Owned,
             cli::OwnershipArg::External => Ownership::External,
         }),
+    }
+}
+
+fn commit_basis(g: &GlobalArgs) -> CommitDateBasis {
+    match g.commit_date {
+        cli::CommitDateArg::Committer => CommitDateBasis::Committer,
+        cli::CommitDateArg::Author => CommitDateBasis::Author,
     }
 }
 
@@ -186,6 +198,20 @@ fn to_json<T: serde::Serialize>(v: &T) -> Result<String> {
 async fn run(cli: Cli) -> Result<i32> {
     let g = cli.global.clone();
     let cmd = cli.command.unwrap_or(Command::Overview);
+    if g.format == Format::Csv
+        && matches!(
+            cmd,
+            Command::Sync(_)
+                | Command::Doctor
+                | Command::Auth { .. }
+                | Command::Cache { .. }
+                | Command::Tui
+        )
+    {
+        return Err(AppError::InvalidArgs(
+            "--format csv is not available for this command; use table or json".into(),
+        ));
+    }
     let zone = Zone::resolve(g.timezone.as_deref())?;
     match cmd {
         Command::Overview => report_cmd(&g, &cmd, zone, ReportKind::Overview, false).await,
@@ -259,6 +285,9 @@ async fn run(cli: Cli) -> Result<i32> {
 /// Opens a session and fills gaps for `period` unless offline.
 async fn prepared_session(g: &GlobalArgs, period: Period) -> Result<Session> {
     let mut s = Session::open(session_config(g)).await?;
+    if let Some(reason) = &s.offline_reason {
+        eprintln!("warning: GitHub is not reachable ({reason}); showing cached data");
+    }
     if !s.is_offline() && s.needs_sync(period)? {
         let printer = progress_printer();
         match s
@@ -306,10 +335,7 @@ async fn report_cmd(
         period,
         zone,
         filter: filter(g),
-        commit_basis: match g.commit_date {
-            cli::CommitDateArg::Committer => CommitDateBasis::Committer,
-            cli::CommitDateArg::Author => CommitDateBasis::Author,
-        },
+        commit_basis: commit_basis(g),
         redact_private: g.format != Format::Table && !g.include_private,
         synced_at: s.last_synced_at()?,
     };
@@ -357,7 +383,17 @@ async fn pr_cmd(g: &GlobalArgs, a: &cli::PrArgs, zone: Zone) -> Result<i32> {
             .map_err(AppError::from);
         match bundle {
             Ok(b) => {
-                let batch = ghusage_app::sync::pr_batch(&s.subject, b);
+                let involved = ghusage_app::sync::involves(&s.subject, &b);
+                let mut batch = ghusage_app::sync::pr_batch(&s.subject, b);
+                if !involved {
+                    // Viewing someone else's pull request must not add it
+                    // to your own activity.
+                    batch.account =
+                        format!("{}{}", s.subject.login, ghusage_app::sync::VIEWED_SUFFIX);
+                    batch
+                        .events
+                        .retain(|e| e.event_type != EventType::CommitAuthored);
+                }
                 s.store.apply(&batch)?;
             }
             Err(e @ AppError::AuthRejected(_)) => return Err(e),
@@ -465,6 +501,7 @@ async fn tui_cmd(g: &GlobalArgs, cmd: &Command, zone: Zone) -> Result<i32> {
         session: cfg,
         background_sync: online,
         concurrency: g.concurrency as usize,
+        commit_basis: commit_basis(g),
     };
     drop(s);
     match ghusage_tui::run(opts) {

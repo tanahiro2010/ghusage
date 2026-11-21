@@ -320,6 +320,8 @@ pub struct App {
     pub review_direction: ReviewDirection,
     pub overview_pane: OverviewPane,
     pub timeline_filter: TimelineFilter,
+    /// Which commit date counts (same meaning as the CLI's `--commit-date`).
+    pub commit_basis: CommitDateBasis,
     pub detail_pr: Option<String>,
     pub search_mode: bool,
     pub show_help: bool,
@@ -387,6 +389,7 @@ impl App {
             review_direction: ReviewDirection::Submitted,
             overview_pane: OverviewPane::Summary,
             timeline_filter: TimelineFilter::All,
+            commit_basis: CommitDateBasis::default(),
             detail_pr: None,
             search_mode: false,
             show_help: false,
@@ -428,7 +431,7 @@ impl App {
             period: self.period,
             zone: self.zone,
             filter: self.filter(),
-            commit_basis: CommitDateBasis::default(),
+            commit_basis: self.commit_basis,
             redact_private: false,
             synced_at: self.system.synced_at,
         }

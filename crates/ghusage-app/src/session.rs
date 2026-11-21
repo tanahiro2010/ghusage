@@ -37,6 +37,8 @@ pub struct Session {
     pub client: Option<GitHubClient>,
     pub token_source: Option<TokenSource>,
     pub config: SessionConfig,
+    /// Set when GitHub could not be reached and cached data is used instead.
+    pub offline_reason: Option<String>,
 }
 
 /// Resolves credentials from the environment and `gh`.
@@ -78,13 +80,33 @@ impl Session {
                 client: None,
                 token_source: None,
                 config: cfg,
+                offline_reason: None,
             });
         }
         let creds = credentials(cfg.token_file.as_deref())?;
         let source = creds.source.clone();
         let client = GitHubClient::new(Some(creds), cfg.client.clone())?;
         let (subject, viewer) =
-            sync::resolve_subject(&client, &mut store, cfg.user.as_deref()).await?;
+            match sync::resolve_subject(&client, &mut store, cfg.user.as_deref()).await {
+                Ok(s) => s,
+                // Without a connection, fall back to cached data. Rejected
+                // credentials are still an error.
+                Err(AppError::Api(e)) if is_connectivity(&e) => {
+                    let (subject, viewer) = sync::cached_subject(&store, cfg.user.as_deref())
+                        .map_err(|_| AppError::Api(e.clone()))?;
+                    return Ok(Self {
+                        store,
+                        data_dir,
+                        subject,
+                        subject_is_viewer: viewer,
+                        client: None,
+                        token_source: Some(source),
+                        config: cfg,
+                        offline_reason: Some(e.to_string()),
+                    });
+                }
+                Err(e) => return Err(e),
+            };
         Ok(Self {
             store,
             data_dir,
@@ -93,6 +115,7 @@ impl Session {
             client: Some(client),
             token_source: Some(source),
             config: cfg,
+            offline_reason: None,
         })
     }
 
@@ -100,9 +123,17 @@ impl Session {
         self.client.is_none()
     }
 
+    /// Coverage records that apply to this session's mode.
+    pub fn coverage(&self) -> Result<Vec<coverage::CoverageRecord>> {
+        Ok(sync::applicable_coverage(
+            self.store.coverage(&self.subject.login)?,
+            self.config.public_only,
+        ))
+    }
+
     /// Whether any data kind has gaps in `period`.
     pub fn needs_sync(&self, period: Period) -> Result<bool> {
-        let records = self.store.coverage(&self.subject.login)?;
+        let records = self.coverage()?;
         Ok(DataKind::ALL.iter().any(|k| {
             !coverage::summarize(&records, *k, period.start, period.end)
                 .status
@@ -137,6 +168,8 @@ impl Session {
         let mut ds = self
             .store
             .load_dataset(&self.subject, self.subject_is_viewer, period)?;
+        ds.coverage =
+            sync::applicable_coverage(std::mem::take(&mut ds.coverage), self.config.public_only);
         if self.config.public_only {
             restrict_public(&mut ds);
         }
@@ -159,6 +192,15 @@ impl Session {
             .last_sync_run(&self.subject.login)?
             .and_then(|r| r.finished_at))
     }
+}
+
+/// Errors meaning GitHub could not be reached at all.
+fn is_connectivity(e: &ghusage_github::ApiError) -> bool {
+    use ghusage_github::ApiError;
+    matches!(
+        e,
+        ApiError::Network(_) | ApiError::Timeout { .. } | ApiError::Http { status: 500.., .. }
+    )
 }
 
 /// Drops everything from non-public repositories.

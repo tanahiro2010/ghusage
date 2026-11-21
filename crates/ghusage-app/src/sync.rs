@@ -154,6 +154,23 @@ pub fn cached_subject(store: &Store, user: Option<&str>) -> Result<(Subject, boo
     }
 }
 
+/// Suffix of coverage scopes recorded by `--public-only` syncs.
+pub const PUBLIC_ONLY_SCOPE: &str = " (public repositories only)";
+
+/// Coverage records that count for the current mode. Records from a
+/// public-only sync do not cover private data, so they are ignored unless
+/// the current mode is public-only too.
+pub fn applicable_coverage(records: Vec<CoverageRecord>, public_only: bool) -> Vec<CoverageRecord> {
+    if public_only {
+        records
+    } else {
+        records
+            .into_iter()
+            .filter(|r| !r.scope.ends_with(PUBLIC_ONLY_SCOPE))
+            .collect()
+    }
+}
+
 /// Ranges of `kind` that need fetching for `period`.
 pub fn ranges_to_fetch(
     records: &[CoverageRecord],
@@ -183,11 +200,7 @@ pub fn ranges_to_fetch(
 }
 
 fn scope(kind: DataKind, login: &str, public_only: bool) -> String {
-    let vis = if public_only {
-        " (public repositories only)"
-    } else {
-        ""
-    };
+    let vis = if public_only { PUBLIC_ONLY_SCOPE } else { "" };
     match kind {
         DataKind::Commits => format!(
             "commits authored by {login} found by GitHub commit search (default branches of indexed repositories), plus commits of synced pull requests{vis}"
@@ -265,7 +278,7 @@ async fn run_inner(
     progress: &dyn Fn(SyncProgress),
 ) -> Result<SyncReport> {
     let mut report = SyncReport::default();
-    let existing = store.coverage(&subject.login)?;
+    let existing = applicable_coverage(store.coverage(&subject.login)?, opts.public_only);
     let probe = Period::new(opts.now, opts.now + Duration::seconds(1))?;
     let mut known_repos: HashMap<String, Repository> = store
         .load_dataset(subject, false, Some(probe))?
@@ -400,7 +413,13 @@ async fn run_inner(
                 report.pull_requests_fetched += 1;
             }
             Err(e @ ApiError::Unauthorized) => return Err(e.into()),
-            Err(e) => pr_failures.push(format!("{o}/{n}#{num}: {e}")),
+            Err(e) => {
+                if matches!(e, ApiError::NotFound(_) | ApiError::Forbidden(_)) {
+                    // Keep earlier data but show that access was lost.
+                    store.set_repository_accessible(&o, &n, false)?;
+                }
+                pr_failures.push(format!("{o}/{n}#{num}: {e}"));
+            }
         }
     }
     drop(stream);
@@ -461,6 +480,12 @@ async fn run_inner(
             });
             match res {
                 Ok(bundle) => {
+                    if !bundle.status.is_complete() {
+                        failures.push(format!(
+                            "{}/{}#{}: issue history partially fetched",
+                            r.owner, r.name, r.number
+                        ));
+                    }
                     store.apply(&WriteBatch {
                         account: subject.login.clone(),
                         repositories: vec![bundle.repository],
@@ -471,7 +496,12 @@ async fn run_inner(
                     report.issues_fetched += 1;
                 }
                 Err(e @ ApiError::Unauthorized) => return Err(e.into()),
-                Err(e) => failures.push(format!("{}/{}#{}: {e}", r.owner, r.name, r.number)),
+                Err(e) => {
+                    if matches!(e, ApiError::NotFound(_) | ApiError::Forbidden(_)) {
+                        store.set_repository_accessible(&r.owner, &r.name, false)?;
+                    }
+                    failures.push(format!("{}/{}#{}: {e}", r.owner, r.name, r.number));
+                }
             }
         }
         drop(stream);
@@ -547,6 +577,26 @@ fn stale_open_prs(
             ))
         })
         .collect())
+}
+
+/// Account suffix for pull requests fetched only for viewing.
+pub const VIEWED_SUFFIX: &str = "+viewed";
+
+/// Whether the subject took part in a pull request: author, any event,
+/// requested reviewer or assignee.
+pub fn involves(subject: &Subject, bundle: &PrBundle) -> bool {
+    bundle.pull_request.author.is(subject)
+        || bundle.events.iter().any(|e| {
+            e.actor.is(subject)
+                || (matches!(
+                    e.event_type,
+                    EventType::ReviewRequested | EventType::Assigned
+                ) && e
+                    .meta
+                    .target
+                    .as_deref()
+                    .is_some_and(|t| t.eq_ignore_ascii_case(&subject.login)))
+        })
 }
 
 /// Builds the write batch for one fetched pull request. Commits in the pull

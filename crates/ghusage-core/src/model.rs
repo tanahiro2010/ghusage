@@ -290,7 +290,7 @@ impl EventType {
     pub fn as_str(self) -> &'static str {
         use EventType::*;
         match self {
-            CommitAuthored => "commit",
+            CommitAuthored => "commit_authored",
             PrOpened => "pr_opened",
             PrConvertedToDraft => "pr_converted_to_draft",
             PrReadyForReview => "pr_ready_for_review",
@@ -356,6 +356,10 @@ impl EventType {
     }
 
     pub fn parse(s: &str) -> Option<Self> {
+        // "commit" is accepted for caches written by earlier versions.
+        if s == "commit" {
+            return Some(EventType::CommitAuthored);
+        }
         Self::ALL.iter().copied().find(|t| t.as_str() == s)
     }
 }

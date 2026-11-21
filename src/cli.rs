@@ -68,7 +68,7 @@ pub struct GlobalArgs {
     /// Only fetch and show public repositories.
     #[arg(long, global = true)]
     pub public_only: bool,
-    /// Which commit date counts for daily totals.
+    /// Which commit date decides a commit's day and whether it is in the period.
     #[arg(long, global = true, value_enum, default_value_t = CommitDateArg::Committer)]
     pub commit_date: CommitDateArg,
     /// Read the GitHub token from this file (must not be readable by others).

@@ -48,7 +48,12 @@ fn measure(name: &str, target: Duration, mut f: impl FnMut()) -> bool {
 }
 
 fn main() {
-    // `cargo bench` passes `--bench`; ignore arguments.
+    // `cargo test --all-targets` also runs this file, in a debug build and
+    // without `--bench`; percentiles are only meaningful under `cargo bench`.
+    if !std::env::args().any(|a| a == "--bench") {
+        println!("latency percentiles are measured with `cargo bench --bench latency`; skipped");
+        return;
+    }
     let (repos, prs, events) = data();
     let ds = Dataset::new(
         subject(),
