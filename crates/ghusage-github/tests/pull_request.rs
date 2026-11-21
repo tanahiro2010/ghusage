@@ -1742,3 +1742,315 @@ async fn saml_protected_repository_is_forbidden() {
     assert!(matches!(err, ApiError::Forbidden(_)), "{err:?}");
     assert!(!err.is_auth());
 }
+
+#[tokio::test]
+async fn unknown_fields_and_enum_values_are_tolerated() {
+    let baseline = fetch_rich().await;
+    let server = MockServer::start().await;
+    let mut pr = rich_pr();
+    // Fields GitHub may add at any level.
+    pr["brandNewField"] = json!({ "nested": [1, 2, 3] });
+    pr["commits"]["nodes"][0]["commit"]["newCommitField"] = json!("x");
+    pr["reviews"]["nodes"][0]["reviewNewField"] = json!(true);
+    pr["reviewThreads"]["nodes"][0]["threadNewField"] = json!(null);
+    pr["comments"]["nodes"][0]["reactionGroups"] = json!([]);
+    // A review in a state this version does not know. It has a submission
+    // time, so it is a submitted review whose state is unknown.
+    let mut reviews = pr["reviews"]["nodes"].as_array().unwrap().clone();
+    reviews.push(review(
+        "PRR_6",
+        "SOME_FUTURE_STATE",
+        "",
+        Some("2024-03-03T09:00:00Z"),
+        user("erin"),
+        vec![],
+    ));
+    pr["reviews"] = connection(reviews, false, Some("r6"));
+    mount_main(&server, pr_response(pr)).await;
+    mount_checks(&server, &oid(3)).await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    // Every known collection is still complete.
+    assert_eq!(b.status, CoverageStatus::Complete, "{:?}", b.notes);
+    // Every event type keeps its count, except one more submitted review.
+    for t in EventType::ALL {
+        let expected = of_type(&baseline, t).len() + usize::from(t == EventType::ReviewSubmitted);
+        assert_eq!(of_type(&b, t).len(), expected, "{t:?}");
+    }
+    let r6 = find(&b, &EventId::review("PRR_6"));
+    assert_eq!(r6.meta.review_state, None);
+    assert_eq!(r6.actor.login.as_deref(), Some("erin"));
+    assert_eq!(b.threads.len(), baseline.threads.len());
+}
+
+/// A pull request whose commits, reviews and review threads all exceed one
+/// page: 250 commits, 120 reviews and 110 threads.
+///
+/// Pages as GitHub returns them (commits and reviews 100 per page, threads
+/// 50 per page):
+/// - commits: 100 (cursor `c-100`) + 100 (`c-200`) + 50 = 250
+/// - reviews: 100 (`r-100`) + 20 = 120
+/// - threads: 50 (`t-50`) + 50 (`t-100`) + 10 = 110
+struct BigPr {
+    main: Value,
+    commit_pages: [Vec<Value>; 3],
+    review_page: Vec<Value>,
+    thread_pages: [Vec<Value>; 3],
+}
+
+fn big_commit(i: u64) -> Value {
+    // The last commit is the head commit of the pull request.
+    let o = if i == 249 { oid(3) } else { oid(10_000 + i) };
+    let t = format!(
+        "2024-03-0{}T{:02}:{:02}:00Z",
+        1 + i / 100,
+        (i / 60) % 24,
+        i % 60
+    );
+    pr_commit("acme", "widget", 42, &o, Some("alice"), &t, &t, 1)
+}
+
+fn big_review(i: u64) -> Value {
+    let t = format!("2024-03-03T{:02}:{:02}:00Z", i / 60, i % 60);
+    // An empty body: each review is one submission and no summary comment.
+    review(
+        &format!("PRR_big_{i}"),
+        "COMMENTED",
+        "",
+        Some(&t),
+        user("bob"),
+        vec![],
+    )
+}
+
+fn big_thread(i: u64) -> Value {
+    let t = format!("2024-03-03T{:02}:{:02}:30Z", i / 60, i % 60);
+    let c = review_comment(
+        &format!("PRRC_big_{i}"),
+        user("carol"),
+        &t,
+        &format!("PRR_big_{}", i % 120),
+        None,
+        None,
+    );
+    thread(
+        &format!("PRRT_big_{i}"),
+        false,
+        false,
+        None,
+        "src/big.rs",
+        vec![c],
+    )
+}
+
+fn big_pr() -> BigPr {
+    let commits: Vec<Value> = (0..250).map(big_commit).collect();
+    let reviews: Vec<Value> = (0..120).map(big_review).collect();
+    let threads: Vec<Value> = (0..110).map(big_thread).collect();
+    let mut pr = rich_pr();
+    pr["commits"] = connection(commits[0..100].to_vec(), true, Some("c-100"));
+    pr["reviews"] = connection(reviews[0..100].to_vec(), true, Some("r-100"));
+    pr["reviewThreads"] = connection(threads[0..50].to_vec(), true, Some("t-50"));
+    // The dismissal in the timeline refers to a review that is not part of
+    // this fixture; it is dropped so only the paged reviews remain.
+    let timeline: Vec<Value> = pr["timelineItems"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| n["__typename"] != "ReviewDismissedEvent")
+        .cloned()
+        .collect();
+    pr["timelineItems"] = connection(timeline, false, Some("tl16"));
+    BigPr {
+        main: pr_response(pr),
+        commit_pages: [
+            commits[0..100].to_vec(),
+            commits[100..200].to_vec(),
+            commits[200..250].to_vec(),
+        ],
+        review_page: reviews[100..120].to_vec(),
+        thread_pages: [
+            threads[0..50].to_vec(),
+            threads[50..100].to_vec(),
+            threads[100..110].to_vec(),
+        ],
+    }
+}
+
+fn node_page(field: &str, nodes: Vec<Value>, next: Option<&str>) -> Value {
+    let conn = connection(nodes, next.is_some(), Some(next.unwrap_or("end")));
+    gql_data(json!({ "node": { field: conn } }))
+}
+
+/// Mounts every follow-up page of `big_pr` except those after the cursors
+/// in `skip`.
+async fn mount_big_pages(server: &MockServer, big: &BigPr, skip: &[&str]) {
+    let pages: Vec<(&str, &str, Value)> = vec![
+        (
+            "PullRequestCommitsPage",
+            "c-100",
+            node_page("commits", big.commit_pages[1].clone(), Some("c-200")),
+        ),
+        (
+            "PullRequestCommitsPage",
+            "c-200",
+            node_page("commits", big.commit_pages[2].clone(), None),
+        ),
+        (
+            "PullRequestReviewsPage",
+            "r-100",
+            node_page("reviews", big.review_page.clone(), None),
+        ),
+        (
+            "PullRequestReviewThreadsPage",
+            "t-50",
+            node_page("reviewThreads", big.thread_pages[1].clone(), Some("t-100")),
+        ),
+        (
+            "PullRequestReviewThreadsPage",
+            "t-100",
+            node_page("reviewThreads", big.thread_pages[2].clone(), None),
+        ),
+    ];
+    for (query, after, body) in pages {
+        if !skip.contains(&after) {
+            mount_page(server, query, after, body).await;
+        }
+    }
+}
+
+/// The `after` cursors of all follow-up requests, sorted.
+async fn follow_up_cursors(server: &MockServer) -> Vec<String> {
+    let mut afters: Vec<String> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+        .filter_map(|b| b["variables"]["after"].as_str().map(str::to_string))
+        .collect();
+    afters.sort();
+    afters
+}
+
+#[tokio::test]
+async fn pull_request_commits_reviews_and_threads_beyond_100_are_paginated() {
+    let server = MockServer::start().await;
+    let big = big_pr();
+    assert_eq!(big.thread_pages[0].len(), 50);
+    mount_main(&server, big.main.clone()).await;
+    mount_checks(&server, &oid(3)).await;
+    mount_big_pages(&server, &big, &[]).await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    assert_eq!(b.status, CoverageStatus::Complete, "{:?}", b.notes);
+    assert_eq!(b.complete_collections.len(), Collection::ALL.len());
+    // 100 + 100 + 50 commits, each a distinct SHA, the last one the head.
+    assert_eq!(of_type(&b, EventType::PrCommit).len(), 250);
+    let shas: std::collections::HashSet<_> = b.current_commit_shas.iter().collect();
+    assert_eq!(b.current_commit_shas.len(), 250);
+    assert_eq!(shas.len(), 250);
+    assert!(b.current_commit_shas.contains(&oid(3)));
+    // 100 + 20 submitted reviews; none has a body, so no summaries.
+    assert_eq!(of_type(&b, EventType::ReviewSubmitted).len(), 120);
+    assert!(of_type(&b, EventType::ReviewSummary).is_empty());
+    // 50 + 50 + 10 threads with one inline comment each.
+    assert_eq!(b.threads.len(), 110);
+    assert_eq!(
+        of_type(&b, EventType::InlineComment)
+            .iter()
+            .filter(|e| e.entity_id.starts_with("PRRC_big_"))
+            .count(),
+        110
+    );
+    // Follow-up pages: commits 2, reviews 1, threads 2; each asked once.
+    assert_eq!(
+        follow_up_cursors(&server).await,
+        ["c-100", "c-200", "r-100", "t-100", "t-50"]
+    );
+}
+
+#[tokio::test]
+async fn failing_later_page_of_commits_reviews_or_threads_is_partial() {
+    // Each case fails one later page with a persistent server error and
+    // expects that collection, and only it, to be incomplete, keeping the
+    // items of the pages fetched before it.
+    let cases: [(&str, &str, Collection, EventType, &str, usize); 3] = [
+        // Only the first page of commits (100) was fetched.
+        (
+            "c-100",
+            "PullRequestCommitsPage",
+            Collection::Commits,
+            EventType::PrCommit,
+            "",
+            100,
+        ),
+        // The 20 reviews of the second page are missing: 100 remain.
+        (
+            "r-100",
+            "PullRequestReviewsPage",
+            Collection::Reviews,
+            EventType::ReviewSubmitted,
+            "PRR_big_",
+            100,
+        ),
+        // Threads pages one and two (50 + 50) were fetched, the third failed.
+        (
+            "t-100",
+            "PullRequestReviewThreadsPage",
+            Collection::ReviewComments,
+            EventType::InlineComment,
+            "PRRC_big_",
+            100,
+        ),
+    ];
+    for (after, query, collection, ty, prefix, fetched) in cases {
+        let server = MockServer::start().await;
+        let big = big_pr();
+        mount_main(&server, big.main.clone()).await;
+        mount_checks(&server, &oid(3)).await;
+        mount_big_pages(&server, &big, &[after]).await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains(format!("query {query}")))
+            .and(body_partial_json(
+                json!({ "variables": { "after": after } }),
+            ))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let b = client(&server)
+            .fetch_pull_request("acme", "widget", 42)
+            .await
+            .unwrap();
+        assert_eq!(b.status, CoverageStatus::Partial, "{after}: {:?}", b.notes);
+        assert!(!b.complete_collections.contains(&collection), "{after}");
+        assert_eq!(
+            b.complete_collections.len(),
+            Collection::ALL.len() - 1,
+            "{after}: {:?}",
+            b.complete_collections
+        );
+        let events: Vec<_> = of_type(&b, ty)
+            .into_iter()
+            .filter(|e| e.entity_id.starts_with(prefix))
+            .collect();
+        assert_eq!(events.len(), fetched, "{after}");
+        assert!(
+            events.iter().all(|e| e.coverage == CoverageStatus::Partial),
+            "{after}"
+        );
+        // The server error was retried a bounded number of times: the test
+        // client allows 3 attempts.
+        let tries = follow_up_cursors(&server)
+            .await
+            .into_iter()
+            .filter(|c| c == after)
+            .count();
+        assert_eq!(tries, 3, "{after}");
+    }
+}
