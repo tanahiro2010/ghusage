@@ -531,7 +531,7 @@ impl App {
                 }
                 self.pr_reports.insert(id, r.map(|o| o.map(|b| *b)));
             }
-            (Job::System, Outcome::System(info)) => self.system = info,
+            (Job::System, Outcome::System(info)) => self.system = *info,
             _ => {}
         }
     }

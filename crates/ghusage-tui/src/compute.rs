@@ -36,7 +36,7 @@ pub(crate) struct Request {
 pub(crate) enum Outcome {
     Report(Result<Box<Report>, String>),
     Pr(Result<Option<Box<PrReport>>, String>),
-    System(SystemInfo),
+    System(Box<SystemInfo>),
     /// Skipped because a newer request superseded it.
     Dropped,
 }
@@ -97,7 +97,7 @@ impl Worker {
                         report::pr_report(&ds, id, &[], req.ctx.zone, false).map(Box::new)
                     }))
                 }
-                Job::System => Outcome::System(self.source.system_info()),
+                Job::System => Outcome::System(Box::new(self.source.system_info())),
             };
         Response {
             job: req.job,
@@ -194,10 +194,10 @@ pub(crate) fn spawn(worker: Worker) -> std::io::Result<(Sender<Request>, Receive
                                 outcome: match &job {
                                     Job::Pr(_) => Outcome::Pr(Err(msg)),
                                     Job::Report(_) => Outcome::Report(Err(msg)),
-                                    Job::System => Outcome::System(SystemInfo {
+                                    Job::System => Outcome::System(Box::new(SystemInfo {
                                         error: Some(msg),
                                         ..SystemInfo::default()
-                                    }),
+                                    })),
                                 },
                                 job,
                                 generation,
