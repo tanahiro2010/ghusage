@@ -540,9 +540,22 @@ async fn sync_cmd(g: &GlobalArgs, cmd: &Command, zone: Zone, full: bool) -> Resu
         })
         .await;
     drop(progress);
-    let r = synced?;
+    let mut r = synced?;
     let out = match g.format {
-        Format::Json => to_json(&r)?,
+        Format::Json => {
+            if !g.include_private {
+                let public = report::public_names(&s.dataset(Some(period))?);
+                for f in &mut r.failures {
+                    *f = report::scrub_names(f, &public);
+                }
+                for c in &mut r.coverage {
+                    if let Some(reason) = &c.reason {
+                        c.reason = Some(report::scrub_names(reason, &public));
+                    }
+                }
+            }
+            to_json(&r)?
+        }
         _ => {
             let mut o = format!(
                 "Synced {} for {} → {}\n  commits found: {}\n  pull requests found: {} (fetched {}, unchanged {})\n  issues found: {} (fetched {}, unchanged {})\n  API requests: {} (retries {}, {} ms)\n",

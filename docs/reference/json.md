@@ -366,6 +366,7 @@ way.
 | Pull request and issue URLs | empty string |
 | Review, comment and event URLs, repository URLs | `null` |
 | Review thread file paths, label and milestone names, previous titles, CI check names | removed |
+| Repository names in coverage reasons and in `sync` failures | `[private repository]` (any repository not known to be public) |
 
 Logins of people (yours and others') and GitHub node IDs are not hidden.
 Table output and the terminal UI always show real names, because they are

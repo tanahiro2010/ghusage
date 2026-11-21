@@ -260,6 +260,66 @@ fn short_hash(s: &str) -> String {
     hex::encode(&d[..4])
 }
 
+/// Lower-case `owner/name` of every public repository in `ds`.
+pub fn public_names(ds: &Dataset) -> BTreeSet<String> {
+    ds.repositories
+        .values()
+        .filter(|r| r.visibility.is_public())
+        .map(|r| r.full_name().to_ascii_lowercase())
+        .collect()
+}
+
+/// Replaces every `owner/name` (with an optional `#number`) in `text` that
+/// is not a known public repository. Coverage reasons and sync failures
+/// name repositories; unknown ones are treated as private.
+pub fn scrub_names(text: &str, public: &BTreeSet<String>) -> String {
+    let is_name_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.');
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if !is_name_char(chars[i]) {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && is_name_char(chars[i]) {
+            i += 1;
+        }
+        if i + 1 < chars.len() && chars[i] == '/' && is_name_char(chars[i + 1]) {
+            let mut j = i + 1;
+            while j < chars.len() && is_name_char(chars[j]) {
+                j += 1;
+            }
+            let full: String = chars[start..j].iter().collect();
+            // Trailing dots are punctuation, not part of the name.
+            let trimmed = full.trim_end_matches('.');
+            let end = start + trimmed.chars().count();
+            if public.contains(&trimmed.to_ascii_lowercase()) {
+                out.push_str(trimmed);
+                i = end;
+                continue;
+            }
+            out.push_str("[private repository]");
+            i = end;
+            // Drop a following `#number`.
+            if i < chars.len() && chars[i] == '#' {
+                let mut k = i + 1;
+                while k < chars.len() && chars[k].is_ascii_digit() {
+                    k += 1;
+                }
+                if k > i + 1 {
+                    i = k;
+                }
+            }
+            continue;
+        }
+        out.extend(&chars[start..i]);
+    }
+    out
+}
+
 /// Replaces names, titles and URLs of non-public repositories. Owned
 /// private repositories keep the subject as owner so ownership is stable.
 pub fn redact(ds: &Dataset) -> Dataset {
@@ -305,6 +365,12 @@ pub fn redact(ds: &Dataset) -> Dataset {
             .is_some_and(|pr| private.contains(&pr.repository_id))
         {
             t.path = None;
+        }
+    }
+    let public = public_names(ds);
+    for c in &mut out.coverage {
+        if let Some(r) = &c.reason {
+            c.reason = Some(scrub_names(r, &public));
         }
     }
     for e in &mut out.events {
@@ -470,4 +536,30 @@ fn event_detail(e: &ghusage_core::model::ActivityEvent) -> Option<String> {
         parts.push("no longer present".into());
     }
     (!parts.is_empty()).then(|| parts.join(", "))
+}
+
+#[cfg(test)]
+mod scrub_tests {
+    use super::scrub_names;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn only_public_repository_names_survive() {
+        let public = BTreeSet::from(["octo/app".to_string()]);
+        assert_eq!(
+            scrub_names(
+                "2 repositories not accessible: acme/secret, Octo/App; acme/secret#4: 404.",
+                &public
+            ),
+            "2 repositories not accessible: [private repository], Octo/App; [private repository]: 404."
+        );
+        assert_eq!(
+            scrub_names("searching 2026-11-01..2026-11-02 for me", &public),
+            "searching 2026-11-01..2026-11-02 for me"
+        );
+        assert_eq!(
+            scrub_names("ends with acme/x.", &public),
+            "ends with [private repository]."
+        );
+    }
 }

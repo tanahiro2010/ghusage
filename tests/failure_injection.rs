@@ -301,8 +301,18 @@ async fn forbidden_private_repository_is_partial_not_an_auth_error() {
         r.expect_code(4).assert_clean();
         let s = r.json();
         assert_eq!(s["status"], "partial");
-        assert!(s["failures"].to_string().contains("acme/secret#4"), "{s}");
+        // The private repository is not named unless asked for.
+        assert!(!s.to_string().contains("acme/secret"), "{s}");
+        assert!(
+            s["failures"].to_string().contains("[private repository]"),
+            "{s}"
+        );
         assert_eq!(cached_prs(&env).await, vec![3, 10, 20]);
+        let named = env.sync(&["--full", "--include-private"]).await.json();
+        assert!(
+            named["failures"].to_string().contains("acme/secret#4"),
+            "{named}"
+        );
         let o = env.offline_json(&["overview"]).await.json();
         assert_eq!(coverage_status(&o, "pull_requests"), "partial");
     }

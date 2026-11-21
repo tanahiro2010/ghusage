@@ -967,7 +967,16 @@ async fn empty_and_inaccessible_repositories_do_not_fail_the_commit_sync() {
     let o = env.offline_json(&["overview"]).await.json();
     assert_eq!(coverage_status(&o, "commits"), "partial");
     assert_eq!(coverage_status(&o, "pull_requests"), "complete");
+    // JSON hides the private repository's name unless asked to include it.
     let reasons = coverage_reasons(&o, "commits").join(" ");
+    assert!(!reasons.contains("acme/secret"), "{reasons}");
+    assert!(reasons.contains("[private repository]"), "{reasons}");
+    assert!(!o.to_string().contains("acme/secret"), "{o}");
+    let named = env
+        .offline_json(&["overview", "--include-private"])
+        .await
+        .json();
+    let reasons = coverage_reasons(&named, "commits").join(" ");
     assert!(reasons.contains("acme/secret"), "{reasons}");
     assert_eq!(o["metrics"]["commits"], 6);
 }
