@@ -881,10 +881,10 @@ async fn sync_commits(
             if let Some(known) = known_repos.get(&repo.id)
                 && known.viewer_permission.is_some()
             {
-                *repo = Repository {
-                    accessible: true,
-                    ..known.clone()
-                };
+                // Names, visibility and URL come from this fetch, so a
+                // renamed repository takes its new name.
+                repo.viewer_permission = known.viewer_permission.clone();
+                repo.accessible = true;
                 continue;
             }
             if repo.viewer_permission.is_none() {
