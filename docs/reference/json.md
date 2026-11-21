@@ -180,6 +180,7 @@ value. See [lifecycle timing](./metrics.md#details-lifecycle-timing-your-pull-re
 | `reviewer` | Reviewer login |
 | `state` | `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED` (original state unknown), or `null` |
 | `repository` | `owner/name` |
+| `pr_id` | GitHub node ID of the reviewed pull request, or `null` |
 | `pr_number`, `pr_title` | Pull request number and title (or `null`) |
 | `url` | Link to the review, or `null` |
 
@@ -196,6 +197,7 @@ reviews by others on your pull requests. Both in time order.
 | `kind` | `conversation_comment`, `inline_comment` or `review_summary` |
 | `written_by_subject` | `true` for comments you wrote |
 | `repository`, `pr_number` | Where the comment is |
+| `pr_id` | GitHub node ID of the pull request, or `null` |
 | `edited` | Whether the comment was edited |
 | `url` | Link, or `null` |
 
