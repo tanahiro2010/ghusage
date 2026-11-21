@@ -32,7 +32,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace --all-targets
+      - run: cargo test --workspace --all-targets --no-fail-fast
       - run: cargo build --workspace --release
       - name: Smoke test release binary
         shell: bash

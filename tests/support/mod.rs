@@ -127,8 +127,9 @@ impl Env {
     /// Applies the isolated environment to any command (e.g. a wrapper
     /// shell that then executes `ghusage`).
     pub fn configure(&self, c: &mut Command) {
-        c.env_clear()
-            .env("PATH", self.dir.path().join("no-bin"))
+        c.env_clear();
+        keep_system_env(c);
+        c.env("PATH", self.dir.path().join("no-bin"))
             .env("GHUSAGE_DATA_DIR", self.dir.path())
             .env("TZ", "UTC")
             .env("GHUSAGE_BACKOFF_MS", "1")
@@ -1254,4 +1255,21 @@ pub fn pr_numbers(report: &Value) -> Vec<u64> {
         .collect();
     v.sort();
     v
+}
+
+/// Environment variables the OS needs to start a process with networking
+/// (Windows cannot initialize sockets without them).
+fn keep_system_env(c: &mut Command) {
+    for k in [
+        "SYSTEMROOT",
+        "SystemRoot",
+        "WINDIR",
+        "TEMP",
+        "TMP",
+        "COMSPEC",
+    ] {
+        if let Some(v) = std::env::var_os(k) {
+            c.env(k, v);
+        }
+    }
 }

@@ -11,8 +11,9 @@ const SENTINEL_TOKEN: &str = "ghp_sentinelTOKENvalue1234567890abcdef";
 /// directory, no inherited GitHub tokens and no `gh` on PATH.
 fn ghusage(data: &tempfile::TempDir) -> Command {
     let mut c = Command::cargo_bin("ghusage").unwrap();
-    c.env_clear()
-        .env("PATH", data.path().join("no-bin"))
+    c.env_clear();
+    keep_system_env(&mut c);
+    c.env("PATH", data.path().join("no-bin"))
         .env("GHUSAGE_DATA_DIR", data.path())
         .env("TZ", "UTC")
         .env("GHUSAGE_BACKOFF_MS", "1");
@@ -144,8 +145,9 @@ async fn rejected_token_exits_3_and_never_prints_the_token() {
     let d_path = d.path().to_path_buf();
     let out = tokio::task::spawn_blocking(move || {
         let mut c = Command::cargo_bin("ghusage").unwrap();
-        c.env_clear()
-            .env("PATH", d_path.join("no-bin"))
+        c.env_clear();
+        keep_system_env(&mut c);
+        c.env("PATH", d_path.join("no-bin"))
             .env("GHUSAGE_DATA_DIR", &d_path)
             .env("GH_TOKEN", SENTINEL_TOKEN)
             .env("GHUSAGE_API_URL", uri)
@@ -181,5 +183,22 @@ fn csv_is_rejected_for_commands_without_tables() {
             .assert()
             .code(2)
             .stderr(predicate::str::contains("--format csv is not available"));
+    }
+}
+
+/// Environment variables the OS needs to start a process with networking
+/// (Windows cannot initialize sockets without them).
+fn keep_system_env(c: &mut Command) {
+    for k in [
+        "SYSTEMROOT",
+        "SystemRoot",
+        "WINDIR",
+        "TEMP",
+        "TMP",
+        "COMSPEC",
+    ] {
+        if let Some(v) = std::env::var_os(k) {
+            c.env(k, v);
+        }
     }
 }
