@@ -145,6 +145,8 @@ The report's overall coverage is `complete` only if every entry is
 | `created_at`, `merged_at` | Timestamps (`merged_at` is `null` if not merged) |
 | `events`, `events_by_subject` | Counted non-CI events in the period by anyone / by you |
 | `commits`, `reviews`, `comments`, `participants` | Counts in the period |
+| `discussion_participants` | Distinct known accounts that wrote a conversation, inline or review summary comment in the period |
+| `threads` | Review threads with an inline comment in the period |
 | `last_activity` | Latest event time in the period (commits use the selected `--commit-date`) |
 | `latest_ci` | Current CI state of the head commit: `success`, `failure`, `pending`, `neutral`, `skipped`, `cancelled`, `unknown`, or `null` |
 
@@ -154,7 +156,7 @@ Ordered by `--sort` (largest or newest first), then repository and number.
 
 `prs` (number of pull requests), and `events_per_pr`, `reviews_per_pr`,
 `comments_per_pr`, `commits_per_pr`, `participants_per_pr`,
-`active_days_per_pr`, each a [Stats](#stats) object or `null` when there are
+`discussion_participants_per_pr`, `threads_per_pr`, `active_days_per_pr`, each a [Stats](#stats) object or `null` when there are
 no pull requests.
 
 ### TimingStats
@@ -228,6 +230,8 @@ Ordered by repository and number.
 | `comments` | [CommentCounts](#commentcounts) |
 | `review_threads` | `total`, `open`, `resolved`, `outdated` (current state) |
 | `participants` | Logins of known accounts with counted non-CI events, sorted |
+| `discussion_participants` | Logins of known accounts that wrote a conversation, inline or review summary comment, sorted |
+| `commit_authors` | Array of `{author, commits}`: commits currently in the pull request by commit author, most first |
 | `timing` | `time_to_first_review_secs`, `creation_to_merge_secs`, `review_to_next_author_activity_secs`, `first_to_last_activity_secs` (integers or `null`) |
 | `timeline` | Array of [TimelineEntry](#timelineentry) in event order (filtered by `--event-type`) |
 | `coverage` | Coverage status of this pull request's data |
@@ -314,7 +318,7 @@ repository,visibility,owned,accessible,commits,prs_created,prs_merged,reviews_su
 ### prs
 
 ```text
-repository,number,title,state,draft,author,created_at,merged_at,events,events_by_you,commits,reviews,comments,participants,last_activity,latest_ci,url,period_coverage
+repository,number,title,state,draft,author,created_at,merged_at,events,events_by_you,commits,reviews,comments,participants,discussion_participants,threads,last_activity,latest_ci,url,period_coverage
 ```
 
 ### reviews

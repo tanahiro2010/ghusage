@@ -325,14 +325,16 @@ count events in the period only.
 | Reviews | `reviews` | Counted review submissions by anyone |
 | Comments | `comments` | Comments of all three types by anyone |
 | People | `participants` | Distinct known accounts with at least one event |
+| Discussion | `discussion_participants` | Distinct known accounts that wrote a conversation, inline or review summary comment (labels, commits or review requests alone do not count) |
+| Threads | `threads` | Review threads with an inline comment in the period |
 | Last activity | `last_activity` | Time of the latest of those events |
 | CI | `latest_ci` | Current combined CI state of the head commit (snapshot) |
 
 ### `--details`: activity per pull request
 
 Descriptive statistics over the listed pull requests (same participation
-rule): events, reviews, comments, commits, participants and active days per
-pull request, where active days are the distinct local dates with a non-CI
+rule): events, reviews, comments, commits, participants, discussion
+participants, review threads and active days per pull request, where active days are the distinct local dates with a non-CI
 event in the period. For each, `ghusage` reports the median, mean, 90th
 percentile (nearest rank), maximum and the number of pull requests (`n`);
 JSON also includes the minimum.

@@ -692,6 +692,10 @@ pub struct PrRow {
     pub reviews: u64,
     pub comments: u64,
     pub participants: u64,
+    /// People who wrote a conversation, inline or review summary comment.
+    pub discussion_participants: u64,
+    /// Review threads with an inline comment in the period.
+    pub threads: u64,
     pub last_activity: Option<DateTime<Utc>>,
     pub latest_ci: Option<CheckOutcome>,
 }
@@ -753,8 +757,20 @@ fn pr_row(
     let mut reviews = 0;
     let mut comments = 0;
     let mut participants: HashSet<String> = HashSet::new();
+    let mut discussion: HashSet<String> = HashSet::new();
+    let mut threads: HashSet<&str> = HashSet::new();
     let mut last = None;
     for e in events {
+        if e.event_type.is_discussion()
+            && let Some(key) = participant_key(&e.actor)
+        {
+            discussion.insert(key);
+        }
+        if e.event_type == EventType::InlineComment
+            && let Some(t) = e.meta.thread_id.as_deref()
+        {
+            threads.insert(t);
+        }
         match e.event_type {
             EventType::PrCommit => {
                 if let Some(sha) = e.meta.sha.as_deref() {
@@ -789,6 +805,8 @@ fn pr_row(
         reviews,
         comments,
         participants: participants.len() as u64,
+        discussion_participants: discussion.len() as u64,
+        threads: threads.len() as u64,
         last_activity: last,
         latest_ci: pr.latest_ci,
     }
@@ -851,6 +869,8 @@ pub struct Intensity {
     pub comments_per_pr: Option<Stats>,
     pub commits_per_pr: Option<Stats>,
     pub participants_per_pr: Option<Stats>,
+    pub discussion_participants_per_pr: Option<Stats>,
+    pub threads_per_pr: Option<Stats>,
     pub active_days_per_pr: Option<Stats>,
 }
 
@@ -874,6 +894,8 @@ pub fn intensity(ds: &Dataset, opts: &Options, participation: Participation) -> 
         comments_per_pr: col(&|r| r.comments as f64),
         commits_per_pr: col(&|r| r.commits as f64),
         participants_per_pr: col(&|r| r.participants as f64),
+        discussion_participants_per_pr: col(&|r| r.discussion_participants as f64),
+        threads_per_pr: col(&|r| r.threads as f64),
         active_days_per_pr: Stats::from_values(
             rows.iter()
                 .map(|r| days.get(r.pr_id.as_str()).map_or(0, |d| d.len()) as f64)
@@ -1005,8 +1027,19 @@ pub struct PrDetail {
     pub comments: CommentCounts,
     pub threads: ThreadCounts,
     pub participants: Vec<String>,
+    /// People who wrote a conversation, inline or review summary comment.
+    pub discussion_participants: Vec<String>,
+    /// Current commits by commit author, most commits first.
+    pub commit_authors: Vec<AuthorCount>,
     pub timing: PrTiming,
     pub timeline: Vec<ActivityEvent>,
+}
+
+/// Number of commits by one author.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorCount {
+    pub author: String,
+    pub commits: u64,
 }
 
 /// Full detail and timeline of a pull request. `types` filters the
@@ -1018,6 +1051,8 @@ pub fn pr_detail(ds: &Dataset, pr_id: &str, types: &[EventType]) -> Option<PrDet
     let mut reviews = ReviewCounts::default();
     let mut comments = CommentCounts::default();
     let mut participants = BTreeSet::new();
+    let mut discussion = BTreeSet::new();
+    let mut authors: HashMap<String, String> = HashMap::new();
     let mut timeline = Vec::new();
     for e in ds
         .events
@@ -1029,6 +1064,7 @@ pub fn pr_detail(ds: &Dataset, pr_id: &str, types: &[EventType]) -> Option<PrDet
             if e.is_removed() {
                 removed_commits.insert(sha);
             } else {
+                authors.insert(sha.to_ascii_lowercase(), e.actor.display().to_string());
                 commits.insert(sha);
             }
         }
@@ -1042,12 +1078,24 @@ pub fn pr_detail(ds: &Dataset, pr_id: &str, types: &[EventType]) -> Option<PrDet
             }
             if !e.event_type.is_automation() && !e.actor.is_unknown() {
                 participants.insert(e.actor.display().to_string());
+                if e.event_type.is_discussion() {
+                    discussion.insert(e.actor.display().to_string());
+                }
             }
         }
         if types.is_empty() || types.contains(&e.event_type) {
             timeline.push(e.clone());
         }
     }
+    let mut by_author: BTreeMap<String, u64> = BTreeMap::new();
+    for author in authors.into_values() {
+        *by_author.entry(author).or_default() += 1;
+    }
+    let mut commit_authors: Vec<AuthorCount> = by_author
+        .into_iter()
+        .map(|(author, commits)| AuthorCount { author, commits })
+        .collect();
+    commit_authors.sort_by(|a, b| b.commits.cmp(&a.commits).then(a.author.cmp(&b.author)));
     let mut threads = ThreadCounts::default();
     for t in ds.threads.values().filter(|t| t.pr_id == pr_id) {
         threads.add(t);
@@ -1061,6 +1109,8 @@ pub fn pr_detail(ds: &Dataset, pr_id: &str, types: &[EventType]) -> Option<PrDet
         comments,
         threads,
         participants: participants.into_iter().collect(),
+        discussion_participants: discussion.into_iter().collect(),
+        commit_authors,
         timing: pr_timing(ds, pr),
         timeline,
     })

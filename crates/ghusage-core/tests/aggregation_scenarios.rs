@@ -1795,3 +1795,120 @@ fn hundred_thousand_events_aggregate_to_expected_totals() {
         20_000
     );
 }
+
+// ---------------------------------------------------------------------------
+// Commit authors, discussion participants and threads of a pull request
+// ---------------------------------------------------------------------------
+
+/// PR P1: alice commits a1 and a2 (a1 seen twice), bob commits b1, carol's
+/// c1 was force-pushed away. carol only adds a label. alice writes a
+/// conversation comment; bob writes two inline comments in thread T1; dave
+/// writes one inline comment in thread T2.
+fn discussion_dataset() -> Dataset {
+    let removed = with_meta(
+        pr_commit("R_tool", "P1", "c1", user("carol"), "2026-11-02T09:00:00Z"),
+        |m| m.removed_observed_at = Some(utc("2026-11-03T00:00:00Z")),
+    );
+    let events = vec![
+        pr_commit("R_tool", "P1", "a1", user("alice"), "2026-11-02T10:00:00Z"),
+        pr_commit("R_tool", "P1", "A1", user("alice"), "2026-11-02T10:00:00Z"),
+        pr_commit("R_tool", "P1", "a2", user("alice"), "2026-11-02T11:00:00Z"),
+        pr_commit("R_tool", "P1", "b1", user("bob"), "2026-11-02T12:00:00Z"),
+        removed,
+        lifecycle(
+            EventId::timeline("label-1"),
+            EventType::Labeled,
+            "R_tool",
+            "P1",
+            user("carol"),
+            "2026-11-03T09:00:00Z",
+        ),
+        comment(
+            EventType::ConversationComment,
+            "R_tool",
+            "P1",
+            "ic1",
+            user("alice"),
+            "2026-11-03T10:00:00Z",
+        ),
+        inline_reply(
+            "R_tool",
+            "P1",
+            "rc1",
+            "T1",
+            None,
+            user("bob"),
+            "2026-11-03T11:00:00Z",
+        ),
+        inline_reply(
+            "R_tool",
+            "P1",
+            "rc2",
+            "T1",
+            Some("rc1"),
+            user("bob"),
+            "2026-11-03T12:00:00Z",
+        ),
+        inline_reply(
+            "R_tool",
+            "P1",
+            "rc3",
+            "T2",
+            None,
+            user("dave"),
+            "2026-11-03T13:00:00Z",
+        ),
+    ];
+    dataset(
+        vec![tool()],
+        vec![pull("P1", "R_tool", 1, user("alice"))],
+        vec![],
+        events,
+    )
+}
+
+#[test]
+fn pr_detail_breaks_commits_down_by_author() {
+    let d = pr_detail(&discussion_dataset(), "P1", &[]).unwrap();
+    // a1 (once), a2 by alice; b1 by bob; carol's c1 is no longer in the PR.
+    assert_eq!(d.commits, 3);
+    let authors: Vec<(String, u64)> = d
+        .commit_authors
+        .iter()
+        .map(|a| (a.author.clone(), a.commits))
+        .collect();
+    assert_eq!(
+        authors,
+        vec![("alice".to_string(), 2), ("bob".to_string(), 1)]
+    );
+}
+
+#[test]
+fn discussion_participants_count_only_comment_authors() {
+    let ds = discussion_dataset();
+    let d = pr_detail(&ds, "P1", &[]).unwrap();
+    // carol only labeled (and her commit was removed); not part of the discussion.
+    assert_eq!(d.discussion_participants, vec!["alice", "bob", "dave"]);
+    assert_eq!(d.participants, vec!["alice", "bob", "carol", "dave"]);
+    let row = &pr_rows(
+        &ds,
+        &november_utc(),
+        Participation::All,
+        None,
+        PrSort::Activity,
+    )[0];
+    assert_eq!(row.discussion_participants, 3);
+    assert_eq!(row.participants, 4);
+}
+
+#[test]
+fn intensity_reports_threads_per_pr() {
+    let ds = discussion_dataset();
+    let opts = november_utc();
+    let row = &pr_rows(&ds, &opts, Participation::All, None, PrSort::Activity)[0];
+    // Inline comments in T1 (twice) and T2.
+    assert_eq!(row.threads, 2);
+    let i = metrics::intensity(&ds, &opts, Participation::All);
+    assert_eq!(i.threads_per_pr.unwrap().max, 2.0);
+    assert_eq!(i.discussion_participants_per_pr.unwrap().max, 3.0);
+}
