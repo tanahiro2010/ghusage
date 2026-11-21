@@ -32,7 +32,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-14, target: aarch64-apple-darwin, bin: ghusage }
+          - { os: macos-15, target: aarch64-apple-darwin, bin: ghusage }
           - { os: macos-15-intel, target: x86_64-apple-darwin, bin: ghusage }
           - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, bin: ghusage }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, bin: ghusage }
@@ -131,7 +131,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-14, pkg: ghusage-darwin-arm64 }
+          - { os: macos-15, pkg: ghusage-darwin-arm64 }
           - { os: macos-15-intel, pkg: ghusage-darwin-x64 }
           - { os: ubuntu-latest, pkg: ghusage-linux-x64 }
           - { os: ubuntu-24.04-arm, pkg: ghusage-linux-arm64 }
