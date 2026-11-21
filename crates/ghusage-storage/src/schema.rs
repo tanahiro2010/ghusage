@@ -14,7 +14,7 @@ use crate::{Result, StorageError};
 pub(crate) type Migration = fn(&rusqlite::Transaction<'_>) -> rusqlite::Result<()>;
 
 /// Every migration step, in order. The current schema version is its length.
-pub(crate) const MIGRATIONS: &[Migration] = &[v1_initial];
+pub(crate) const MIGRATIONS: &[Migration] = &[v1_initial, v2_commit_details];
 
 pub(crate) const CURRENT_VERSION: u32 = MIGRATIONS.len() as u32;
 
@@ -38,6 +38,7 @@ pub(crate) const DATA_TABLES: &[&str] = &[
     "sync_runs",
     "repositories",
     "accounts",
+    "commit_details",
     "cache_metadata",
 ];
 
@@ -111,6 +112,24 @@ fn backup(conn: &Connection, path: &Path, from: u32) -> Result<()> {
 
 fn v1_initial(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
     tx.execute_batch(V1_SQL)
+}
+
+/// Commits fetched on demand with their files and diffs. The detail is
+/// content, not activity, so it is kept apart from `activity_events` and
+/// never affects counts.
+fn v2_commit_details(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        r#"
+CREATE TABLE commit_details (
+    repository     TEXT NOT NULL COLLATE NOCASE,
+    sha            TEXT NOT NULL,
+    fetched_at     INTEGER NOT NULL,
+    fetched_at_ns  INTEGER NOT NULL,
+    detail         TEXT NOT NULL,
+    PRIMARY KEY (repository, sha)
+) WITHOUT ROWID;
+"#,
+    )
 }
 
 const V1_SQL: &str = r#"
@@ -399,7 +418,7 @@ mod tests {
     #[test]
     fn failing_upgrade_keeps_existing_data_and_version() {
         let mut conn = Connection::open_in_memory().unwrap();
-        migrate(&mut conn, MIGRATIONS, None).unwrap();
+        migrate(&mut conn, &[v1_initial], None).unwrap();
         conn.execute(
             "INSERT INTO cache_metadata(key, value) VALUES (?1, ?2)",
             ["k", "v"],
@@ -423,6 +442,32 @@ mod tests {
     }
 
     #[test]
+    fn version_1_cache_gains_commit_details_and_keeps_its_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.db");
+        let mut conn = Connection::open(&path).unwrap();
+        migrate(&mut conn, &[v1_initial], Some(&path)).unwrap();
+        conn.execute(
+            "INSERT INTO cache_metadata(key, value) VALUES (?1, ?2)",
+            ["k", "v"],
+        )
+        .unwrap();
+        assert!(!table_exists(&conn, "commit_details"));
+        migrate(&mut conn, MIGRATIONS, Some(&path)).unwrap();
+        assert_eq!(user_version(&conn).unwrap(), 2);
+        assert!(table_exists(&conn, "commit_details"));
+        let v: String = conn
+            .query_row(
+                "SELECT value FROM cache_metadata WHERE key = 'k'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(v, "v");
+        assert!(dir.path().join("cache.db.bak-v1").exists());
+    }
+
+    #[test]
     fn newer_schema_is_rejected() {
         let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA user_version = 99").unwrap();
@@ -441,7 +486,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cache.db");
         let mut conn = Connection::open(&path).unwrap();
-        migrate(&mut conn, MIGRATIONS, Some(&path)).unwrap();
+        migrate(&mut conn, &[v1_initial], Some(&path)).unwrap();
         assert!(!dir.path().join("cache.db.bak-v1").exists());
         migrate(&mut conn, &[v1_initial, second_step], Some(&path)).unwrap();
         assert_eq!(user_version(&conn).unwrap(), 2);
