@@ -305,7 +305,12 @@ async fn run_inner(
             format!("reviewed-by:{}", subject.login),
         ] {
             let found = client
-                .search_issues(&q, IssueKind::PullRequest, *range, opts.public_only)
+                .search_issues(
+                    &q,
+                    IssueKind::PullRequest,
+                    search_window(*range, opts),
+                    opts.public_only,
+                )
                 .await?;
             statuses.push(found.status);
             reasons.extend(found.reason);
@@ -412,7 +417,7 @@ async fn run_inner(
             .search_issues(
                 &format!("involves:{}", subject.login),
                 IssueKind::Issue,
-                range,
+                search_window(range, opts),
                 opts.public_only,
             )
             .await?;
@@ -475,6 +480,13 @@ async fn run_inner(
         "partial".into()
     };
     Ok(report)
+}
+
+/// Search window for pull requests and issues. GitHub matches `updated:`
+/// against the current update time, so anything active in `range` but
+/// updated again later is only found when the window extends to now.
+fn search_window(range: Period, opts: &SyncOptions) -> Period {
+    Period::new(range.start, opts.now.max(range.end)).unwrap_or(range)
 }
 
 fn add_commits(batch: &mut WriteBatch, commits: Vec<CommitRecord>) {

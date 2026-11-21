@@ -26,13 +26,20 @@ fn main() -> ExitCode {
         Ok(c) => c,
         Err(e) => {
             // Help and version go to stdout with success; usage errors exit 2.
-            let code = if e.use_stderr() { exit::INVALID_ARGS } else { 0 };
+            let code = if e.use_stderr() {
+                exit::INVALID_ARGS
+            } else {
+                0
+            };
             let _ = e.print();
             return ExitCode::from(code as u8);
         }
     };
     init_logging();
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: cannot start runtime: {e}");
@@ -73,11 +80,37 @@ fn session_config(g: &GlobalArgs) -> SessionConfig {
         user: g.user.clone(),
         token_file: g.token_file.clone(),
         public_only: g.public_only,
-        client: ClientConfig {
-            concurrency: g.concurrency as usize,
-            ..ClientConfig::default()
-        },
+        client: client_config(g),
     }
+}
+
+/// Client settings. `GHUSAGE_API_URL` and `GHUSAGE_GRAPHQL_URL` point the
+/// client at another API endpoint (for example GitHub Enterprise Server).
+fn client_config(g: &GlobalArgs) -> ClientConfig {
+    let mut c = ClientConfig {
+        concurrency: g.concurrency as usize,
+        ..ClientConfig::default()
+    };
+    if let Some(url) = std::env::var("GHUSAGE_API_URL")
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        c.api_base = url.trim_end_matches('/').to_string();
+        c.graphql_url = format!("{}/graphql", c.api_base);
+    }
+    if let Some(url) = std::env::var("GHUSAGE_GRAPHQL_URL")
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        c.graphql_url = url;
+    }
+    if let Some(ms) = std::env::var("GHUSAGE_BACKOFF_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        c.backoff_base = std::time::Duration::from_millis(ms);
+    }
+    c
 }
 
 fn filter(g: &GlobalArgs) -> Filter {
@@ -157,13 +190,34 @@ async fn run(cli: Cli) -> Result<i32> {
     match cmd {
         Command::Overview => report_cmd(&g, &cmd, zone, ReportKind::Overview, false).await,
         Command::Daily => {
-            report_cmd(&g, &cmd, zone, ReportKind::Breakdown(Granularity::Day), false).await
+            report_cmd(
+                &g,
+                &cmd,
+                zone,
+                ReportKind::Breakdown(Granularity::Day),
+                false,
+            )
+            .await
         }
         Command::Weekly => {
-            report_cmd(&g, &cmd, zone, ReportKind::Breakdown(Granularity::Week), false).await
+            report_cmd(
+                &g,
+                &cmd,
+                zone,
+                ReportKind::Breakdown(Granularity::Week),
+                false,
+            )
+            .await
         }
         Command::Monthly => {
-            report_cmd(&g, &cmd, zone, ReportKind::Breakdown(Granularity::Month), false).await
+            report_cmd(
+                &g,
+                &cmd,
+                zone,
+                ReportKind::Breakdown(Granularity::Month),
+                false,
+            )
+            .await
         }
         Command::Repos => report_cmd(&g, &cmd, zone, ReportKind::Repositories, false).await,
         Command::Reviews => report_cmd(&g, &cmd, zone, ReportKind::Reviews, false).await,
@@ -207,7 +261,10 @@ async fn prepared_session(g: &GlobalArgs, period: Period) -> Result<Session> {
     let mut s = Session::open(session_config(g)).await?;
     if !s.is_offline() && s.needs_sync(period)? {
         let printer = progress_printer();
-        match s.sync(period, false, g.concurrency as usize, &printer).await {
+        match s
+            .sync(period, false, g.concurrency as usize, &printer)
+            .await
+        {
             Ok(r) => {
                 printer(SyncProgress::Finished);
                 for f in r.failures.iter().take(5) {
@@ -332,12 +389,16 @@ async fn pr_cmd(g: &GlobalArgs, a: &cli::PrArgs, zone: Zone) -> Result<i32> {
 
 async fn sync_cmd(g: &GlobalArgs, cmd: &Command, zone: Zone, full: bool) -> Result<i32> {
     if g.offline {
-        return Err(AppError::InvalidArgs("sync cannot run with --offline".into()));
+        return Err(AppError::InvalidArgs(
+            "sync cannot run with --offline".into(),
+        ));
     }
     let period = period(g, cmd, zone)?;
     let mut s = Session::open(session_config(g)).await?;
     let printer = progress_printer();
-    let r = s.sync(period, full, g.concurrency as usize, &printer).await?;
+    let r = s
+        .sync(period, full, g.concurrency as usize, &printer)
+        .await?;
     printer(SyncProgress::Finished);
     let out = match g.format {
         Format::Json => to_json(&r)?,

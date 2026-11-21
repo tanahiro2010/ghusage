@@ -124,8 +124,18 @@ fn t(zone: Zone, ts: Option<DateTime<Utc>>) -> String {
 }
 
 fn header(r: &Report, zone: Zone, title: &str, style: Style) -> String {
-    let start = r.period.start.get(..16).unwrap_or(&r.period.start).replace('T', " ");
-    let end = r.period.end.get(..16).unwrap_or(&r.period.end).replace('T', " ");
+    let start = r
+        .period
+        .start
+        .get(..16)
+        .unwrap_or(&r.period.start)
+        .replace('T', " ");
+    let end = r
+        .period
+        .end
+        .get(..16)
+        .unwrap_or(&r.period.end)
+        .replace('T', " ");
     let who = sanitize_line(&r.account.login);
     let mut s = format!(
         "{}  {}  {} → {} ({})\n",
@@ -142,7 +152,12 @@ fn header(r: &Report, zone: Zone, title: &str, style: Style) -> String {
 }
 
 /// Coverage footer: always shown so incomplete data is never silent.
-pub fn coverage_lines(cov: &[CoverageSummary], synced: Option<DateTime<Utc>>, zone: Zone, style: Style) -> String {
+pub fn coverage_lines(
+    cov: &[CoverageSummary],
+    synced: Option<DateTime<Utc>>,
+    zone: Zone,
+    style: Style,
+) -> String {
     let mut out = String::new();
     let overall = CoverageStatus::combine(cov.iter().map(|c| c.status));
     let label = format!("Coverage: {}", overall.as_str());
@@ -161,7 +176,11 @@ pub fn coverage_lines(cov: &[CoverageSummary], synced: Option<DateTime<Utc>>, zo
             .gaps()
             .take(3)
             .map(|g| {
-                let reason = g.reason.as_deref().map(|r| format!(": {}", sanitize_line(r))).unwrap_or_default();
+                let reason = g
+                    .reason
+                    .as_deref()
+                    .map(|r| format!(": {}", sanitize_line(r)))
+                    .unwrap_or_default();
                 format!(
                     "{} {}–{}{}",
                     g.status.as_str(),
@@ -183,7 +202,10 @@ pub fn coverage_lines(cov: &[CoverageSummary], synced: Option<DateTime<Utc>>, zo
 
 fn summary_lines(s: &Summary, open_prs: u64) -> Vec<(&'static str, String)> {
     vec![
-        ("Commits", format!("{} ({} merge)", s.commits, s.merge_commits)),
+        (
+            "Commits",
+            format!("{} ({} merge)", s.commits, s.merge_commits),
+        ),
         ("PRs created", s.prs_created.to_string()),
         ("PRs merged (yours)", s.prs_merged.to_string()),
         (
@@ -192,13 +214,19 @@ fn summary_lines(s: &Summary, open_prs: u64) -> Vec<(&'static str, String)> {
                 "{}{}",
                 s.merges_performed,
                 if s.merges_unknown_actor > 0 {
-                    format!(" ({} of your PRs merged by unknown)", s.merges_unknown_actor)
+                    format!(
+                        " ({} of your PRs merged by unknown)",
+                        s.merges_unknown_actor
+                    )
                 } else {
                     String::new()
                 }
             ),
         ),
-        ("PRs closed without merge", s.prs_closed_without_merge.to_string()),
+        (
+            "PRs closed without merge",
+            s.prs_closed_without_merge.to_string(),
+        ),
         ("Open PRs (current)", open_prs.to_string()),
         (
             "Reviews submitted",
@@ -268,7 +296,11 @@ fn summary_lines(s: &Summary, open_prs: u64) -> Vec<(&'static str, String)> {
 }
 
 fn kv(lines: &[(&str, String)]) -> String {
-    let w = lines.iter().map(|(k, _)| display_width(k)).max().unwrap_or(0);
+    let w = lines
+        .iter()
+        .map(|(k, _)| display_width(k))
+        .max()
+        .unwrap_or(0);
     lines
         .iter()
         .map(|(k, v)| format!("  {k}{}  {}\n", " ".repeat(w - display_width(k)), v))
@@ -277,8 +309,16 @@ fn kv(lines: &[(&str, String)]) -> String {
 
 fn breakdown_table(r: &Report, total: bool) -> Table {
     let mut t = Table::new(&[
-        "Period", "Commits", "PRs", "Merged", "Reviews", "Received", "Comments", "PR commits",
-        "Issues", "Active PRs",
+        "Period",
+        "Commits",
+        "PRs",
+        "Merged",
+        "Reviews",
+        "Received",
+        "Comments",
+        "PR commits",
+        "Issues",
+        "Active PRs",
     ])
     .numeric(&[1, 2, 3, 4, 5, 6, 7, 8, 9]);
     let row = |label: String, s: &Summary| {
@@ -306,8 +346,17 @@ fn breakdown_table(r: &Report, total: bool) -> Table {
 
 fn repo_table(r: &Report, limit: Option<usize>) -> Table {
     let mut t = Table::new(&[
-        "Repository", "Vis", "Commits", "PRs", "Merged", "Reviews", "Comments", "Issues",
-        "Active PRs", "PR events", "Last activity",
+        "Repository",
+        "Vis",
+        "Commits",
+        "PRs",
+        "Merged",
+        "Reviews",
+        "Comments",
+        "Issues",
+        "Active PRs",
+        "PR events",
+        "Last activity",
     ])
     .numeric(&[2, 3, 4, 5, 6, 7, 8, 9])
     .limit(0, 48);
@@ -320,7 +369,11 @@ fn repo_table(r: &Report, limit: Option<usize>) -> Table {
         }
         t.row(vec![
             name,
-            format!("{}{}", x.visibility.as_str(), if x.owned { "*" } else { "" }),
+            format!(
+                "{}{}",
+                x.visibility.as_str(),
+                if x.owned { "*" } else { "" }
+            ),
             s.commits.to_string(),
             s.prs_created.to_string(),
             s.prs_merged.to_string(),
@@ -386,8 +439,18 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
         ReportKind::PullRequests { .. } => {
             out.push_str(&header(r, zone, "Pull requests", style));
             let mut t = Table::new(&[
-                "Repository", "#", "Title", "State", "Author", "Events", "Yours", "Commits",
-                "Reviews", "Comments", "People", "CI",
+                "Repository",
+                "#",
+                "Title",
+                "State",
+                "Author",
+                "Events",
+                "Yours",
+                "Commits",
+                "Reviews",
+                "Comments",
+                "People",
+                "CI",
             ])
             .numeric(&[1, 5, 6, 7, 8, 9, 10])
             .limit(0, 32)
@@ -438,7 +501,12 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
                 out.push_str(&style.bold("Lifecycle timing (your pull requests)\n"));
                 if let Some(tm) = &r.timing {
                     let lines = [
-                        stats_line("Time to first review", &tm.time_to_first_review, 3600.0, "h"),
+                        stats_line(
+                            "Time to first review",
+                            &tm.time_to_first_review,
+                            3600.0,
+                            "h",
+                        ),
                         stats_line("Creation to merge", &tm.creation_to_merge, 3600.0, "h"),
                         stats_line(
                             "Review to your next activity",
@@ -446,7 +514,12 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
                             3600.0,
                             "h",
                         ),
-                        stats_line("First to last activity", &tm.first_to_last_activity, 3600.0, "h"),
+                        stats_line(
+                            "First to last activity",
+                            &tm.first_to_last_activity,
+                            3600.0,
+                            "h",
+                        ),
                     ];
                     let refs: Vec<(&str, String)> =
                         lines.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
@@ -505,7 +578,9 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
                     tb.row(vec![
                         zone.format(x.submitted_at, "%Y-%m-%d %H:%M"),
                         x.reviewer.clone(),
-                        x.state.map(|s| s.as_str().to_ascii_lowercase()).unwrap_or_default(),
+                        x.state
+                            .map(|s| s.as_str().to_ascii_lowercase())
+                            .unwrap_or_default(),
                         x.repository.clone(),
                         x.pr_number.map(|n| n.to_string()).unwrap_or_default(),
                         x.pr_title.clone().unwrap_or_default(),
@@ -520,10 +595,17 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
             let rows = r.comments.as_deref().unwrap_or(&[]);
             if !rows.is_empty() {
                 out.push('\n');
-                let mut tb =
-                    Table::new(&["Time", "Author", "Type", "Yours", "Repository", "#", "Edited"])
-                        .numeric(&[5])
-                        .limit(4, 32);
+                let mut tb = Table::new(&[
+                    "Time",
+                    "Author",
+                    "Type",
+                    "Yours",
+                    "Repository",
+                    "#",
+                    "Edited",
+                ])
+                .numeric(&[5])
+                .limit(4, 32);
                 for c in rows {
                     tb.row(vec![
                         zone.format(c.created_at, "%Y-%m-%d %H:%M"),
@@ -558,7 +640,13 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
             if !rows.is_empty() {
                 out.push('\n');
                 let mut tb = Table::new(&[
-                    "Repository", "#", "Title", "State", "Opened", "Closed", "Reopened",
+                    "Repository",
+                    "#",
+                    "Title",
+                    "State",
+                    "Opened",
+                    "Closed",
+                    "Reopened",
                 ])
                 .numeric(&[1, 5, 6])
                 .limit(0, 32)
@@ -635,7 +723,10 @@ pub fn pr(r: &PrReport, timeline: bool, style: Style) -> String {
             "Reviews",
             format!(
                 "{} (approved {}, changes requested {}, commented {})",
-                r.reviews.total, r.reviews.approved, r.reviews.changes_requested, r.reviews.commented
+                r.reviews.total,
+                r.reviews.approved,
+                r.reviews.changes_requested,
+                r.reviews.commented
             ),
         ),
         (
@@ -658,9 +749,15 @@ pub fn pr(r: &PrReport, timeline: bool, style: Style) -> String {
                 r.review_threads.outdated
             ),
         ),
-        ("Latest CI", r.latest_ci.clone().unwrap_or_else(|| "-".into())),
+        (
+            "Latest CI",
+            r.latest_ci.clone().unwrap_or_else(|| "-".into()),
+        ),
         ("Participants", sanitize_line(&r.participants.join(", "))),
-        ("Time to first review", dur(r.timing.time_to_first_review_secs)),
+        (
+            "Time to first review",
+            dur(r.timing.time_to_first_review_secs),
+        ),
         ("Creation to merge", dur(r.timing.creation_to_merge_secs)),
         ("URL", sanitize_line(&r.url)),
     ]));
