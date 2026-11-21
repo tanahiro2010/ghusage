@@ -1,0 +1,35 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+repository = "https://github.com/tanahiro2010/ghusage"
+
+[package]
+name = "ghusage"
+description = "Know what you actually did on GitHub: commits, pull requests, reviews and the activity inside pull requests."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ghusage"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6.9", features = ["derive", "env"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+predicates = "3.1.4"
+serde_json = "1.0.154"
+tempfile = "3.27.0"
+wiremock = "0.6.5"

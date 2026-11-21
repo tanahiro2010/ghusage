@@ -1,0 +1,18 @@
+[package]
+name = "ghusage-storage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+chrono = "0.4.45"
+fs4 = "1.1.0"
+ghusage-core = { version = "0.1.0", path = "../ghusage-core" }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+tracing = "0.1.44"
+
+[dev-dependencies]
+tempfile = "3.27.0"

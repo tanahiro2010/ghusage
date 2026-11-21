@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+/docs/node_modules
+/docs/.vitepress/cache
+/docs/.vitepress/dist
+.DS_Store
+*.db
+*.db-wal
+*.db-shm
+CLAUDE.local.md
