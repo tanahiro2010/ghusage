@@ -23,6 +23,7 @@ before or after the command (`ghusage --since 30d daily` and
 | `comments` | Comments you wrote and comments on your pull requests | last 7 days |
 | `issues` | Issues you opened, closed or reopened | last 7 days |
 | `pr <URL>` | Detail and timeline of one pull request | (not period based) |
+| `commit <COMMIT>` | One commit: message, people, parents, changed files and, with `--patch`, its diff | (not period based) |
 | `tui` | Interactive terminal UI | last 30 days |
 | `sync` | Fetch data from GitHub into the local cache | last 30 days |
 | `doctor` | Check authentication, cache and connectivity | |
@@ -112,6 +113,40 @@ Event types: `commit_authored`, `pr_opened`, `pr_converted_to_draft`,
 ```sh
 ghusage pr https://github.com/OWNER/REPO/pull/123 --timeline \
   --event-type review_submitted,inline_comment
+```
+
+### `commit`
+
+```text
+ghusage commit <COMMIT> [--patch]
+```
+
+Shows one commit: repository, full SHA, author and committer (git name,
+linked GitHub login and date), parents (a commit with more than one parent
+is a merge commit), the full message, and the changed files with their
+status (`added`, `modified`, `removed`, `renamed`, ...), lines added and
+removed, and the total.
+
+| Option | Description |
+|---|---|
+| `<COMMIT>` | `OWNER/REPO@SHA` or `https://github.com/OWNER/REPO/commit/SHA` (also `.../pull/NUMBER/commits/SHA`). The SHA may be abbreviated to 7 or more hexadecimal digits |
+| `--patch` | Also print the diff of each file (table output: added lines green, removed lines red, hunk headers cyan when colors are on). In JSON, each file then has a `patch` field |
+
+The commit is read from the cache when it has been looked at before (by this
+command or in the terminal UI); otherwise it is fetched from GitHub with
+`GET /repos/{owner}/{repo}/commits/{sha}`, following every page of its
+files, and stored in the cache. Commit content never changes any number in
+the reports. With `--offline`, the commit must already be in the cache.
+
+GitHub does not return a diff for binary files and for very large diffs;
+such files are listed with "no diff available from GitHub". GitHub lists at
+most 3000 files of one commit; when files are missing, a note says so
+(`files_truncated` in JSON). With `--public-only`, commits of repositories
+that are not public are refused.
+
+```sh
+ghusage commit OWNER/REPO@1a2b3c4 --patch
+ghusage commit https://github.com/OWNER/REPO/commit/1a2b3c4d5e6f --format json
 ```
 
 ### `sync`
