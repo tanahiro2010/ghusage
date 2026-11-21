@@ -24,8 +24,10 @@ jobs:
         with:
           # The build must never depend on private submodules.
           submodules: false
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned so lint results are reproducible; upgraded deliberately.
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.94.0"
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check

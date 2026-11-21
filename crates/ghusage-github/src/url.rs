@@ -15,10 +15,8 @@ pub fn parse_pr_url(url: &str) -> Option<(String, String, u64)> {
     }
     let rest = &url[scheme_end + 3..];
     let rest = rest.split(['#', '?']).next()?;
-    let (host, path) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i + 1..]),
-        None => return None,
-    };
+    let i = rest.find('/')?;
+    let (host, path) = (&rest[..i], &rest[i + 1..]);
     if !host.eq_ignore_ascii_case("github.com") {
         return None;
     }
