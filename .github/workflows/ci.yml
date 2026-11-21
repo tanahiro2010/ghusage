@@ -8,33 +8,91 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same branch or pull request supersedes older runs.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Content hashes of what each job verifies. A job whose inputs were
+  # already verified successfully on the same OS skips its work and still
+  # reports success, so required checks stay satisfied: documentation-only
+  # changes and a pull request into `release` that matches a commit already
+  # verified on `dev` finish in seconds.
+  inputs:
+    name: inputs
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.hash.outputs.rust }}
+      npm: ${{ steps.hash.outputs.npm }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - id: hash
+        name: Hash the inputs of each job
+        run: |
+          digest() {
+            # An empty file list would make every run look verified.
+            files=$(git ls-files -s -- "$@")
+            test -n "$files" || { echo "no inputs matched: $*" >&2; exit 1; }
+            printf '%s\n' "$files" | sha256sum | cut -c1-40
+          }
+          # Assignments, so a failing digest stops the step (bash -e).
+          rust=$(digest crates src tests benches Cargo.toml Cargo.lock .cargo rust-toolchain rust-toolchain.toml scripts/tui-pty-smoke.py .github/workflows/ci.yml)
+          npm=$(digest npm scripts/bench-report.mjs scripts/bench-report.test.mjs .github/workflows/ci.yml)
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
+          echo "npm=$npm" >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+
   check:
     name: fmt / clippy / test / build (${{ matrix.os }})
+    needs: inputs
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-latest]
+    env:
+      VERIFIED_KEY: ci-verified-check-${{ matrix.os }}-${{ needs.inputs.outputs.rust }}
     steps:
       - uses: actions/checkout@v4
         with:
           # The build must never depend on private submodules.
           submodules: false
+      - id: verified
+        name: Look for an earlier successful run with the same inputs
+        uses: actions/cache/restore@v4
+        with:
+          path: .ci-verified
+          key: ${{ env.VERIFIED_KEY }}
+          lookup-only: true
+      - if: steps.verified.outputs.cache-hit == 'true'
+        run: echo "Inputs ${{ needs.inputs.outputs.rust }} already passed on ${{ matrix.os }}; skipping."
       # Pinned so lint results are reproducible; upgraded deliberately.
-      - uses: dtolnay/rust-toolchain@master
+      - if: steps.verified.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.94.0"
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace --all-targets --no-fail-fast
-      - run: cargo build --workspace --release
+      - if: steps.verified.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Keep compiled dependencies even when a test fails.
+          cache-on-failure: true
+      - if: steps.verified.outputs.cache-hit != 'true'
+        run: cargo fmt --all -- --check
+      - if: steps.verified.outputs.cache-hit != 'true'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - if: steps.verified.outputs.cache-hit != 'true'
+        run: cargo test --workspace --all-targets --no-fail-fast
+      - if: steps.verified.outputs.cache-hit != 'true'
+        run: cargo build --workspace --release
       - name: Smoke test release binary
+        if: steps.verified.outputs.cache-hit != 'true'
         shell: bash
         run: |
           bin=target/release/ghusage
@@ -42,6 +100,7 @@ jobs:
           "$bin" --version
           "$bin" --help
       - name: Default cache location and paths with spaces
+        if: steps.verified.outputs.cache-hit != 'true'
         shell: bash
         run: |
           bin=target/release/ghusage
@@ -59,27 +118,61 @@ jobs:
           "$bin" overview --offline --user octocat --data-dir "$spaced" --format json > /dev/null
           test -f "$spaced/ghusage.db"
       - name: Terminal UI in a pseudo terminal
-        if: runner.os != 'Windows'
+        if: steps.verified.outputs.cache-hit != 'true' && runner.os != 'Windows'
         run: python3 scripts/tui-pty-smoke.py target/release/ghusage "$RUNNER_TEMP/tui-data"
+      # Reached only when every step above passed.
+      - name: Remember that these inputs passed
+        if: steps.verified.outputs.cache-hit != 'true'
+        shell: bash
+        run: echo "${{ needs.inputs.outputs.rust }}" > .ci-verified
+      - if: steps.verified.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .ci-verified
+          key: ${{ env.VERIFIED_KEY }}
 
   npm-launcher:
     name: npm launcher tests
+    needs: inputs
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-15, windows-latest]
+    env:
+      VERIFIED_KEY: ci-verified-npm-${{ matrix.os }}-${{ needs.inputs.outputs.npm }}
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: false
-      - uses: actions/setup-node@v4
+      - id: verified
+        uses: actions/cache/restore@v4
+        with:
+          path: .ci-verified
+          key: ${{ env.VERIFIED_KEY }}
+          lookup-only: true
+      - if: steps.verified.outputs.cache-hit == 'true'
+        run: echo "Inputs ${{ needs.inputs.outputs.npm }} already passed on ${{ matrix.os }}; skipping."
+      - if: steps.verified.outputs.cache-hit != 'true'
+        uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node --test "npm/test/*.test.mjs"
+      - if: steps.verified.outputs.cache-hit != 'true'
+        run: node --test "npm/test/*.test.mjs"
       - name: Benchmark report script tests
+        if: steps.verified.outputs.cache-hit != 'true'
         run: node --test scripts/bench-report.test.mjs
+      - name: Remember that these inputs passed
+        if: steps.verified.outputs.cache-hit != 'true'
+        shell: bash
+        run: echo "${{ needs.inputs.outputs.npm }}" > .ci-verified
+      - if: steps.verified.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .ci-verified
+          key: ${{ env.VERIFIED_KEY }}
 
+  # Always runs: new advisories appear without any change here.
   audit:
     name: dependency audit
     runs-on: ubuntu-latest
