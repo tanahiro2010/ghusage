@@ -10,13 +10,36 @@ For the requested period, a sync fetches three kinds of data:
 
 | Data kind | How it is found | What is stored |
 |---|---|---|
-| `commits` | GitHub commit search: commits whose author is your account, by committer date | Commits, plus your commits found inside synced pull requests |
+| `commits` | Commits whose author is your account, by committer date: GitHub commit search, plus the default-branch commit list of each of your repositories pushed to in the period and each repository with your commits or pull requests | Commits, plus your commits found inside synced pull requests |
 | `pull_requests` | Issue search: pull requests that `involves:` you or are `reviewed-by:` you, updated in the period | Each pull request with all of its commits, reviews, review threads and their comments, conversation comments, timeline events, and the CI results of its head commit |
 | `issues` | Issue search: issues that `involves:` you, updated in the period | Each issue with its open/close/reopen history |
 
 Each pull request and issue is written in its own transaction, so an
 interrupted sync keeps everything written so far and the next run continues
 with what is missing.
+
+### How commits are found
+
+GitHub's commit search index can silently miss commits, even in repositories
+it has indexed. `ghusage` therefore also lists commits directly:
+
+1. It lists your repositories that were pushed to since the start of the
+   missing range (`GET /user/repos`, newest push first, stopping at the first older
+   repository). With `--user`, only the other user's own repositories are
+   visible (`GET /users/{login}/repos`).
+2. It adds repositories in which commit search found your commits and
+   repositories of the pull requests found by the sync.
+3. For each of these repositories (forks excluded, and private ones
+   excluded with `--public-only`) it lists your commits on the default
+   branch in the range (`GET /repos/{owner}/{repo}/commits?author=...`).
+
+A commit found by search, by a listing and inside a pull request is stored
+once. This costs at least one request per repository, so the number of API
+requests grows with the number of repositories you were active in.
+Commits coverage is `complete` only when commit search and every listing
+succeeded. Commits coverage recorded by older versions, which relied on
+commit search alone, is not reused: the next sync fetches those ranges
+again.
 
 ## Running a sync
 
@@ -42,7 +65,8 @@ Exit codes of `sync`:
 
 - `0`: everything was fetched completely;
 - `4`: the sync finished but some data could not be fetched completely
-  (failed or partially fetched pull requests or issues, search caps);
+  (failed or partially fetched pull requests or issues, repositories whose
+  commits could not be listed, search caps);
   the `incomplete:` lines explain what is missing;
 - `6` instead of `4` when `--require-complete` is given;
 - `3`: authentication failed; `5`: cache error (including another sync
@@ -103,7 +127,7 @@ Every report shows coverage per data kind for the requested period:
 | Status | Meaning |
 |---|---|
 | `complete` | Everything in scope was fetched for the whole range. |
-| `partial` | Something is missing: a search hit a cap, GitHub reported incomplete results, a pull request or issue failed or was only partially fetched. The reason is shown. |
+| `partial` | Something is missing: a search hit a cap, GitHub reported incomplete results, a repository's commits could not be listed, a pull request or issue failed or was only partially fetched. The reason is shown. |
 | `not_yet_synced` | The range has never been synced for this account. |
 | `not_available` | The data cannot be obtained. |
 | `unknown` | The status could not be determined. |
@@ -113,8 +137,9 @@ The overall status of a report is `complete` only if every data kind is
 times, the most recent sync decides its status.
 
 "Complete" always refers to a stated scope. For commits, for example, the
-scope is "commits authored by you found by GitHub commit search (default
-branches of indexed repositories), plus commits of synced pull requests". The
+scope is "commits authored by you on the default branches of repositories you
+pushed to or contributed to (repository listing + commit search), plus
+commits of synced pull requests". The
 scope strings are included in JSON output. See
 [Known limitations](../reference/limitations.md) for what lies outside these
 scopes.

@@ -7,12 +7,34 @@ before relying on the numbers.
 
 ## Commits
 
-- **Commit search covers default branches only.** GitHub's commit search
-  indexes commits on the default branch of repositories it has indexed.
-  Commits that exist only on other branches are found only if they are part
-  of a pull request that `ghusage` synced (because it involves you). Commits
-  on other branches with no pull request, and commits in repositories GitHub
-  has not indexed, are not counted.
+- **Commits are found on default branches.** Commits are discovered in two
+  ways, and a commit found by both counts once: GitHub's commit search, and
+  the commit list of the default branch of every repository in your
+  repository list that was pushed to in the period, every repository
+  where search found your commits, and every repository of a synced pull
+  request. Commit search alone
+  is not enough: its index can silently miss commits, even weeks after they
+  were pushed to an indexed repository, so `ghusage` does not rely on it.
+- **Commits only on other branches are not counted** unless they are part
+  of a pull request that `ghusage` synced (because it involves you). Work on
+  a feature branch without a pull request, or on a branch that was deleted
+  without merging, is outside the commit scope.
+- **Repository discovery depends on who is analyzed.** For the
+  authenticated user, the repository list includes repositories you own,
+  collaborate on, or can access as an organization member. With `--user`,
+  only the other user's own public repositories can be listed; commits in
+  other repositories are found only through commit search and pull
+  requests. With `--public-only`, private and internal repositories are not
+  listed.
+- **Forks are not listed.** A fork's default branch usually repeats the
+  commits of its upstream repository, so forks are skipped (commit search
+  skips them as well). Your commits in a fork are counted only when they are
+  part of a synced pull request.
+- **Repositories you cannot read.** When the commit list of a repository is
+  refused (for example HTTP 403 because of organization SSO, or 404 after
+  access was removed), commits coverage is `partial` and names the
+  repository, and the repository is marked as no longer accessible. Empty
+  repositories are skipped without affecting coverage.
 - **Commits must be linked to your account.** A commit is attributed to you
   when GitHub links its author to your account, usually by the commit email.
   Commits made with an email that is not associated with your account are
@@ -23,7 +45,7 @@ before relying on the numbers.
   today counts last week. Rebased or amended commits get a new committer
   date.
 - **Author-date mode only sees what was synced by committer date.** Commit
-  search is queried by committer date. With `--commit-date author`, commits
+  search and the commit lists are queried by committer date. With `--commit-date author`, commits
   whose committer date lies outside the synced ranges are not in the cache.
 - **Force-pushed history.** When a force push removes commits from a pull
   request, the removed commits are kept and marked "no longer in the PR" if

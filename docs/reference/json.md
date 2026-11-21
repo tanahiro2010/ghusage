@@ -260,7 +260,7 @@ request's life (opened, commits, force pushes, ..., merged, closed, reopened).
 | Field | Description |
 |---|---|
 | `status` | `complete` or `partial` |
-| `commits_found` | Commits returned by commit search |
+| `commits_found` | Distinct commits found by commit search and the default-branch commit lists (commits found only inside pull requests are not included) |
 | `pull_requests_found`, `pull_requests_fetched`, `pull_requests_unchanged` | Pull requests found by search / fetched / skipped as unchanged |
 | `issues_found`, `issues_fetched` | Issues found / fetched |
 | `failures` | Descriptions of pull requests or issues that failed or were partially fetched |

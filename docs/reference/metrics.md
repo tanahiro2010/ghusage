@@ -80,9 +80,11 @@ bucket under `activity_breakdown[].summary`, and per repository under
 **Commits** (`commits`): the number of distinct commits you authored in the
 period, identified by repository and SHA.
 
-- Sources: GitHub commit search for commits whose author is your account,
-  plus your commits found inside pull requests `ghusage` has synced. A commit
-  found both ways counts once.
+- Sources: commits whose author is your account on the default branches of
+  repositories you pushed to or contributed to (found by listing each
+  repository's commits and by GitHub commit search), plus your commits found
+  inside pull requests `ghusage` has synced. A commit found in several ways
+  counts once. See [how commits are found](../guide/syncing.md#how-commits-are-found).
 - A commit is yours when GitHub links its author to your account (usually by
   the commit email). Commits with an author email that is not linked to your
   account are not attributed to you.
@@ -236,8 +238,8 @@ were synced because they involve you are known to `ghusage`.
 inside pull requests in the period: pull request commits, lifecycle events
 (open, close, reopen, merge, draft changes), force pushes, counted reviews,
 dismissals, comments of all three types, coordination and metadata actions.
-CI is excluded. Commits found by commit search and issue events are not pull
-request events.
+CI is excluded. Commits found on default branches and issue events are not
+pull request events.
 
 **Active days** (`active_days`): the number of distinct local calendar dates
 (in the report's time zone) on which you had at least one counted non-CI
