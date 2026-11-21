@@ -9,6 +9,8 @@ mod support;
 
 use serde_json::{Value, json};
 use support::*;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, ResponseTemplate};
 
 /// Every report command, as offline JSON over the standard period.
 const REPORTS: [&str; 7] = [
@@ -283,6 +285,20 @@ fn world_after_merge() -> World {
     g["mergedBy"] = user("bob");
     g["headRefOid"] = json!(sha(15));
     g["headCommit"]["nodes"][0]["commit"]["oid"] = json!(sha(15));
+    // The merge puts my sha 11 on the default branch of acme/widget.
+    let wr = widget();
+    w.repo_mut("acme", "widget").default_branch.insert(
+        0,
+        list_commit(
+            &wr.rest,
+            &sha(11),
+            Some((ME, ME_ID, "User")),
+            "2024-03-04T08:30:00Z",
+            1,
+        ),
+    );
+    let a = w.pr_mut(10);
+    let g = &mut a.gql;
     g["commits"] = connection(vec![
         pr_commit(
             "acme/widget",
@@ -611,6 +627,10 @@ async fn bot_and_unknown_actor_commits_are_not_counted_as_mine() {
         ),
         search_commit(&w.rest, &sha(5), None, "2024-03-06T08:00:00Z", 1),
     ];
+    // No default branch has a commit of mine either.
+    for r in &mut world.repos {
+        r.default_branch.clear();
+    }
     world.prs = vec![pr_a()];
     world.pr_mut(10).gql["commits"] = connection(vec![
         pr_commit(
@@ -798,4 +818,149 @@ async fn offline_reports_flag_periods_that_were_never_synced() {
     .await
     .expect_code(6);
     assert_eq!(requests(&server).await.len(), before);
+}
+
+fn request_count(reqs: &[wiremock::Request], p: &str) -> usize {
+    reqs.iter().filter(|r| r.url.path() == p).count()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn commits_missing_from_search_are_found_on_default_branches_and_counted_once() {
+    let mut world = World::base();
+    let mine = Some((ME, ME_ID, "User"));
+    let w = widget();
+    let d = dotfiles();
+    // sha 40 is on acme/widget's default branch but commit search misses it.
+    world.repo_mut("acme", "widget").default_branch.insert(
+        0,
+        list_commit(&w.rest, &sha(40), mine, "2024-03-08T10:00:00Z", 1),
+    );
+    // PR B was merged by fast-forward: its sha 21 is on the default branch
+    // too, so the pull request and the listing both report it.
+    world.repo_mut(ME, "dotfiles").default_branch.insert(
+        1,
+        list_commit(&d.rest, &sha(21), mine, "2024-03-06T07:50:00Z", 1),
+    );
+    let server = serve(&world).await;
+    let env = Env::new(&server);
+
+    let r = env.sync(&[]).await;
+    r.expect_code(0).assert_clean();
+    let s = r.json();
+    assert_eq!(s["status"], "complete");
+    // Search: 5 items; the listings add sha 40 and sha 21 (sha 1, 2 and 3
+    // are found by both and counted once).
+    assert_eq!(s["commits_found"], 7);
+    let reqs = requests(&server).await;
+    assert_eq!(request_count(&reqs, "/user/repos"), 1);
+    for repo in ["acme/widget", "me/dotfiles", "acme/secret"] {
+        assert_eq!(
+            request_count(&reqs, &format!("/repos/{repo}/commits")),
+            1,
+            "{repo}"
+        );
+    }
+
+    let o = env.offline_json(&["overview"]).await.json();
+    // The base 6 (sha 1, 2, 3, 11, 12, 21) plus sha 40; sha 21 once.
+    assert_eq!(o["metrics"]["commits"], 7);
+    assert_eq!(o["metrics"]["merge_commits"], 1);
+    assert_eq!(coverage_status(&o, "commits"), "complete");
+    let scope = o["coverage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["kind"] == "commits")
+        .unwrap()["scopes"]
+        .to_string();
+    assert!(
+        scope.contains("default branches of repositories me pushed to or contributed to"),
+        "{scope}"
+    );
+    let daily = env.offline_json(&["daily"]).await.json();
+    assert_eq!(bucket(&daily, "2024-03-06")["summary"]["commits"], 1);
+    assert_eq!(bucket(&daily, "2024-03-08")["summary"]["commits"], 1);
+
+    // A rerun has nothing to fetch: no repository listing at all.
+    let before = requests(&server).await.len();
+    env.sync(&[]).await.expect_code(0);
+    let reqs = requests(&server).await;
+    assert_eq!(request_count(&reqs[before..], "/user/repos"), 0);
+    assert_eq!(
+        request_count(&reqs[before..], "/repos/acme/widget/commits"),
+        0
+    );
+    let again = env.offline_json(&["overview"]).await.json();
+    assert_eq!(again["metrics"], o["metrics"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn empty_and_inaccessible_repositories_do_not_fail_the_commit_sync() {
+    // An empty repository (409) is simply without commits.
+    let mut world = World::base();
+    let mut empty = widget();
+    empty.name = "empty".into();
+    empty.gql["id"] = json!("R_empty");
+    empty.gql["name"] = json!("empty");
+    empty.rest = support::rest_repo("R_empty", "acme", "Organization", "empty", false);
+    empty.listed = listed_repo(&empty.rest, "push", "2024-03-06T00:00:00Z");
+    world.repos.push(empty);
+    let server = serve(&world).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/empty/commits"))
+        .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+            "message": "Git Repository is empty.",
+            "documentation_url": "https://docs.github.com/rest/commits/commits#list-commits",
+            "status": "409"
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let env = Env::new(&server);
+    let r = env.sync(&[]).await;
+    r.expect_code(0).assert_clean();
+    assert!(
+        requests(&server)
+            .await
+            .iter()
+            .any(|q| q.url.path() == "/repos/acme/empty/commits")
+    );
+    let o = env.offline_json(&["overview"]).await.json();
+    assert_eq!(coverage_status(&o, "commits"), "complete");
+    assert_eq!(o["metrics"]["commits"], 6);
+
+    // A repository the token cannot read makes commits partial, with the
+    // repository named, but everything else is still synced.
+    let world = World::base();
+    let server = serve(&world).await;
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/secret/commits"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "message": "Resource protected by organization SAML enforcement.",
+            "documentation_url": "https://docs.github.com/rest",
+            "status": "403"
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let env = Env::new(&server);
+    let r = env.sync(&[]).await;
+    r.expect_code(4).assert_clean();
+    assert_eq!(r.json()["status"], "partial");
+    let o = env.offline_json(&["overview"]).await.json();
+    assert_eq!(coverage_status(&o, "commits"), "partial");
+    assert_eq!(coverage_status(&o, "pull_requests"), "complete");
+    let reasons = coverage_reasons(&o, "commits").join(" ");
+    assert!(reasons.contains("acme/secret"), "{reasons}");
+    assert_eq!(o["metrics"]["commits"], 6);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn public_only_sync_does_not_list_private_repositories() {
+    let server = serve(&World::base()).await;
+    let env = Env::new(&server);
+    env.sync(&["--public-only"]).await.expect_code(0);
+    let reqs = requests(&server).await;
+    assert_eq!(request_count(&reqs, "/repos/acme/secret/commits"), 0);
+    assert_eq!(request_count(&reqs, "/repos/acme/widget/commits"), 1);
 }

@@ -8,6 +8,7 @@ mod http;
 mod issue;
 mod pull_request;
 mod queries;
+mod repos;
 mod search;
 mod url;
 
@@ -147,6 +148,13 @@ pub struct CommitRecord {
     pub repository: Repository,
     /// A `CommitAuthored` event (`occurred_at` = committer date).
     pub event: ActivityEvent,
+}
+
+/// A repository with the time of its last push.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushedRepository {
+    pub repository: Repository,
+    pub pushed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -306,6 +314,35 @@ impl GitHubClient {
         public_only: bool,
     ) -> Result<Fetched<Vec<CommitRecord>>, ApiError> {
         search::commits(&self.transport, author_login, period, public_only).await
+    }
+
+    /// Repositories pushed to at or after `pushed_since`, newest push first.
+    /// With `user` = `None` these are the authenticated user's repositories
+    /// (`GET /user/repos`: owned, collaborator and organization member);
+    /// otherwise the repositories `user` owns (`GET /users/{login}/repos`).
+    /// Paging stops at the first repository last pushed before
+    /// `pushed_since`.
+    pub async fn pushed_repositories(
+        &self,
+        user: Option<&str>,
+        pushed_since: DateTime<Utc>,
+    ) -> Result<Vec<PushedRepository>, ApiError> {
+        repos::pushed_repositories(&self.transport, user, pushed_since).await
+    }
+
+    /// Commits on the default branch of `repository` authored by
+    /// `author_login` with committer date in `period`
+    /// (`GET /repos/{owner}/{name}/commits`), normalized like commit search
+    /// results so both deduplicate by repository and SHA. An empty
+    /// repository yields no commits; other failures (e.g. 403/404) are
+    /// errors for the caller to report.
+    pub async fn default_branch_commits(
+        &self,
+        repository: &Repository,
+        author_login: &str,
+        period: Period,
+    ) -> Result<Fetched<Vec<CommitRecord>>, ApiError> {
+        repos::default_branch_commits(&self.transport, repository, author_login, period).await
     }
 
     /// Pull requests or issues matching `qualifiers` (e.g.

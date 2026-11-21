@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use wiremock::matchers::{
-    body_partial_json, body_string_contains, method, path, query_param_contains,
+    body_partial_json, body_string_contains, method, path, query_param, query_param_contains,
 };
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
@@ -314,6 +314,44 @@ pub fn search_commit(
     })
 }
 
+/// One item of `GET /repos/{owner}/{name}/commits`: the same shape as a
+/// commit search result without `repository` and `score`.
+pub fn list_commit(
+    repo: &Value,
+    sha: &str,
+    author: RestAuthor<'_>,
+    committer_date: &str,
+    parents: usize,
+) -> Value {
+    let mut v = search_commit(repo, sha, author, committer_date, parents);
+    let obj = v.as_object_mut().unwrap();
+    obj.remove("repository");
+    obj.remove("score");
+    v
+}
+
+/// A repository of `GET /user/repos`: the REST repository object with the
+/// viewer's permissions and the time of the last push.
+pub fn listed_repo(rest: &Value, permission: &str, pushed_at: &str) -> Value {
+    let level = |l: &str| {
+        let order = ["pull", "triage", "push", "maintain", "admin"];
+        let have = order.iter().position(|x| *x == permission).unwrap();
+        order.iter().position(|x| *x == l).unwrap() <= have
+    };
+    let mut v = rest.clone();
+    v["pushed_at"] = json!(pushed_at);
+    v["visibility"] = json!(if v["private"] == true {
+        "private"
+    } else {
+        "public"
+    });
+    v["permissions"] = json!({
+        "admin": level("admin"), "maintain": level("maintain"), "push": level("push"),
+        "triage": level("triage"), "pull": level("pull")
+    });
+    v
+}
+
 pub fn search_page(items: Vec<Value>) -> Value {
     json!({ "total_count": items.len(), "incomplete_results": false, "items": items })
 }
@@ -525,6 +563,10 @@ pub struct RepoFixture {
     pub gql: Value,
     /// REST repository object embedded in commit search results.
     pub rest: Value,
+    /// Item of `GET /user/repos` (with permissions and `pushed_at`).
+    pub listed: Value,
+    /// My commits on the default branch (`GET /repos/{owner}/{name}/commits`).
+    pub default_branch: Vec<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -586,6 +628,12 @@ pub fn widget() -> RepoFixture {
             "WRITE",
         ),
         rest: rest_repo(WIDGET_ID, "acme", "Organization", "widget", false),
+        listed: listed_repo(
+            &rest_repo(WIDGET_ID, "acme", "Organization", "widget", false),
+            "push",
+            "2024-03-08T09:00:00Z",
+        ),
+        default_branch: vec![],
     }
 }
 
@@ -595,6 +643,12 @@ pub fn dotfiles() -> RepoFixture {
         name: "dotfiles".into(),
         gql: gql_repo(DOTFILES_ID, user(ME), "dotfiles", "PUBLIC", "ADMIN"),
         rest: rest_repo(DOTFILES_ID, ME, "User", "dotfiles", false),
+        listed: listed_repo(
+            &rest_repo(DOTFILES_ID, ME, "User", "dotfiles", false),
+            "admin",
+            "2024-03-08T00:00:00Z",
+        ),
+        default_branch: vec![],
     }
 }
 
@@ -610,6 +664,12 @@ pub fn secret() -> RepoFixture {
             "READ",
         ),
         rest: rest_repo(SECRET_ID, "acme", "Organization", "secret", true),
+        listed: listed_repo(
+            &rest_repo(SECRET_ID, "acme", "Organization", "secret", true),
+            "pull",
+            "2024-03-05T00:00:00Z",
+        ),
+        default_branch: vec![],
     }
 }
 
@@ -879,11 +939,29 @@ impl World {
     /// - sha 4 in acme/widget by dependabot[bot] (a bot), 2024-03-05T08:00Z
     /// - sha 5 in acme/widget without a linked GitHub user, 2024-03-06T08:00Z
     ///
+    /// The default branches (`GET /repos/{owner}/{name}/commits?author=me`)
+    /// hold my commits sha 1 (acme/widget) and sha 2, sha 3 (me/dotfiles),
+    /// the same ones commit search finds; acme/secret has none of mine.
+    /// `GET /user/repos` lists acme/widget (last push 03-08), me/dotfiles
+    /// (03-08) and acme/secret (03-05).
+    ///
     /// Pull requests: [`pr_a`], [`pr_b`], [`pr_c`]. Issues: [`issue_1`],
     /// [`issue_2`].
     pub fn base() -> Self {
-        let w = widget();
-        let d = dotfiles();
+        let mut w = widget();
+        let mut d = dotfiles();
+        let mine = Some((ME, ME_ID, "User"));
+        w.default_branch = vec![list_commit(
+            &w.rest,
+            &sha(1),
+            mine,
+            "2024-03-04T10:00:00Z",
+            1,
+        )];
+        d.default_branch = vec![
+            list_commit(&d.rest, &sha(3), mine, "2024-03-07T23:30:00Z", 1),
+            list_commit(&d.rest, &sha(2), mine, "2024-03-05T12:00:00Z", 2),
+        ];
         let me = Some((ME, ME_ID, "User"));
         let commits = vec![
             search_commit(&w.rest, &sha(1), me, "2024-03-04T10:00:00Z", 1),
@@ -904,6 +982,13 @@ impl World {
             prs: vec![pr_a(), pr_b(), pr_c()],
             issues: vec![issue_1(), issue_2()],
         }
+    }
+
+    pub fn repo_mut(&mut self, owner: &str, name: &str) -> &mut RepoFixture {
+        self.repos
+            .iter_mut()
+            .find(|r| r.owner == owner && r.name == name)
+            .unwrap()
     }
 
     pub fn pr_mut(&mut self, number: u64) -> &mut PrFixture {
@@ -947,6 +1032,30 @@ impl World {
             )
             .mount(server)
             .await;
+        // Repositories by last push, newest first, as GitHub sorts them.
+        let mut listed: Vec<Value> = self.repos.iter().map(|r| r.listed.clone()).collect();
+        listed.sort_by(|a, b| {
+            b["pushed_at"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(a["pushed_at"].as_str().unwrap_or(""))
+        });
+        Mock::given(method("GET"))
+            .and(path("/user/repos"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(Value::Array(listed)))
+            .mount(server)
+            .await;
+        for r in &self.repos {
+            Mock::given(method("GET"))
+                .and(path(format!("/repos/{}/{}/commits", r.owner, r.name)))
+                .and(query_param("author", ME))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(Value::Array(r.default_branch.clone())),
+                )
+                .mount(server)
+                .await;
+        }
         let pr_items = |only_reviewed: bool| -> Vec<Value> {
             self.prs
                 .iter()

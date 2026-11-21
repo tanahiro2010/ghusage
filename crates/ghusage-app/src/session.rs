@@ -160,6 +160,7 @@ impl Session {
         opts.full = full;
         opts.public_only = self.config.public_only;
         opts.concurrency = concurrency;
+        opts.subject_is_viewer = self.subject_is_viewer;
         sync::run(client, &mut self.store, &self.subject, &opts, progress).await
     }
 

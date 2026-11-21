@@ -40,6 +40,11 @@ pub struct SyncOptions {
     pub recheck_open_after: Duration,
     /// Number of pull requests/issues fetched concurrently.
     pub concurrency: usize,
+    /// Whether the subject is the authenticated user. Repository discovery
+    /// for commits then also sees collaborator and organization
+    /// repositories; for other users only their own repositories are
+    /// visible.
+    pub subject_is_viewer: bool,
 }
 
 impl SyncOptions {
@@ -52,6 +57,7 @@ impl SyncOptions {
             overlap: Duration::days(3),
             recheck_open_after: Duration::days(7),
             concurrency: 4,
+            subject_is_viewer: true,
         }
     }
 }
@@ -157,18 +163,21 @@ pub fn cached_subject(store: &Store, user: Option<&str>) -> Result<(Subject, boo
 /// Suffix of coverage scopes recorded by `--public-only` syncs.
 pub const PUBLIC_ONLY_SCOPE: &str = " (public repositories only)";
 
+/// Marker in the scope of commit coverage recorded by syncs that list
+/// repository commits in addition to commit search.
+pub const COMMIT_LISTING_SCOPE: &str = "(repository listing + commit search)";
+
 /// Coverage records that count for the current mode. Records from a
 /// public-only sync do not cover private data, so they are ignored unless
-/// the current mode is public-only too.
+/// the current mode is public-only too. Commit records written before
+/// repository listing was added relied on commit search alone, which misses
+/// commits, so they are ignored and the range is synced again.
 pub fn applicable_coverage(records: Vec<CoverageRecord>, public_only: bool) -> Vec<CoverageRecord> {
-    if public_only {
-        records
-    } else {
-        records
-            .into_iter()
-            .filter(|r| !r.scope.ends_with(PUBLIC_ONLY_SCOPE))
-            .collect()
-    }
+    records
+        .into_iter()
+        .filter(|r| public_only || !r.scope.ends_with(PUBLIC_ONLY_SCOPE))
+        .filter(|r| r.kind != DataKind::Commits || r.scope.contains(COMMIT_LISTING_SCOPE))
+        .collect()
 }
 
 /// Ranges of `kind` that need fetching for `period`.
@@ -199,12 +208,23 @@ pub fn ranges_to_fetch(
         .collect()
 }
 
-fn scope(kind: DataKind, login: &str, public_only: bool) -> String {
-    let vis = if public_only { PUBLIC_ONLY_SCOPE } else { "" };
+fn scope(kind: DataKind, login: &str, opts: &SyncOptions) -> String {
+    let vis = if opts.public_only {
+        PUBLIC_ONLY_SCOPE
+    } else {
+        ""
+    };
     match kind {
-        DataKind::Commits => format!(
-            "commits authored by {login} found by GitHub commit search (default branches of indexed repositories), plus commits of synced pull requests{vis}"
-        ),
+        DataKind::Commits => {
+            let repos = if opts.subject_is_viewer {
+                "pushed to or contributed to"
+            } else {
+                "owns or contributed to"
+            };
+            format!(
+                "commits authored by {login} on the default branches of repositories {login} {repos} {COMMIT_LISTING_SCOPE}, plus commits of synced pull requests{vis}"
+            )
+        }
         DataKind::PullRequests => format!(
             "pull requests involving or reviewed by {login} updated in range, with commits, reviews, comments, review threads, timeline events and head-commit checks{vis}"
         ),
@@ -227,7 +247,7 @@ fn record(
         start: p.start,
         end: p.end,
         status,
-        scope: scope(kind, &subject.login, opts.public_only),
+        scope: scope(kind, &subject.login, opts),
         reason,
         recorded_at: opts.now,
     }
@@ -280,52 +300,13 @@ async fn run_inner(
     let mut report = SyncReport::default();
     let existing = applicable_coverage(store.coverage(&subject.login)?, opts.public_only);
     let probe = Period::new(opts.now, opts.now + Duration::seconds(1))?;
-    let mut known_repos: HashMap<String, Repository> = store
-        .load_dataset(subject, false, Some(probe))?
-        .repositories
-        .into_iter()
+    let cached = store.load_dataset(subject, false, Some(probe))?;
+    let mut known_repos: HashMap<String, Repository> = cached.repositories.into_iter().collect();
+    let cached_prs: Vec<CachedPr> = cached
+        .pull_requests
+        .into_values()
+        .map(|p| (p.repository_id, p.created_at, p.updated_at))
         .collect();
-
-    // Commits.
-    for range in ranges_to_fetch(&existing, DataKind::Commits, opts) {
-        progress(SyncProgress::Searching(DataKind::Commits));
-        let fetched = client
-            .search_commits(&subject.login, range, opts.public_only)
-            .await?;
-        report.commits_found += fetched.items.len() as u64;
-        let mut batch = WriteBatch {
-            account: subject.login.clone(),
-            ..Default::default()
-        };
-        add_commits(&mut batch, fetched.items);
-        // Commit search does not report the viewer's permission, which
-        // ownership depends on; complete repository metadata once.
-        for repo in &mut batch.repositories {
-            if let Some(known) = known_repos.get(&repo.id)
-                && known.viewer_permission.is_some()
-            {
-                *repo = known.clone();
-                continue;
-            }
-            match client.repository(&repo.owner, &repo.name).await {
-                Ok(full) => *repo = full,
-                Err(e @ ApiError::Unauthorized) => return Err(e.into()),
-                Err(_) => {}
-            }
-            known_repos.insert(repo.id.clone(), repo.clone());
-        }
-        let rec = record(
-            DataKind::Commits,
-            range,
-            fetched.status,
-            fetched.reason,
-            subject,
-            opts,
-        );
-        batch.coverage.push(rec.clone());
-        store.apply(&batch)?;
-        report.coverage.push(rec);
-    }
 
     // Pull requests.
     let pr_ranges = ranges_to_fetch(&existing, DataKind::PullRequests, opts);
@@ -356,6 +337,35 @@ async fn run_inner(
         let reason = (!reasons.is_empty()).then(|| reasons.join("; "));
         search_status.push((*range, CoverageStatus::combine(statuses), reason));
     }
+    // Commits: commit search plus the default branches of repositories the
+    // subject pushed to or took part in through pull requests.
+    let commit_ranges = ranges_to_fetch(&existing, DataKind::Commits, opts);
+    if !commit_ranges.is_empty() {
+        let mut pr_repos: Vec<(String, String)> = Vec::new();
+        let mut seen_names = HashSet::new();
+        for r in refs.values() {
+            if seen_names.insert(format!("{}/{}", r.owner, r.name).to_ascii_lowercase()) {
+                pr_repos.push((r.owner.clone(), r.name.clone()));
+            }
+        }
+        let ctx = CommitContext {
+            cached_prs: &cached_prs,
+            pr_repos: &pr_repos,
+        };
+        sync_commits(
+            client,
+            store,
+            subject,
+            opts,
+            progress,
+            &commit_ranges,
+            &ctx,
+            &mut known_repos,
+            &mut report,
+        )
+        .await?;
+    }
+
     // Periodically recheck open pull requests even if search did not
     // report them as updated.
     let stale_open = stale_open_prs(store, subject, opts)?;
@@ -532,6 +542,248 @@ async fn run_inner(
         "partial".into()
     };
     Ok(report)
+}
+
+/// Repository id, creation and last update of a cached pull request.
+type CachedPr = (String, DateTime<Utc>, Option<DateTime<Utc>>);
+
+/// What the commit step knows about the subject's pull requests.
+struct CommitContext<'a> {
+    cached_prs: &'a [CachedPr],
+    /// Owner and name of repositories of pull requests found by this sync.
+    pr_repos: &'a [(String, String)],
+}
+
+/// Most repository names listed in a coverage reason.
+const MAX_NAMED_REPOS: usize = 5;
+
+fn name_repos(names: &[String]) -> String {
+    let mut s = names
+        .iter()
+        .take(MAX_NAMED_REPOS)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if names.len() > MAX_NAMED_REPOS {
+        s.push_str(&format!(" and {} more", names.len() - MAX_NAMED_REPOS));
+    }
+    s
+}
+
+/// Finds a repository by owner and name among known ones.
+fn find_repo<'a>(
+    repos: &'a HashMap<String, Repository>,
+    owner: &str,
+    name: &str,
+) -> Option<&'a Repository> {
+    repos
+        .values()
+        .find(|r| r.owner.eq_ignore_ascii_case(owner) && r.name.eq_ignore_ascii_case(name))
+}
+
+/// Syncs commits for `ranges`: commit search, plus the commits list of the
+/// default branch of every repository the subject pushed to (repository
+/// listing), had commits found by search in, or has pull requests in.
+/// Both sources produce the same event ids, so a commit found by both is
+/// stored once.
+#[allow(clippy::too_many_arguments)]
+async fn sync_commits(
+    client: &GitHubClient,
+    store: &mut Store,
+    subject: &Subject,
+    opts: &SyncOptions,
+    progress: &dyn Fn(SyncProgress),
+    ranges: &[Period],
+    ctx: &CommitContext<'_>,
+    known_repos: &mut HashMap<String, Repository>,
+    report: &mut SyncReport,
+) -> Result<()> {
+    let Some(earliest) = ranges.iter().map(|r| r.start).min() else {
+        return Ok(());
+    };
+    progress(SyncProgress::Searching(DataKind::Commits));
+    // Repositories pushed to since the earliest range, newest first.
+    let user = (!opts.subject_is_viewer).then_some(subject.login.as_str());
+    let (pushed, listing_failure) = match client.pushed_repositories(user, earliest).await {
+        Ok(list) => (list, None),
+        Err(e @ ApiError::Unauthorized) => return Err(e.into()),
+        Err(e) => (Vec::new(), Some(format!("repository list failed: {e}"))),
+    };
+    // Repositories of pull requests found by this sync.
+    let mut pr_repo_ids: HashSet<String> = HashSet::new();
+    let mut unresolved: Vec<String> = Vec::new();
+    for (owner, name) in ctx.pr_repos {
+        let local = find_repo(known_repos, owner, name).cloned().or_else(|| {
+            pushed
+                .iter()
+                .map(|p| &p.repository)
+                .find(|r| r.owner.eq_ignore_ascii_case(owner) && r.name.eq_ignore_ascii_case(name))
+                .cloned()
+        });
+        if let Some(r) = local {
+            pr_repo_ids.insert(r.id.clone());
+            known_repos.entry(r.id.clone()).or_insert(r);
+            continue;
+        }
+        match client.repository(owner, name).await {
+            Ok(full) => {
+                pr_repo_ids.insert(full.id.clone());
+                known_repos.insert(full.id.clone(), full);
+            }
+            Err(e @ ApiError::Unauthorized) => return Err(e.into()),
+            Err(_) => unresolved.push(format!("{owner}/{name}")),
+        }
+    }
+
+    for range in ranges {
+        let range = *range;
+        progress(SyncProgress::Searching(DataKind::Commits));
+        let fetched = client
+            .search_commits(&subject.login, range, opts.public_only)
+            .await?;
+        let mut statuses = vec![fetched.status];
+        let mut reasons: Vec<String> = fetched.reason.into_iter().collect();
+        if let Some(f) = &listing_failure {
+            statuses.push(CoverageStatus::Partial);
+            reasons.push(f.clone());
+        }
+        if !unresolved.is_empty() {
+            statuses.push(CoverageStatus::Partial);
+            reasons.push(format!(
+                "could not look up pull request repositories: {}",
+                name_repos(&unresolved)
+            ));
+        }
+
+        // Candidate repositories for this range.
+        let mut candidates: BTreeMap<String, Repository> = BTreeMap::new();
+        for p in &pushed {
+            if p.pushed_at.is_some_and(|t| t >= range.start) {
+                candidates.insert(p.repository.id.clone(), p.repository.clone());
+            }
+        }
+        for c in &fetched.items {
+            candidates
+                .entry(c.repository.id.clone())
+                .or_insert_with(|| c.repository.clone());
+        }
+        let cached_pr_ids = ctx
+            .cached_prs
+            .iter()
+            .filter(|(_, created, updated)| {
+                *created < range.end && updated.is_none_or(|u| u >= range.start)
+            })
+            .map(|(id, _, _)| id);
+        for id in pr_repo_ids.iter().chain(cached_pr_ids) {
+            if let Some(r) = known_repos.get(id) {
+                candidates.entry(id.clone()).or_insert_with(|| r.clone());
+            }
+        }
+        // Forks repeat the commits of their upstream repository, and commit
+        // search leaves them out too.
+        let to_list: Vec<Repository> = candidates
+            .into_values()
+            .filter(|r| !r.is_fork)
+            .filter(|r| !opts.public_only || r.visibility.is_public())
+            .collect();
+
+        let total = to_list.len();
+        let mut done = 0;
+        let mut found: BTreeMap<EventId, CommitRecord> = BTreeMap::new();
+        for c in fetched.items {
+            found.insert(c.event.event_id.clone(), c);
+        }
+        let mut inaccessible: Vec<(String, String)> = Vec::new();
+        let mut failed: Vec<String> = Vec::new();
+        let mut stream = futures::stream::iter(to_list.into_iter().map(|repo| async move {
+            let res = client
+                .default_branch_commits(&repo, &subject.login, range)
+                .await;
+            (repo, res)
+        }))
+        .buffer_unordered(opts.concurrency.clamp(1, 16));
+        while let Some((repo, res)) = stream.next().await {
+            done += 1;
+            progress(SyncProgress::Fetching {
+                kind: DataKind::Commits,
+                done,
+                total,
+            });
+            match res {
+                Ok(listed) => {
+                    statuses.push(listed.status);
+                    reasons.extend(listed.reason);
+                    for c in listed.items {
+                        found.entry(c.event.event_id.clone()).or_insert(c);
+                    }
+                }
+                Err(e @ ApiError::Unauthorized) => return Err(e.into()),
+                Err(ApiError::NotFound(_) | ApiError::Forbidden(_)) => {
+                    inaccessible.push((repo.owner.clone(), repo.name.clone()));
+                }
+                Err(e) => failed.push(format!("{}: {e}", repo.full_name())),
+            }
+        }
+        drop(stream);
+        if !inaccessible.is_empty() {
+            for (owner, name) in &inaccessible {
+                store.set_repository_accessible(owner, name, false)?;
+            }
+            let names: Vec<String> = inaccessible
+                .iter()
+                .map(|(o, n)| format!("{o}/{n}"))
+                .collect();
+            statuses.push(CoverageStatus::Partial);
+            reasons.push(format!(
+                "{} repositories not accessible: {}",
+                names.len(),
+                name_repos(&names)
+            ));
+        }
+        if !failed.is_empty() {
+            statuses.push(CoverageStatus::Partial);
+            reasons.push(format!(
+                "listing commits failed for {} repositories: {}",
+                failed.len(),
+                name_repos(&failed)
+            ));
+        }
+
+        report.commits_found += found.len() as u64;
+        let mut batch = WriteBatch {
+            account: subject.login.clone(),
+            ..Default::default()
+        };
+        add_commits(&mut batch, found.into_values().collect());
+        // Commit search does not report the viewer's permission, which
+        // ownership depends on; complete repository metadata once.
+        for repo in &mut batch.repositories {
+            if let Some(known) = known_repos.get(&repo.id)
+                && known.viewer_permission.is_some()
+            {
+                *repo = Repository {
+                    accessible: true,
+                    ..known.clone()
+                };
+                continue;
+            }
+            if repo.viewer_permission.is_none() {
+                match client.repository(&repo.owner, &repo.name).await {
+                    Ok(full) => *repo = full,
+                    Err(e @ ApiError::Unauthorized) => return Err(e.into()),
+                    Err(_) => {}
+                }
+            }
+            known_repos.insert(repo.id.clone(), repo.clone());
+        }
+        let status = CoverageStatus::combine(statuses);
+        let reason = (!reasons.is_empty()).then(|| reasons.join("; "));
+        let rec = record(DataKind::Commits, range, status, reason, subject, opts);
+        batch.coverage.push(rec.clone());
+        store.apply(&batch)?;
+        report.coverage.push(rec);
+    }
+    Ok(())
 }
 
 /// Search window for pull requests and issues. GitHub matches `updated:`

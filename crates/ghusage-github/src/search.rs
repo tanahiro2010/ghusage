@@ -14,6 +14,7 @@ use serde_json::Value;
 
 use crate::http::{Transport, parse_time};
 use crate::pull_request::RestUser;
+use crate::repos::RestRepo;
 use crate::{ApiError, CommitRecord, Fetched, IssueKind, IssueRef};
 
 /// GitHub returns at most this many results per search query.
@@ -139,16 +140,18 @@ async fn search(
     Ok(out)
 }
 
+/// A commit as returned by commit search and by the commits list endpoint
+/// (the latter without `repository`).
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
-struct SearchCommit {
+pub(crate) struct SearchCommit {
     sha: Option<String>,
     html_url: Option<String>,
     commit: Option<CommitDetail>,
     author: Option<RestUser>,
     committer: Option<RestUser>,
     parents: Option<Vec<Value>>,
-    repository: Option<SearchRepo>,
+    repository: Option<RestRepo>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -164,39 +167,7 @@ struct GitSignature {
     date: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-struct SearchRepo {
-    node_id: Option<String>,
-    name: Option<String>,
-    private: Option<bool>,
-    fork: Option<bool>,
-    html_url: Option<String>,
-    owner: Option<RestUser>,
-}
-
-impl SearchRepo {
-    fn to_repository(&self) -> Option<Repository> {
-        let owner = self.owner.as_ref()?;
-        Some(Repository {
-            id: self.node_id.clone()?,
-            owner: owner.login.clone()?,
-            name: self.name.clone()?,
-            owner_kind: owner.actor().kind,
-            visibility: match self.private {
-                Some(true) => Visibility::Private,
-                Some(false) => Visibility::Public,
-                None => Visibility::Unknown,
-            },
-            is_fork: self.fork.unwrap_or(false),
-            viewer_permission: None,
-            accessible: true,
-            url: self.html_url.clone(),
-        })
-    }
-}
-
-fn finish<T>(items: T, reasons: Vec<String>) -> Fetched<T> {
+pub(crate) fn finish<T>(items: T, reasons: Vec<String>) -> Fetched<T> {
     if reasons.is_empty() {
         Fetched {
             items,
@@ -233,7 +204,11 @@ pub(crate) async fn commits(
             bad += 1;
             continue;
         };
-        let Some(record) = commit_record(item, now) else {
+        let Some(repository) = item.repository.as_ref().and_then(RestRepo::to_repository) else {
+            bad += 1;
+            continue;
+        };
+        let Some(record) = commit_record(item, repository, now, Source::Search) else {
             bad += 1;
             continue;
         };
@@ -256,9 +231,14 @@ pub(crate) async fn commits(
     Ok(finish(records, reasons))
 }
 
-fn commit_record(item: SearchCommit, now: DateTime<Utc>) -> Option<CommitRecord> {
+/// Normalizes a commit of `repository` into a `CommitAuthored` record.
+pub(crate) fn commit_record(
+    item: SearchCommit,
+    repository: Repository,
+    now: DateTime<Utc>,
+    source: Source,
+) -> Option<CommitRecord> {
     let sha = item.sha.clone()?;
-    let repository = item.repository.as_ref()?.to_repository()?;
     let detail = item.commit.as_ref()?;
     let committed_at = detail
         .committer
@@ -289,7 +269,7 @@ fn commit_record(item: SearchCommit, now: DateTime<Utc>) -> Option<CommitRecord>
         parent_pr_id: None,
         occurred_at: committed_at,
         observed_at: now,
-        source: Source::Search,
+        source,
         url: item.html_url.clone(),
         meta: EventMeta {
             sha: Some(sha),
