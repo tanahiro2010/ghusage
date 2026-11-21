@@ -971,6 +971,46 @@ fn read_only_cache_returns_an_error_and_keeps_data() {
     assert!(s.integrity_check().unwrap().is_empty());
 }
 
+#[cfg(unix)]
+#[test]
+fn read_only_cache_can_be_opened_for_reading() {
+    if running_as_root() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ghusage.db");
+    {
+        let mut s = Store::open(&path).unwrap();
+        s.apply(&base_batch()).unwrap();
+    }
+    set_mode(&path, 0o444);
+    set_mode(dir.path(), 0o555);
+
+    let opened = Store::open(&path).err().map(|e| e.is_read_only());
+    let reader = Store::open_read_only(&path).map(|s| s.stats().map(|st| st.events));
+    let mut extra = WriteBatch {
+        account: "alice".into(),
+        ..Default::default()
+    };
+    extra.events.push(commit_event("R1", "zzz999", t(6, 0)));
+    let write = Store::open_read_only(&path).map(|mut s| s.apply(&extra).is_err());
+
+    set_mode(dir.path(), 0o755);
+    set_mode(&path, 0o644);
+    assert_eq!(opened, Some(true));
+    assert_eq!(reader.unwrap().unwrap(), 5);
+    assert!(write.unwrap(), "writes through a read-only store must fail");
+    assert_eq!(Store::open(&path).unwrap().stats().unwrap().events, 5);
+}
+
+#[test]
+fn opening_a_missing_cache_read_only_fails_without_creating_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ghusage.db");
+    assert!(Store::open_read_only(&path).is_err());
+    assert!(!path.exists());
+}
+
 #[test]
 fn second_sync_lock_is_refused_until_the_first_is_released() {
     let dir = tempfile::tempdir().unwrap();

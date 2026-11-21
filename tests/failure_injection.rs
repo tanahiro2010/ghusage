@@ -790,13 +790,10 @@ async fn reading_a_read_only_cache_works_offline() {
     }
     r.assert_clean();
     st.assert_clean();
-    // Either the data is shown, or a cache error (exit 5) explains why not.
-    match r.code {
-        Some(0) => assert_eq!(r.json()["metrics"], before["metrics"]),
-        Some(5) => {}
-        other => panic!("unexpected exit {other:?}: {}", r.stderr),
-    }
-    assert!(matches!(st.code, Some(0) | Some(5)), "{}", st.stderr);
+    // Reading needs no write access: the cached data is shown unchanged.
+    assert_eq!(r.code, Some(0), "{}", r.stderr);
+    assert_eq!(r.json()["metrics"], before["metrics"]);
+    assert_eq!(st.code, Some(0), "{}", st.stderr);
 }
 
 /// Runs `ghusage` with a tiny file size limit, so every database write

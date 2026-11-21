@@ -35,7 +35,7 @@ use ghusage_core::model::{
     PullRequest, Repository, ReviewThread, Source, Subject, Visibility,
 };
 use ghusage_core::time::Period;
-use rusqlite::{Connection, ErrorCode, OptionalExtension, Row, Transaction, params};
+use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, Row, Transaction, params};
 
 use codec::{
     actor, actor_kind_str, from_json, nanos, opt_from_json, opt_nanos, opt_secs, opt_time,
@@ -60,6 +60,21 @@ pub enum StorageError {
     Io(#[from] std::io::Error),
     #[error("cache data error: {0}")]
     Data(String),
+}
+
+impl StorageError {
+    /// True when the error comes from missing write access to the cache
+    /// file or its directory.
+    pub fn is_read_only(&self) -> bool {
+        match self {
+            StorageError::Sqlite(e) => matches!(
+                e.sqlite_error_code(),
+                Some(ErrorCode::ReadOnly | ErrorCode::CannotOpen | ErrorCode::PermissionDenied)
+            ),
+            StorageError::Io(e) => e.kind() == std::io::ErrorKind::PermissionDenied,
+            _ => false,
+        }
+    }
 }
 
 /// Links a pull request to a commit. `is_current` is false when a resync
@@ -187,6 +202,36 @@ fn probe(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn wal_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push("-wal");
+    PathBuf::from(name)
+}
+
+/// `file:` URI that opens `path` as immutable (no locking, no WAL access).
+fn immutable_uri(path: &Path) -> Result<String> {
+    let abs = std::path::absolute(path)?;
+    let s = abs.to_str().ok_or_else(|| {
+        StorageError::Data(format!("cache path is not UTF-8: {}", path.display()))
+    })?;
+    let mut uri = String::from("file:");
+    if !s.starts_with('/') {
+        // Windows drive paths: file:/C:/...
+        uri.push('/');
+    }
+    for b in s.bytes() {
+        match b {
+            b'\\' => uri.push('/'),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' | b':' => {
+                uri.push(b as char)
+            }
+            _ => uri.push_str(&format!("%{b:02X}")),
+        }
+    }
+    uri.push_str("?immutable=1");
+    Ok(uri)
+}
+
 fn check_header(path: &Path) -> Result<()> {
     let file = match File::open(path) {
         Ok(f) => f,
@@ -226,6 +271,70 @@ impl Store {
             conn,
             path: Some(path.to_path_buf()),
         })
+    }
+
+    /// Opens an existing database for reading only, for when the file or
+    /// its directory is not writable. Every write through the returned
+    /// store fails. The schema must already be current.
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        Self::open_read_only_inner(path).map_err(classify)
+    }
+
+    fn open_read_only_inner(path: &Path) -> Result<Self> {
+        if !path.is_file() {
+            return Err(StorageError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("{} does not exist", path.display()),
+            )));
+        }
+        check_header(path)?;
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let conn = match Connection::open_with_flags(path, flags) {
+            Ok(c) if Self::readable(&c) => c,
+            _ => {
+                // A WAL database cannot be read without creating its shared
+                // memory file. When no write-ahead log is left over, the main
+                // file holds every committed change and can be read as
+                // immutable.
+                let wal = wal_path(path);
+                if std::fs::metadata(&wal).is_ok_and(|m| m.len() > 0) {
+                    return Err(StorageError::Data(format!(
+                        "{} has unsaved changes in {} and cannot be read without write access",
+                        path.display(),
+                        wal.display()
+                    )));
+                }
+                Connection::open_with_flags(
+                    immutable_uri(path)?,
+                    flags | OpenFlags::SQLITE_OPEN_URI,
+                )?
+            }
+        };
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        let version = schema::user_version(&conn)?;
+        if version > schema::CURRENT_VERSION {
+            return Err(StorageError::TooNew {
+                found: version,
+                supported: schema::CURRENT_VERSION,
+            });
+        }
+        if version < schema::CURRENT_VERSION {
+            return Err(StorageError::Migration {
+                from: version,
+                to: schema::CURRENT_VERSION,
+                message: "the cache needs upgrading but is not writable".into(),
+            });
+        }
+        probe(&conn)?;
+        Ok(Self {
+            conn,
+            path: Some(path.to_path_buf()),
+        })
+    }
+
+    fn readable(conn: &Connection) -> bool {
+        conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
+            .is_ok()
     }
 
     pub fn open_in_memory() -> Result<Self> {

@@ -64,7 +64,19 @@ pub fn open_store(cfg: &SessionConfig) -> Result<(Store, Option<PathBuf>)> {
             format!("cannot create data directory {}: {e}", dir.display()),
         )))
     })?;
-    Ok((Store::open(&paths::db_path(&dir))?, Some(dir)))
+    let path = paths::db_path(&dir);
+    let store = match Store::open(&path) {
+        Ok(s) => s,
+        // Without write access the cache can still be read; any write
+        // (such as a sync) then fails with a cache error.
+        Err(e) if e.is_read_only() && path.is_file() => {
+            let s = Store::open_read_only(&path).map_err(|_| e)?;
+            tracing::warn!(path = %path.display(), "cache is not writable; opened read-only");
+            s
+        }
+        Err(e) => return Err(e.into()),
+    };
+    Ok((store, Some(dir)))
 }
 
 impl Session {
