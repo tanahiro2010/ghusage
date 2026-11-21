@@ -467,8 +467,12 @@ async fn tui_cmd(g: &GlobalArgs, cmd: &Command, zone: Zone) -> Result<i32> {
         concurrency: g.concurrency as usize,
     };
     drop(s);
-    ghusage_tui::run(opts).map_err(|e| AppError::Other(format!("terminal UI error: {e}")))?;
-    Ok(exit::SUCCESS)
+    match ghusage_tui::run(opts) {
+        Ok(()) => Ok(exit::SUCCESS),
+        // Cache and session errors keep their own message and exit code.
+        Err(ghusage_tui::TuiError::App(e)) => Err(e),
+        Err(e @ ghusage_tui::TuiError::Terminal(_)) => Err(AppError::Other(e.to_string())),
+    }
 }
 
 async fn auth_status_cmd(g: &GlobalArgs) -> Result<i32> {

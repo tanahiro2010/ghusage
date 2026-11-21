@@ -3,20 +3,21 @@
 //! caches it, and tracks navigation, selection and search.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::mpsc::{Receiver, Sender};
 
 use chrono::{DateTime, Utc};
-use ghusage_app::report::{self, PrReport, QueryContext, Report, ReportKind};
+use ghusage_app::report::{PrReport, QueryContext, Report, ReportKind};
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::metrics::{
-    CommitDateBasis, Dataset, Filter, Ownership, Participation, PrSort, ReviewDirection,
-    VisibilityFilter,
+    CommitDateBasis, Filter, Ownership, Participation, PrSort, ReviewDirection, VisibilityFilter,
 };
 use ghusage_core::model::{EventCategory, EventType};
 use ghusage_core::time::{Period, Zone, resolve_period};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::background::SyncMsg;
+use crate::compute::{self, Job, Outcome, Request, Response, Worker};
 use crate::source::{DataSource, SystemInfo};
 
 /// A screen of the UI.
@@ -244,7 +245,7 @@ pub enum ListId {
 
 /// Which report a screen is built from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Slot {
+pub(crate) enum Slot {
     /// Summary, daily breakdown and repositories.
     Base,
     PullRequests,
@@ -252,11 +253,11 @@ enum Slot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct CacheKey {
-    slot: Slot,
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
-    filter: FilterPreset,
+pub(crate) struct CacheKey {
+    pub(crate) slot: Slot,
+    pub(crate) start: DateTime<Utc>,
+    pub(crate) end: DateTime<Utc>,
+    pub(crate) filter: FilterPreset,
 }
 
 /// Something the event loop must do after a key press.
@@ -292,9 +293,20 @@ pub struct AppConfig {
 
 type Clock = Box<dyn Fn() -> DateTime<Utc>>;
 
+/// Where reports are computed.
+enum Compute {
+    /// On the calling thread, synchronously.
+    Inline(Box<Worker>),
+    /// On a worker thread; results arrive through [`App::poll_results`].
+    Thread {
+        tx: Sender<Request>,
+        rx: Receiver<Response>,
+    },
+}
+
 /// The whole UI state.
 pub struct App {
-    source: Box<dyn DataSource>,
+    compute: Compute,
     clock: Clock,
     initial_period: Period,
     base_filter: Filter,
@@ -321,7 +333,8 @@ pub struct App {
     /// Scroll offsets remembered between frames.
     pub(crate) offsets: RefCell<HashMap<ListId, usize>>,
 
-    dataset: Option<(Period, Dataset)>,
+    generation: u64,
+    pending: HashSet<Job>,
     reports: HashMap<CacheKey, Report>,
     errors: HashMap<CacheKey, String>,
     pr_reports: HashMap<String, Result<Option<PrReport>, String>>,
@@ -330,15 +343,38 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(source: Box<dyn DataSource>, cfg: AppConfig) -> Self {
+    /// Creates the UI state. Reports are computed on a worker thread that
+    /// owns `source`; the calling thread never waits for them.
+    pub fn new(source: Box<dyn DataSource + Send>, cfg: AppConfig) -> std::io::Result<Self> {
         Self::with_clock(source, cfg, Box::new(Utc::now))
     }
 
     /// Like [`App::new`] with a custom clock for relative time ranges.
-    pub fn with_clock(source: Box<dyn DataSource>, cfg: AppConfig, clock: Clock) -> Self {
+    pub fn with_clock(
+        source: Box<dyn DataSource + Send>,
+        cfg: AppConfig,
+        clock: Clock,
+    ) -> std::io::Result<Self> {
         let system = source.system_info();
+        let (tx, rx) = compute::spawn(Worker::new(source))?;
+        Ok(Self::build(Compute::Thread { tx, rx }, system, cfg, clock))
+    }
+
+    /// Creates the UI state with reports computed synchronously on the
+    /// calling thread. Useful for scripting and tests.
+    pub fn inline(source: Box<dyn DataSource + Send>, cfg: AppConfig, clock: Clock) -> Self {
+        let system = source.system_info();
+        Self::build(
+            Compute::Inline(Box::new(Worker::new(source))),
+            system,
+            cfg,
+            clock,
+        )
+    }
+
+    fn build(compute: Compute, system: SystemInfo, cfg: AppConfig, clock: Clock) -> Self {
         Self {
-            source,
+            compute,
             clock,
             initial_period: cfg.period,
             base_filter: cfg.filter,
@@ -361,7 +397,8 @@ impl App {
             selection: HashMap::new(),
             search: HashMap::new(),
             offsets: RefCell::new(HashMap::new()),
-            dataset: None,
+            generation: 0,
+            pending: HashSet::new(),
             reports: HashMap::new(),
             errors: HashMap::new(),
             pr_reports: HashMap::new(),
@@ -429,59 +466,167 @@ impl App {
         }
     }
 
-    /// Makes sure the data for the current screen is computed. Cheap when
-    /// already cached; never touches the network.
-    pub fn prepare(&mut self) {
-        if let Some(slot) = Self::slot_for(self.screen) {
-            self.ensure(slot);
-        } else if let Some(id) = self.detail_pr.clone()
-            && !self.pr_reports.contains_key(&id)
-        {
-            self.dataset_loads += 1;
-            let r = self.source.pr_dataset(&id).map(|ds| {
-                self.report_builds += 1;
-                report::pr_report(&ds, &id, &[], self.zone, false)
-            });
-            self.pr_reports.insert(id, r);
-        }
-    }
-
-    /// Computes one report the user is likely to open next, so switching
-    /// screens hits the cache. Returns `false` when nothing is left to do.
-    /// Meant to be called while the UI is idle.
-    pub fn warm_up(&mut self) -> bool {
-        for slot in [Slot::Base, Slot::PullRequests, Slot::Reviews] {
-            let key = self.key(slot);
-            if !self.reports.contains_key(&key) && !self.errors.contains_key(&key) {
-                self.ensure(slot);
-                return true;
-            }
-        }
-        false
-    }
-
-    fn ensure(&mut self, slot: Slot) {
-        let key = self.key(slot);
-        if self.reports.contains_key(&key) || self.errors.contains_key(&key) {
+    fn send(&mut self, job: Job, foreground: bool) {
+        if self.pending.contains(&job) {
             return;
         }
-        if self.dataset.as_ref().map(|(p, _)| *p) != Some(self.period) {
-            self.dataset_loads += 1;
-            match self.source.dataset(self.period) {
-                Ok(ds) => self.dataset = Some((self.period, ds)),
-                Err(e) => {
-                    self.dataset = None;
-                    self.errors.insert(key, e);
-                    return;
+        let kind = match &job {
+            Job::Report(k) => Self::kind(k.slot),
+            _ => ReportKind::Overview,
+        };
+        let req = Request {
+            job: job.clone(),
+            generation: self.generation,
+            foreground,
+            ctx: self.query_context(),
+            kind,
+        };
+        self.pending.insert(job.clone());
+        match &mut self.compute {
+            Compute::Inline(w) => {
+                let resp = w.handle(req);
+                self.apply(resp);
+            }
+            Compute::Thread { tx, .. } => {
+                if tx.send(req).is_err() {
+                    self.pending.remove(&job);
+                    let e = "the report worker stopped".to_string();
+                    match job {
+                        Job::Report(k) => {
+                            self.errors.insert(k, e);
+                        }
+                        Job::Pr(id) => {
+                            self.pr_reports.insert(id, Err(e));
+                        }
+                        Job::System => self.system.error = Some(e),
+                    }
                 }
             }
         }
-        let Some((_, ds)) = &self.dataset else {
+    }
+
+    fn apply(&mut self, resp: Response) {
+        if resp.generation != self.generation {
+            // Computed from data that has since been reloaded.
             return;
-        };
-        let r = report::build(ds, &self.query_context(), Self::kind(slot));
-        self.report_builds += 1;
-        self.reports.insert(key, r);
+        }
+        self.pending.remove(&resp.job);
+        if resp.loaded_dataset {
+            self.dataset_loads += 1;
+        }
+        match (resp.job, resp.outcome) {
+            (Job::Report(k), Outcome::Report(Ok(r))) => {
+                self.report_builds += 1;
+                self.reports.insert(k, *r);
+            }
+            (Job::Report(k), Outcome::Report(Err(e))) => {
+                self.errors.insert(k, e);
+            }
+            (Job::Pr(id), Outcome::Pr(r)) => {
+                if r.is_ok() {
+                    self.report_builds += 1;
+                }
+                self.pr_reports.insert(id, r.map(|o| o.map(|b| *b)));
+            }
+            (Job::System, Outcome::System(info)) => self.system = info,
+            _ => {}
+        }
+    }
+
+    /// Applies finished computations. Never blocks. Returns whether
+    /// anything changed.
+    pub fn poll_results(&mut self) -> bool {
+        let mut got = Vec::new();
+        if let Compute::Thread { rx, .. } = &self.compute {
+            got.extend(rx.try_iter());
+        }
+        let changed = !got.is_empty();
+        for r in got {
+            self.apply(r);
+        }
+        if changed {
+            // A dropped request may still be needed by the current view.
+            self.prepare();
+        }
+        changed
+    }
+
+    /// Whether any computation is outstanding.
+    pub fn is_busy(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    /// Whether the view on screen is still being computed.
+    pub fn is_computing(&self) -> bool {
+        match Self::slot_for(self.screen) {
+            Some(slot) => self.pending.contains(&Job::Report(self.key(slot))),
+            None => self
+                .detail_pr
+                .as_ref()
+                .is_some_and(|id| self.pending.contains(&Job::Pr(id.clone()))),
+        }
+    }
+
+    /// Blocks until outstanding computations finish or `timeout` passes.
+    /// Returns whether everything finished.
+    pub fn settle(&mut self, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            self.prepare();
+            if self.pending.is_empty() {
+                return true;
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let resp = match &self.compute {
+                Compute::Thread { rx, .. } => rx.recv_timeout(deadline - now),
+                Compute::Inline(_) => return true,
+            };
+            match resp {
+                Ok(r) => {
+                    self.apply(r);
+                    self.poll_results();
+                }
+                Err(_) => return self.pending.is_empty(),
+            }
+        }
+    }
+
+    /// Requests whatever the current screen needs that is not computed yet.
+    /// Cheap when already cached; never touches the network and never
+    /// waits for the computation.
+    pub fn prepare(&mut self) {
+        if let Some(slot) = Self::slot_for(self.screen) {
+            let key = self.key(slot);
+            if !self.reports.contains_key(&key) && !self.errors.contains_key(&key) {
+                self.send(Job::Report(key), true);
+            }
+        } else if let Some(id) = self.detail_pr.clone()
+            && !self.pr_reports.contains_key(&id)
+        {
+            self.send(Job::Pr(id), true);
+        }
+    }
+
+    /// Requests the reports the user is likely to open next, so switching
+    /// screens hits the cache. Returns `false` when nothing is left to do.
+    /// Meant to be called while the UI is idle.
+    pub fn warm_up(&mut self) -> bool {
+        let mut sent = false;
+        for slot in [Slot::Base, Slot::PullRequests, Slot::Reviews] {
+            let key = self.key(slot);
+            let job = Job::Report(key.clone());
+            if !self.reports.contains_key(&key)
+                && !self.errors.contains_key(&key)
+                && !self.pending.contains(&job)
+            {
+                self.send(job, false);
+                sent = true;
+            }
+        }
+        sent
     }
 
     fn report(&self, slot: Slot) -> Option<&Report> {
@@ -538,12 +683,20 @@ impl App {
 
     /// Drops every computed report and re-reads cache status.
     pub fn reload(&mut self) {
-        self.dataset = None;
+        self.generation += 1;
+        self.pending.clear();
         self.reports.clear();
         self.errors.clear();
         self.pr_reports.clear();
-        self.system = self.source.system_info();
+        self.send(Job::System, true);
         self.prepare();
+    }
+
+    /// Whether the PR detail lookup finished (found or not).
+    pub fn pr_lookup_done(&self) -> bool {
+        self.detail_pr
+            .as_ref()
+            .is_some_and(|id| self.pr_reports.contains_key(id))
     }
 
     // ----- lists ------------------------------------------------------

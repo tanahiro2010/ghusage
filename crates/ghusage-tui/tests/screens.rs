@@ -98,7 +98,7 @@ fn empty_data_shows_friendly_messages() {
     for k in ['1', '2', '3', '4', '5', '6'] {
         app.handle_key(key(k));
         let text = screen_text(&app, 120, 30);
-        assert!(!text.contains("Loading"), "{text}");
+        assert!(!text.contains("Computing"), "{text}");
         let _ = screen_text(&app, 40, 10);
     }
     press(&mut app, "1");

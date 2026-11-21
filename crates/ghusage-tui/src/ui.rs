@@ -215,6 +215,9 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Some(t) => format!("synced {}", app.zone.format(t, "%m-%d %H:%M")),
         None => "never synced".into(),
     });
+    if app.is_computing() {
+        parts.push("⧗ computing".into());
+    }
     if app.sync.running {
         parts.push(format!(
             "⟳ sync: {}",
@@ -259,7 +262,12 @@ fn empty(f: &mut Frame, area: Rect, title: String, lines: &[&str]) {
 }
 
 fn loading(f: &mut Frame, area: Rect, title: &str) {
-    empty(f, area, title.into(), &["Loading…"]);
+    empty(
+        f,
+        area,
+        title.into(),
+        &["Computing… other screens and keys keep working meanwhile."],
+    );
 }
 
 fn no_match(app: &App, list: ListId) -> String {
@@ -697,7 +705,7 @@ fn kv(key: &str, value: String) -> Line<'static> {
 
 fn draw_pr_detail(f: &mut Frame, app: &App, area: Rect) {
     let Some(r) = app.pr_report() else {
-        if app.detail_pr.is_some() {
+        if app.pr_lookup_done() {
             return empty(
                 f,
                 area,
@@ -815,6 +823,9 @@ fn draw_pr_detail(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_pr_timeline(f: &mut Frame, app: &App, area: Rect) {
     let Some(r) = app.pr_report() else {
+        if !app.pr_lookup_done() {
+            return loading(f, area, "PR Timeline");
+        }
         return empty(
             f,
             area,
@@ -1099,7 +1110,7 @@ fn draw_system(f: &mut Frame, app: &App, area: Rect) {
                 ));
             }
         }
-        None => lines.push(Line::raw("  loading…")),
+        None => lines.push(Line::raw("  computing…")),
     }
     lines.push(Line::raw(""));
     lines.push(Line::styled("Warnings and errors", bold()));

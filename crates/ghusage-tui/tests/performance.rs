@@ -12,6 +12,7 @@ use ghusage_core::metrics::Dataset;
 use ghusage_core::model::{
     Actor, ActorKind, EventMeta, EventType, PrState, PullRequest, Repository, Subject, Visibility,
 };
+use ghusage_tui::source::MemorySource;
 use ratatui::crossterm::event::KeyCode;
 
 fn big_dataset(events: usize) -> Dataset {
@@ -103,43 +104,84 @@ fn big_dataset(events: usize) -> Dataset {
     )
 }
 
-#[test]
-fn first_render_and_key_latency_on_100k_events() {
-    let ds = big_dataset(100_000);
-    let started = Instant::now();
-    let app = app_with(ds, false);
-    let built = started.elapsed();
-    let _ = render(&app, 160, 50);
-    let first = started.elapsed();
-    let mut app = app;
-
-    // Cached interaction: selection movement + redraw.
-    app.handle_key(key('3'));
-    let _ = render(&app, 160, 50);
-    let mut samples = Vec::new();
-    for i in 0..60 {
-        let t = Instant::now();
-        app.handle_key(key(if i % 2 == 0 { 'j' } else { 'k' }));
-        let _ = render(&app, 160, 50);
-        samples.push(t.elapsed());
-    }
+fn percentile(samples: &mut [Duration], p: usize) -> Duration {
     samples.sort();
-    let p95 = samples[samples.len() * 95 / 100];
+    samples[(samples.len() * p / 100).min(samples.len() - 1)]
+}
 
-    // Screens computed for the first time.
+/// One step of the event loop: apply finished results and redraw.
+fn frame(app: &mut ghusage_tui::app::App) -> Duration {
     let t = Instant::now();
-    app.handle_key(key('4'));
-    let _ = render(&app, 160, 50);
-    let pr_list = t.elapsed();
-    let t = Instant::now();
-    app.handle_key(code(KeyCode::Enter));
-    let _ = render(&app, 160, 50);
-    let pr_detail = t.elapsed();
+    app.poll_results();
+    let _ = render(app, 160, 50);
+    t.elapsed()
+}
 
+#[test]
+fn first_render_and_interaction_latency_on_100k_events() {
+    let source = MemorySource::new(big_dataset(100_000));
+    let started = Instant::now();
+    let mut app = threaded_app(Box::new(source));
+    let _ = render(&app, 160, 50);
+    let first_frame = started.elapsed();
+    while app.base_report().is_none() {
+        frame(&mut app);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let _ = render(&app, 160, 50);
+    let first_data = started.elapsed();
+
+    // First visits to every screen, PR detail and timeline, and time range
+    // and filter cycling, each followed by first visits again. No warm-up,
+    // so every new view is computed while the UI keeps running.
+    let script: Vec<KeyCode> = "2345614"
+        .chars()
+        .map(KeyCode::Char)
+        .chain([KeyCode::Enter, KeyCode::Enter, KeyCode::Esc, KeyCode::Esc])
+        .chain("j/t".chars().map(KeyCode::Char))
+        .chain([KeyCode::Esc])
+        .chain("t12345f345tt4ff5ftt3".chars().map(KeyCode::Char))
+        .chain([KeyCode::Enter])
+        .chain("jjkk".chars().map(KeyCode::Char))
+        .collect();
+    let mut keys = Vec::new();
+    let mut all = Vec::new();
+    let mut longest_wait = Duration::ZERO;
+    for k in script {
+        let t = Instant::now();
+        app.handle_key(code(k));
+        app.poll_results();
+        let _ = render(&app, 160, 50);
+        let d = t.elapsed();
+        keys.push(d);
+        all.push(d);
+        // Run the loop until the view is computed, as the real UI does.
+        let wait = Instant::now();
+        while app.is_busy() && wait.elapsed() < Duration::from_secs(30) {
+            all.push(frame(&mut app));
+            std::thread::sleep(Duration::from_millis(15));
+        }
+        longest_wait = longest_wait.max(wait.elapsed());
+        all.push(frame(&mut app));
+    }
+    let n_keys = keys.len();
+    let n_all = all.len();
+    let key_p95 = percentile(&mut keys, 95);
+    let key_max = *keys.last().unwrap();
+    let all_p95 = percentile(&mut all, 95);
+    let all_max = *all.last().unwrap();
     println!(
-        "100k events: state + overview report {built:?}, first render total {first:?}, \
-         cached key+render p95 {p95:?}, PR list first visit {pr_list:?}, PR detail {pr_detail:?}"
+        "100k events: first frame {first_frame:?}, first frame with data {first_data:?}; \
+         {n_keys} keys: key+render p95 {key_p95:?} max {key_max:?}; \
+         {n_all} UI steps incl. result frames: p95 {all_p95:?} max {all_max:?}; \
+         longest wait for a computed view {longest_wait:?}"
     );
-    assert!(first < Duration::from_secs(30));
-    assert!(p95 < Duration::from_secs(1));
+    let bound = if cfg!(debug_assertions) {
+        Duration::from_millis(500)
+    } else {
+        Duration::from_millis(50)
+    };
+    assert!(key_p95 <= bound, "key handling p95 {key_p95:?}");
+    assert!(all_p95 <= bound, "UI step p95 {all_p95:?}");
+    assert!(first_frame <= Duration::from_secs(5));
 }

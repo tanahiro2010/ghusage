@@ -11,6 +11,7 @@
 
 pub mod app;
 pub mod background;
+mod compute;
 pub mod source;
 pub mod term;
 pub mod ui;
@@ -19,6 +20,7 @@ use std::io;
 use std::sync::mpsc;
 use std::time::Duration;
 
+use ghusage_app::AppError;
 use ghusage_app::session::{Session, SessionConfig};
 use ghusage_core::metrics::Filter;
 use ghusage_core::time::{Period, Zone};
@@ -43,31 +45,43 @@ pub struct TuiOptions {
     pub concurrency: usize,
 }
 
+/// Why the UI could not run.
+#[derive(Debug, thiserror::Error)]
+pub enum TuiError {
+    /// The cache could not be opened (no cached user, unreadable database,
+    /// ...). Carries the same error, and exit code, as other commands.
+    #[error(transparent)]
+    App(#[from] AppError),
+    /// The terminal could not be set up or drawn to.
+    #[error("terminal UI error: {0}")]
+    Terminal(#[from] io::Error),
+}
+
 /// Runs the UI until the user quits. The terminal is restored on exit and
 /// on panic.
 ///
 /// The UI runs on its own thread so it can be called from inside an async
-/// runtime; it reads the cache synchronously and never waits for the
-/// network.
-pub fn run(opts: TuiOptions) -> io::Result<()> {
+/// runtime. It never waits for the network, and reports are computed on a
+/// separate worker thread so keys are handled immediately.
+pub fn run(opts: TuiOptions) -> Result<(), TuiError> {
     let handle = std::thread::Builder::new()
         .name("ghusage-tui".into())
         .spawn(move || run_here(opts))?;
     match handle.join() {
         Ok(r) => r,
-        Err(_) => Err(io::Error::other("the terminal UI stopped unexpectedly")),
+        Err(_) => Err(TuiError::Terminal(io::Error::other(
+            "the terminal UI stopped unexpectedly",
+        ))),
     }
 }
 
-fn run_here(opts: TuiOptions) -> io::Result<()> {
+fn run_here(opts: TuiOptions) -> Result<(), TuiError> {
     let mut cfg = opts.session.clone();
     cfg.offline = true;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let session = rt
-        .block_on(Session::open(cfg))
-        .map_err(|e| io::Error::other(e.to_string()))?;
+    let session = rt.block_on(Session::open(cfg))?;
     drop(rt);
 
     let mut app = App::new(
@@ -78,7 +92,7 @@ fn run_here(opts: TuiOptions) -> io::Result<()> {
             filter: opts.filter.clone(),
             background_sync: opts.background_sync,
         },
-    );
+    )?;
     app.prepare();
 
     term::install_panic_hook();
@@ -86,7 +100,7 @@ fn run_here(opts: TuiOptions) -> io::Result<()> {
     let guard = term::RestoreGuard;
     let result = event_loop(&mut terminal, &mut app, &opts);
     drop(guard);
-    result
+    Ok(result?)
 }
 
 fn event_loop<B: Backend>(
@@ -116,14 +130,25 @@ where
             app.on_sync(msg);
             dirty = true;
         }
+        if app.poll_results() {
+            dirty = true;
+        }
         if dirty {
             app.prepare();
             terminal.draw(|f| ui::draw(f, app)).map_err(Into::into)?;
             dirty = false;
         }
-        if !event::poll(Duration::from_millis(100))? {
-            // Idle: precompute the other screens' reports from the cache.
-            app.warm_up();
+        // Poll often while results are expected so they show up quickly.
+        let wait = if app.is_busy() || app.sync.running {
+            Duration::from_millis(15)
+        } else {
+            Duration::from_millis(100)
+        };
+        if !event::poll(wait)? {
+            if !app.is_busy() {
+                // Idle: precompute the other screens' reports.
+                app.warm_up();
+            }
             continue;
         }
         match event::read()? {

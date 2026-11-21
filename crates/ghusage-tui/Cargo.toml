@@ -12,6 +12,7 @@ ghusage-app = { version = "0.1.0", path = "../ghusage-app" }
 ghusage-core = { version = "0.1.0", path = "../ghusage-core" }
 ghusage-github = { version = "0.1.0", path = "../ghusage-github" }
 ratatui = "0.30"
+thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync"] }
 unicode-width = "0.2.3"
 

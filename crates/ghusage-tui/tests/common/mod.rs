@@ -10,7 +10,7 @@ use ghusage_core::model::{
 };
 use ghusage_core::time::{Period, Zone, resolve_period};
 use ghusage_tui::app::{App, AppConfig};
-use ghusage_tui::source::MemorySource;
+use ghusage_tui::source::{DataSource, MemorySource};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -337,20 +337,34 @@ pub fn empty_dataset() -> Dataset {
     )
 }
 
+pub fn config(background_sync: bool) -> AppConfig {
+    AppConfig {
+        period: period_30d(),
+        zone: zone(),
+        filter: Filter::default(),
+        background_sync,
+    }
+}
+
+/// UI state computing reports synchronously, for step-by-step checks.
 pub fn app_with(ds: Dataset, background_sync: bool) -> App {
-    let mut app = App::with_clock(
+    let mut app = App::inline(
         Box::new(MemorySource::new(ds)),
-        AppConfig {
-            period: period_30d(),
-            zone: zone(),
-            filter: Filter::default(),
-            background_sync,
-        },
+        config(background_sync),
         Box::new(now),
     );
     app.prepare();
     app
 }
+
+/// UI state computing reports on a worker thread, as the real UI does.
+pub fn threaded_app(source: Box<dyn DataSource + Send>) -> App {
+    let mut app = App::with_clock(source, config(false), Box::new(now)).unwrap();
+    app.prepare();
+    app
+}
+
+pub const SETTLE: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub fn app() -> App {
     app_with(dataset(), false)
