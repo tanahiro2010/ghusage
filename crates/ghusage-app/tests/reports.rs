@@ -574,3 +574,533 @@ fn issue_report_shows_the_issue_and_its_events_in_the_period() {
     assert_eq!(r.events[0].event_type, EventType::IssueOpened);
     assert!(report::issue_report(&ds, &ctx(false), "I_missing").is_none());
 }
+
+/// Every count of a summary object, recursively (`ci`, review and comment
+/// counts are nested objects).
+fn assert_all_counts_zero(v: &serde_json::Value, path: &str) {
+    for (k, x) in v.as_object().unwrap() {
+        let p = format!("{path}.{k}");
+        match x {
+            serde_json::Value::Object(_) => assert_all_counts_zero(x, &p),
+            serde_json::Value::Number(n) => assert_eq!(n.as_u64(), Some(0), "{p}"),
+            serde_json::Value::Null => {}
+            other => panic!("{p}: unexpected {other}"),
+        }
+    }
+}
+
+#[test]
+fn missing_values_are_null_and_zero_counts_are_numbers() {
+    // An account with no activity and nothing synced for the period.
+    let nobody = Subject {
+        id: None,
+        login: "nobody".into(),
+    };
+    let ds = Dataset::new(
+        nobody,
+        false,
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+    );
+    let prs_kind = ReportKind::PullRequests {
+        participation: Participation::Subject,
+        state: None,
+        sort: PrSort::Activity,
+    };
+    let r = report::build(&ds, &ctx(false), prs_kind);
+    let v = serde_json::to_value(&r).unwrap();
+    // Unknown account ID: null.
+    assert!(v["account"]["id"].is_null());
+    // Nothing happened: every count is the number 0, never null.
+    assert_all_counts_zero(&v["metrics"], "metrics");
+    assert_eq!(v["metrics"]["commits"], 0);
+    assert_eq!(v["metrics"]["ci"]["passed"], 0);
+    // No last activity: null, not 0 or an empty string.
+    assert!(v["metrics"]["last_activity"].is_null());
+    // Every daily bucket has zeros too.
+    for b in v["activity_breakdown"].as_array().unwrap() {
+        assert_all_counts_zero(&b["summary"], "bucket");
+        assert!(b["summary"]["last_activity"].is_null());
+    }
+    // Never synced: the zeros come with coverage that says so.
+    for c in v["coverage"].as_array().unwrap() {
+        assert_eq!(c["status"], "not_yet_synced", "{c}");
+    }
+    // Statistics over zero pull requests are null; the count is 0.
+    assert_eq!(v["pull_requests"], serde_json::json!([]));
+    assert_eq!(v["intensity"]["prs"], 0);
+    for (k, s) in v["intensity"].as_object().unwrap() {
+        if k != "prs" {
+            assert!(s.is_null(), "intensity.{k} = {s}");
+        }
+    }
+    for (k, s) in v["timing"].as_object().unwrap() {
+        assert!(s.is_null(), "timing.{k} = {s}");
+    }
+    // A synced period without activity: complete, still zeros.
+    let synced = Dataset::new(
+        Subject {
+            id: Some("U_me".into()),
+            login: "me".into(),
+        },
+        true,
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        DataKind::ALL
+            .iter()
+            .map(|k| CoverageRecord {
+                kind: *k,
+                start: t(1, 0),
+                end: t(10, 0),
+                status: CoverageStatus::Complete,
+                scope: "everything".into(),
+                reason: None,
+                recorded_at: t(21, 0),
+            })
+            .collect(),
+    );
+    let v =
+        serde_json::to_value(report::build(&synced, &ctx(false), ReportKind::Overview)).unwrap();
+    assert_all_counts_zero(&v["metrics"], "metrics");
+    assert!(v["metrics"]["last_activity"].is_null());
+    for c in v["coverage"].as_array().unwrap() {
+        assert_eq!(c["status"], "complete", "{c}");
+    }
+
+    // A merged pull request whose merger GitHub did not report, without
+    // CI, reviews or a close time.
+    let mut merged = pr("PR_1", "R_pub", "Public change");
+    merged.merged_by = None;
+    merged.latest_ci = None;
+    merged.closed_at = None;
+    let ds = Dataset::new(
+        Subject {
+            id: Some("U_me".into()),
+            login: "me".into(),
+        },
+        true,
+        vec![repo("R_pub", "me", "public-tool", Visibility::Public)],
+        vec![merged],
+        vec![],
+        vec![],
+        vec![ev(
+            "o1",
+            EventType::PrOpened,
+            me(),
+            "R_pub",
+            Some("PR_1"),
+            t(1, 9),
+        )],
+        vec![],
+    );
+    let d = report::pr_report(&ds, "PR_1", &[], Zone::utc(), false).unwrap();
+    let v = serde_json::to_value(&d).unwrap();
+    assert!(v["merged_by"].is_null());
+    assert!(v["latest_ci"].is_null());
+    assert!(v["closed_at"].is_null());
+    // Created 11-01 09:00, merged 11-02 09:00: 86400 s. No review: null.
+    assert_eq!(v["timing"]["creation_to_merge_secs"], 86400);
+    assert!(v["timing"]["time_to_first_review_secs"].is_null());
+    assert!(v["timing"]["review_to_next_author_activity_secs"].is_null());
+    // One event: first to last is 0 seconds, a number.
+    assert_eq!(v["timing"]["first_to_last_activity_secs"], 0);
+    assert_eq!(v["reviews"]["total"], 0);
+    assert_eq!(v["removed_commits"], 0);
+    assert_eq!(v["commit_authors"], serde_json::json!([]));
+}
+
+fn keys(v: &serde_json::Value) -> Vec<String> {
+    let mut k: Vec<String> = v
+        .as_object()
+        .unwrap_or_else(|| panic!("not an object: {v}"))
+        .keys()
+        .cloned()
+        .collect();
+    k.sort();
+    k
+}
+
+#[track_caller]
+fn assert_keys(v: &serde_json::Value, expected: &[&str]) {
+    let mut e: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
+    e.sort();
+    assert_eq!(keys(v), e, "{v}");
+}
+
+/// The field lists of docs/reference/json.md, checked against real output.
+#[test]
+fn json_output_matches_documented_schema() {
+    let base = dataset();
+    let mut events = base.events.clone();
+    // Add an issue I opened, and an inline comment by someone else on my
+    // private pull request in a review thread, so every row type exists.
+    let mut opened = ev("io", EventType::IssueOpened, me(), "R_pub", None, t(3, 9));
+    opened.entity_id = "I_1".into();
+    events.push(opened);
+    let mut ic = ev(
+        "ic",
+        EventType::InlineComment,
+        other(),
+        "R_priv",
+        Some("PR_2"),
+        t(2, 5),
+    );
+    ic.meta.thread_id = Some("TH1".into());
+    events.push(ic);
+    let ds = Dataset::new(
+        base.subject.clone(),
+        true,
+        base.repositories.values().cloned(),
+        base.pull_requests.values().cloned(),
+        vec![Issue {
+            id: "I_1".into(),
+            repository_id: "R_pub".into(),
+            number: 5,
+            title: "Broken".into(),
+            url: "https://github.com/me/public-tool/issues/5".into(),
+            author: me(),
+            is_open: true,
+            created_at: t(3, 9),
+            closed_at: None,
+        }],
+        vec![ReviewThread {
+            id: "TH1".into(),
+            pr_id: "PR_2".into(),
+            is_resolved: false,
+            is_outdated: false,
+            resolved_by: None,
+            path: Some("src/lib.rs".into()),
+            comment_count: 1,
+            first_comment_author: Some(other()),
+        }],
+        events,
+        base.coverage.clone(),
+    );
+
+    let summary = [
+        "commits",
+        "merge_commits",
+        "prs_created",
+        "prs_merged",
+        "merges_performed",
+        "merges_unknown_actor",
+        "prs_closed_without_merge",
+        "prs_reopened",
+        "reviews_submitted",
+        "reviewed_prs",
+        "reviews_received",
+        "reviews_received_from_bots",
+        "review_dismissals_performed",
+        "comments_written",
+        "comments_received",
+        "review_responses",
+        "pr_commits",
+        "force_pushes",
+        "coordination_actions",
+        "metadata_actions",
+        "issues_opened",
+        "issues_closed",
+        "issues_reopened",
+        "active_prs",
+        "active_prs_all_participants",
+        "pr_internal_events",
+        "ci",
+        "active_days",
+        "last_activity",
+    ];
+    let review_counts = [
+        "total",
+        "approved",
+        "changes_requested",
+        "commented",
+        "dismissed_unknown_state",
+    ];
+    let comment_counts = ["total", "conversation", "inline", "review_summary"];
+    let stats = ["count", "min", "median", "mean", "p90", "max"];
+    let root = [
+        "schema_version",
+        "account",
+        "period",
+        "timezone",
+        "metrics",
+        "snapshot",
+        "repositories",
+        "activity_breakdown",
+        "coverage",
+        "synced_at",
+        "private_repositories_redacted",
+    ];
+    let check_summary = |s: &serde_json::Value| {
+        assert_keys(s, &summary);
+        assert_keys(&s["reviews_submitted"], &review_counts);
+        assert_keys(&s["reviews_received"], &review_counts);
+        assert_keys(&s["comments_written"], &comment_counts);
+        assert_keys(&s["comments_received"], &comment_counts);
+        assert_keys(&s["ci"], &["passed", "failed", "pending", "other"]);
+    };
+
+    let kinds: [(ReportKind, &[&str]); 9] = [
+        (ReportKind::Overview, &[]),
+        (ReportKind::Breakdown(Granularity::Day), &["granularity"]),
+        (ReportKind::Breakdown(Granularity::Week), &["granularity"]),
+        (ReportKind::Breakdown(Granularity::Month), &["granularity"]),
+        (ReportKind::Repositories, &[]),
+        (
+            ReportKind::PullRequests {
+                participation: Participation::All,
+                state: None,
+                sort: PrSort::Activity,
+            },
+            &["pull_requests", "intensity", "timing"],
+        ),
+        (
+            ReportKind::Reviews,
+            &["reviews_submitted", "reviews_received"],
+        ),
+        (ReportKind::Comments, &["comments"]),
+        (ReportKind::Issues, &["issues"]),
+    ];
+    for (kind, extra) in kinds {
+        let v = serde_json::to_value(report::build(&ds, &ctx(false), kind)).unwrap();
+        let mut expected: Vec<&str> = root.to_vec();
+        expected.extend_from_slice(extra);
+        assert_keys(&v, &expected);
+        assert_keys(&v["account"], &["login", "id", "is_authenticated_user"]);
+        assert_keys(&v["period"], &["start", "end"]);
+        check_summary(&v["metrics"]);
+        assert_keys(
+            &v["snapshot"],
+            &["open_prs", "open_issues_authored", "threads"],
+        );
+        assert_keys(
+            &v["snapshot"]["threads"],
+            &["total", "open", "resolved", "outdated"],
+        );
+        for r in v["repositories"].as_array().unwrap() {
+            assert_keys(
+                r,
+                &[
+                    "repository_id",
+                    "full_name",
+                    "visibility",
+                    "owned",
+                    "accessible",
+                    "summary",
+                ],
+            );
+            check_summary(&r["summary"]);
+        }
+        assert!(!v["activity_breakdown"].as_array().unwrap().is_empty());
+        for b in v["activity_breakdown"].as_array().unwrap() {
+            assert_keys(b, &["bucket", "summary"]);
+            assert_keys(&b["bucket"], &["key", "label", "start", "end"]);
+            check_summary(&b["summary"]);
+        }
+        let cov = v["coverage"].as_array().unwrap();
+        assert_eq!(cov.len(), 3);
+        for c in cov {
+            assert_keys(c, &["kind", "status", "scopes", "segments"]);
+            for s in c["segments"].as_array().unwrap() {
+                assert_keys(s, &["start", "end", "status", "reason"]);
+            }
+        }
+    }
+
+    let prs = serde_json::to_value(report::build(
+        &ds,
+        &ctx(false),
+        ReportKind::PullRequests {
+            participation: Participation::All,
+            state: None,
+            sort: PrSort::Activity,
+        },
+    ))
+    .unwrap();
+    let rows = prs["pull_requests"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    for r in rows {
+        assert_keys(
+            r,
+            &[
+                "pr_id",
+                "repository",
+                "number",
+                "title",
+                "url",
+                "author",
+                "state",
+                "is_draft",
+                "created_at",
+                "merged_at",
+                "events",
+                "events_by_subject",
+                "commits",
+                "reviews",
+                "comments",
+                "participants",
+                "discussion_participants",
+                "threads",
+                "last_activity",
+                "latest_ci",
+            ],
+        );
+    }
+    assert_keys(
+        &prs["intensity"],
+        &[
+            "prs",
+            "events_per_pr",
+            "reviews_per_pr",
+            "comments_per_pr",
+            "commits_per_pr",
+            "participants_per_pr",
+            "discussion_participants_per_pr",
+            "threads_per_pr",
+            "active_days_per_pr",
+        ],
+    );
+    assert_keys(&prs["intensity"]["events_per_pr"], &stats);
+    assert_keys(
+        &prs["timing"],
+        &[
+            "time_to_first_review",
+            "creation_to_merge",
+            "review_to_next_author_activity",
+            "first_to_last_activity",
+        ],
+    );
+    assert_keys(&prs["timing"]["creation_to_merge"], &stats);
+
+    let rv = serde_json::to_value(report::build(&ds, &ctx(false), ReportKind::Reviews)).unwrap();
+    let received = rv["reviews_received"].as_array().unwrap();
+    assert_eq!(received.len(), 1);
+    assert_keys(
+        &received[0],
+        &[
+            "event_id",
+            "submitted_at",
+            "reviewer",
+            "state",
+            "repository",
+            "pr_id",
+            "pr_number",
+            "pr_title",
+            "url",
+        ],
+    );
+    let cm = serde_json::to_value(report::build(&ds, &ctx(false), ReportKind::Comments)).unwrap();
+    let comments = cm["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 2);
+    for c in comments {
+        assert_keys(
+            c,
+            &[
+                "event_id",
+                "created_at",
+                "author",
+                "kind",
+                "written_by_subject",
+                "repository",
+                "pr_id",
+                "pr_number",
+                "edited",
+                "url",
+            ],
+        );
+    }
+    let is = serde_json::to_value(report::build(&ds, &ctx(false), ReportKind::Issues)).unwrap();
+    let issues = is["issues"].as_array().unwrap();
+    assert_eq!(issues.len(), 1);
+    assert_keys(
+        &issues[0],
+        &[
+            "issue_id",
+            "repository",
+            "number",
+            "title",
+            "url",
+            "is_open",
+            "opened_in_period",
+            "closed_in_period",
+            "reopened_in_period",
+        ],
+    );
+
+    let d = serde_json::to_value(report::pr_report(&ds, "PR_2", &[], Zone::utc(), false).unwrap())
+        .unwrap();
+    assert_keys(
+        &d,
+        &[
+            "schema_version",
+            "account",
+            "timezone",
+            "pr_id",
+            "repository",
+            "number",
+            "title",
+            "url",
+            "author",
+            "state",
+            "is_draft",
+            "created_at",
+            "merged_at",
+            "closed_at",
+            "merged_by",
+            "latest_ci",
+            "commits",
+            "removed_commits",
+            "reviews",
+            "comments",
+            "review_threads",
+            "participants",
+            "discussion_participants",
+            "commit_authors",
+            "timing",
+            "timeline",
+            "coverage",
+            "synced_at",
+            "private_repositories_redacted",
+        ],
+    );
+    assert_keys(&d["reviews"], &review_counts);
+    assert_keys(&d["comments"], &comment_counts);
+    assert_keys(
+        &d["review_threads"],
+        &["total", "open", "resolved", "outdated"],
+    );
+    assert_keys(
+        &d["timing"],
+        &[
+            "time_to_first_review_secs",
+            "creation_to_merge_secs",
+            "review_to_next_author_activity_secs",
+            "first_to_last_activity_secs",
+        ],
+    );
+    let timeline = d["timeline"].as_array().unwrap();
+    assert!(!timeline.is_empty());
+    for e in timeline {
+        assert_keys(
+            e,
+            &[
+                "event_id",
+                "occurred_at",
+                "observed_at",
+                "actor",
+                "actor_kind",
+                "event_type",
+                "label",
+                "detail",
+                "url",
+                "removed_observed_at",
+            ],
+        );
+    }
+}
