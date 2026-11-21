@@ -1,0 +1,1367 @@
+//! Pull request fetching and normalization, issues and repositories.
+
+mod common;
+
+use common::*;
+use ghusage_core::coverage::CoverageStatus;
+use ghusage_core::model::{
+    ActorKind, CheckOutcome, Collection, EventId, EventType, PrState, ReviewState, Source,
+    Visibility,
+};
+use ghusage_github::{ApiError, PrBundle};
+use serde_json::{Value, json};
+use wiremock::matchers::{body_partial_json, body_string_contains, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+const PR_ID: &str = "PR_kwDOwidget42";
+const REPO_ID: &str = "R_kgDOwidget";
+
+fn oid(n: u64) -> String {
+    sha(n)
+}
+
+fn acme() -> Value {
+    gql_actor("Organization", "acme", "O_acme")
+}
+
+fn repo() -> Value {
+    gql_repo(REPO_ID, acme(), "widget", "PUBLIC", false)
+}
+
+fn bot(login: &str) -> Value {
+    gql_actor("Bot", login, &format!("BOT_{login}"))
+}
+
+/// A merged pull request with a bit of everything:
+/// opened 2024-03-01 by alice, merged 2024-03-04 by bob; force-pushed once;
+/// reviews by bob, carol (dismissed) and alice's reply; dave's pending review;
+/// two threads (one resolved, one outdated); conversation comments by alice,
+/// a bot and a deleted account.
+fn rich_pr() -> Value {
+    let thread1_c1 = review_comment(
+        "PRRC_1",
+        user("bob"),
+        "2024-03-02T10:58:00Z",
+        "PRR_1",
+        None,
+        None,
+    );
+    let thread1_c2 = review_comment(
+        "PRRC_2",
+        user("alice"),
+        "2024-03-02T13:00:00Z",
+        "PRR_5",
+        Some("PRRC_1"),
+        None,
+    );
+    let thread2_c1 = review_comment(
+        "PRRC_3",
+        user("carol"),
+        "2024-03-02T11:59:00Z",
+        "PRR_2",
+        None,
+        Some("2024-03-02T12:30:00Z"),
+    );
+    json!({
+        "id": PR_ID,
+        "number": 42,
+        "title": "Add widget",
+        "url": "https://github.com/acme/widget/pull/42",
+        "state": "MERGED",
+        "isDraft": false,
+        "createdAt": "2024-03-01T09:00:00Z",
+        "updatedAt": "2024-03-04T15:31:00Z",
+        "closedAt": "2024-03-04T15:30:00Z",
+        "mergedAt": "2024-03-04T15:30:00Z",
+        "headRefOid": oid(3),
+        "author": user("alice"),
+        "mergedBy": user("bob"),
+        "headCommit": { "nodes": [ { "commit": { "oid": oid(3), "statusCheckRollup": { "state": "SUCCESS" } } } ] },
+        "commits": connection(vec![
+            pr_commit("acme", "widget", 42, &oid(1), Some("alice"), "2024-02-28T23:00:00Z", "2024-03-01T08:00:00Z", 1),
+            pr_commit("acme", "widget", 42, &oid(3), Some("alice"), "2024-03-02T09:00:00Z", "2024-03-02T09:59:00Z", 1),
+        ], false, Some("c2")),
+        "reviews": connection(vec![
+            review("PRR_1", "COMMENTED", "Looks good overall", Some("2024-03-02T11:00:00Z"), user("bob"), vec![thread1_c1.clone()]),
+            review("PRR_2", "DISMISSED", "", Some("2024-03-02T12:00:00Z"), user("carol"), vec![thread2_c1.clone()]),
+            review("PRR_5", "COMMENTED", "", Some("2024-03-02T13:00:00Z"), user("alice"), vec![thread1_c2.clone()]),
+            review("PRR_3", "APPROVED", "  ", Some("2024-03-04T15:00:00Z"), user("bob"), vec![]),
+            review("PRR_4", "PENDING", "draft thoughts", None, user("dave"), vec![]),
+        ], false, Some("r5")),
+        "reviewThreads": connection(vec![
+            thread("PRRT_1", true, false, Some(user("alice")), "src/widget.rs", vec![thread1_c1, thread1_c2]),
+            thread("PRRT_2", false, true, None, "src/lib.rs", vec![thread2_c1]),
+        ], false, Some("t2")),
+        "comments": connection(vec![
+            issue_comment("IC_1", user("alice"), "2024-03-01T10:00:00Z", None),
+            issue_comment("IC_2", bot("github-actions"), "2024-03-01T10:01:00Z", None),
+            issue_comment("IC_3", Value::Null, "2024-03-01T10:02:00Z", Some("2024-03-01T11:00:00Z")),
+        ], false, Some("ic3")),
+        "timelineItems": connection(vec![
+            tl("ReviewRequestedEvent", "RRE_1", "2024-03-01T09:05:00Z", user("alice"), json!({ "requestedReviewer": { "login": "bob" } })),
+            tl("ReviewRequestedEvent", "RRE_2", "2024-03-01T09:05:00Z", user("alice"), json!({ "requestedReviewer": { "slug": "core" } })),
+            tl("ReviewRequestRemovedEvent", "RRRE_1", "2024-03-01T09:06:00Z", user("alice"), json!({ "requestedReviewer": null })),
+            tl("LabeledEvent", "LE_1", "2024-03-01T09:07:00Z", user("alice"), json!({ "label": { "name": "bug" } })),
+            tl("UnlabeledEvent", "ULE_1", "2024-03-01T09:08:00Z", user("alice"), json!({ "label": { "name": "bug" } })),
+            tl("AssignedEvent", "AE_1", "2024-03-01T09:09:00Z", user("alice"), json!({ "assignee": { "login": "alice" } })),
+            tl("UnassignedEvent", "UAE_1", "2024-03-01T09:10:00Z", user("alice"), json!({ "assignee": { "login": "alice" } })),
+            tl("MilestonedEvent", "MIE_1", "2024-03-01T09:11:00Z", user("alice"), json!({ "milestoneTitle": "v1.0" })),
+            tl("DemilestonedEvent", "DME_1", "2024-03-01T09:12:00Z", user("alice"), json!({ "milestoneTitle": "v1.0" })),
+            tl("ConvertToDraftEvent", "CTDE_1", "2024-03-01T09:13:00Z", user("alice"), json!({ "url": "https://github.com/acme/widget/pull/42#event-1" })),
+            tl("ReadyForReviewEvent", "RFRE_1", "2024-03-01T09:14:00Z", user("alice"), json!({ "url": "https://github.com/acme/widget/pull/42#event-2" })),
+            tl("HeadRefForcePushedEvent", "HRFPE_1", "2024-03-02T10:00:00Z", user("alice"), json!({ "beforeCommit": { "oid": oid(2) }, "afterCommit": { "oid": oid(3) } })),
+            tl("RenamedTitleEvent", "RTE_1", "2024-03-02T10:05:00Z", user("alice"), json!({ "previousTitle": "WIP: widget", "currentTitle": "Add widget" })),
+            tl("ReviewDismissedEvent", "RDE_1", "2024-03-03T08:00:00Z", user("alice"), json!({ "review": { "id": "PRR_2" }, "previousReviewState": "CHANGES_REQUESTED", "url": "https://github.com/acme/widget/pull/42#event-3" })),
+            tl("MergedEvent", "ME_1", "2024-03-04T15:30:00Z", user("bob"), json!({ "url": "https://github.com/acme/widget/pull/42#event-4" })),
+            tl("ClosedEvent", "CE_1", "2024-03-04T15:30:00Z", user("bob"), json!({ "url": "https://github.com/acme/widget/pull/42#event-5" })),
+            json!({ "__typename": "SomeFutureEvent", "id": "SFE_1", "createdAt": "2024-03-04T16:00:00Z", "brandNewField": 1 }),
+        ], false, Some("tl17"))
+    })
+}
+
+fn pr_response(pr: Value) -> Value {
+    let mut r = repo();
+    r["pullRequest"] = pr;
+    gql_data(json!({ "repository": r }))
+}
+
+fn check_runs() -> Value {
+    let app = json!({ "id": 15368, "slug": "github-actions", "node_id": "MDM6QXBwMTUzNjg=", "name": "GitHub Actions", "owner": rest_user("github", "O_github", "Organization") });
+    json!({
+        "total_count": 3,
+        "check_runs": [
+            {
+                "id": 2, "node_id": "CR_2", "head_sha": oid(3), "name": "build", "status": "completed",
+                "conclusion": "success", "started_at": "2024-03-02T10:01:00Z", "completed_at": "2024-03-02T10:05:00Z",
+                "html_url": "https://github.com/acme/widget/actions/runs/2/job/2", "check_suite": { "id": 902 },
+                "app": app, "output": { "title": null, "summary": null }
+            },
+            {
+                "id": 1, "node_id": "CR_1", "head_sha": oid(3), "name": "build", "status": "completed",
+                "conclusion": "failure", "started_at": "2024-03-02T10:00:30Z", "completed_at": "2024-03-02T10:00:50Z",
+                "html_url": "https://github.com/acme/widget/actions/runs/1/job/1", "check_suite": { "id": 901 },
+                "app": app
+            },
+            {
+                "id": 3, "node_id": "CR_3", "head_sha": oid(3), "name": "lint", "status": "queued",
+                "conclusion": null, "started_at": null, "completed_at": null,
+                "html_url": "https://github.com/acme/widget/actions/runs/3/job/3", "check_suite": { "id": 903 },
+                "app": app
+            }
+        ]
+    })
+}
+
+fn statuses() -> Value {
+    json!([
+        {
+            "url": format!("https://api.github.com/repos/acme/widget/statuses/{}", oid(3)),
+            "avatar_url": null, "id": 11, "node_id": "SC_11", "state": "success",
+            "description": "Build passed", "target_url": "https://ci.example.com/11",
+            "context": "ci/legacy", "created_at": "2024-03-02T10:06:00Z", "updated_at": "2024-03-02T10:06:00Z",
+            "creator": rest_user("ci-user", "U_ci", "User")
+        }
+    ])
+}
+
+async fn mount_main(server: &MockServer, body: Value) {
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query PullRequestDetail"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+async fn mount_checks(server: &MockServer, head: &str) {
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/repos/acme/widget/commits/{head}/check-runs"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(check_runs()))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/repos/acme/widget/commits/{head}/statuses")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(statuses()))
+        .mount(server)
+        .await;
+}
+
+async fn fetch_rich() -> PrBundle {
+    let server = MockServer::start().await;
+    mount_main(&server, pr_response(rich_pr())).await;
+    mount_checks(&server, &oid(3)).await;
+    client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap()
+}
+
+fn of_type(b: &PrBundle, t: EventType) -> Vec<&ghusage_core::model::ActivityEvent> {
+    b.events.iter().filter(|e| e.event_type == t).collect()
+}
+
+fn find<'a>(b: &'a PrBundle, id: &EventId) -> &'a ghusage_core::model::ActivityEvent {
+    b.events
+        .iter()
+        .find(|e| &e.event_id == id)
+        .unwrap_or_else(|| panic!("missing {id}"))
+}
+
+#[tokio::test]
+async fn fully_fetched_pull_request_is_complete() {
+    let b = fetch_rich().await;
+    assert_eq!(b.status, CoverageStatus::Complete, "{:?}", b.notes);
+    assert_eq!(b.complete_collections.len(), Collection::ALL.len());
+    assert!(
+        b.events
+            .iter()
+            .all(|e| e.coverage == CoverageStatus::Complete)
+    );
+    assert_eq!(b.pull_request.coverage, CoverageStatus::Complete);
+    // The unsupported timeline item is skipped and noted.
+    assert!(b.notes.iter().any(|n| n.contains("SomeFutureEvent")));
+    // Every event belongs to the base repository and the pull request.
+    assert!(b.events.iter().all(|e| e.repository_id == REPO_ID));
+    assert!(
+        b.events
+            .iter()
+            .all(|e| e.parent_pr_id.as_deref() == Some(PR_ID))
+    );
+    // Ids are unique.
+    let ids: std::collections::HashSet<_> = b.events.iter().map(|e| &e.event_id).collect();
+    assert_eq!(ids.len(), b.events.len());
+    // Known actors always carry their node id.
+    assert!(
+        b.events
+            .iter()
+            .filter(|e| !e.actor.is_unknown())
+            .all(|e| e.actor.id.is_some())
+    );
+    // Ordered by time.
+    assert!(
+        b.events
+            .windows(2)
+            .all(|w| w[0].occurred_at <= w[1].occurred_at)
+    );
+}
+
+#[tokio::test]
+async fn repository_and_snapshot_are_normalized() {
+    let b = fetch_rich().await;
+    let r = &b.repository;
+    assert_eq!(r.id, REPO_ID);
+    assert_eq!((r.owner.as_str(), r.name.as_str()), ("acme", "widget"));
+    assert_eq!(r.owner_kind, ActorKind::Organization);
+    assert_eq!(r.visibility, Visibility::Public);
+    assert_eq!(r.viewer_permission.as_deref(), Some("WRITE"));
+    assert!(r.accessible);
+    let pr = &b.pull_request;
+    assert_eq!(pr.id, PR_ID);
+    assert_eq!(pr.repository_id, REPO_ID);
+    assert_eq!(pr.number, 42);
+    assert_eq!(pr.state, PrState::Merged);
+    assert_eq!(pr.head_sha.as_deref(), Some(oid(3).as_str()));
+    assert_eq!(pr.latest_ci, Some(CheckOutcome::Success));
+    assert!(pr.synced_at.is_some());
+}
+
+#[tokio::test]
+async fn pr_created_and_merged_on_different_days() {
+    let b = fetch_rich().await;
+    let opened = find(&b, &EventId::pr_created(PR_ID));
+    assert_eq!(opened.event_type, EventType::PrOpened);
+    assert_eq!(opened.occurred_at, ts("2024-03-01T09:00:00Z"));
+    assert_eq!(opened.actor.login.as_deref(), Some("alice"));
+    let merged = find(&b, &EventId::pr_merged(PR_ID));
+    assert_eq!(merged.event_type, EventType::PrMerged);
+    assert_eq!(merged.occurred_at, ts("2024-03-04T15:30:00Z"));
+    // The merger is not confused with the author.
+    assert_eq!(merged.actor.login.as_deref(), Some("bob"));
+    assert_eq!(merged.entity_id, "ME_1");
+    assert_eq!(merged.source, Source::Graphql);
+    assert_eq!(of_type(&b, EventType::PrMerged).len(), 1);
+    assert_eq!(b.pull_request.author.login.as_deref(), Some("alice"));
+    assert_eq!(
+        b.pull_request
+            .merged_by
+            .as_ref()
+            .and_then(|a| a.login.as_deref()),
+        Some("bob")
+    );
+    assert_eq!(b.pull_request.created_at, ts("2024-03-01T09:00:00Z"));
+    assert_eq!(b.pull_request.merged_at, Some(ts("2024-03-04T15:30:00Z")));
+}
+
+#[tokio::test]
+async fn close_that_is_part_of_a_merge_is_marked() {
+    let b = fetch_rich().await;
+    let closed = find(&b, &EventId::timeline("CE_1"));
+    assert_eq!(closed.event_type, EventType::PrClosed);
+    assert_eq!(closed.meta.via_merge, Some(true));
+}
+
+#[tokio::test]
+async fn close_without_merge_is_marked_as_not_merged() {
+    let server = MockServer::start().await;
+    let mut pr = rich_pr();
+    pr["state"] = json!("CLOSED");
+    pr["mergedAt"] = Value::Null;
+    pr["mergedBy"] = Value::Null;
+    pr["closedAt"] = json!("2024-03-04T15:30:00Z");
+    pr["timelineItems"] = connection(
+        vec![
+            tl(
+                "ClosedEvent",
+                "CE_a",
+                "2024-03-02T15:30:00Z",
+                user("bob"),
+                json!({}),
+            ),
+            tl(
+                "ReopenedEvent",
+                "RE_a",
+                "2024-03-03T15:30:00Z",
+                user("alice"),
+                json!({}),
+            ),
+            tl(
+                "ClosedEvent",
+                "CE_b",
+                "2024-03-04T15:30:00Z",
+                user("alice"),
+                json!({}),
+            ),
+        ],
+        false,
+        None,
+    );
+    mount_main(&server, pr_response(pr)).await;
+    mount_checks(&server, &oid(3)).await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    assert_eq!(b.pull_request.state, PrState::Closed);
+    assert!(of_type(&b, EventType::PrMerged).is_empty());
+    let closes = of_type(&b, EventType::PrClosed);
+    assert_eq!(closes.len(), 2);
+    assert!(closes.iter().all(|e| e.meta.via_merge == Some(false)));
+    assert_eq!(
+        find(&b, &EventId::timeline("CE_a")).actor.id.as_deref(),
+        Some("U_bob")
+    );
+}
+
+#[tokio::test]
+async fn early_close_of_a_later_merged_pull_request_is_not_part_of_the_merge() {
+    let server = MockServer::start().await;
+    let mut pr = rich_pr();
+    let mut items = pr["timelineItems"]["nodes"].as_array().unwrap().clone();
+    items.push(tl(
+        "ClosedEvent",
+        "CE_early",
+        "2024-03-02T08:00:00Z",
+        user("alice"),
+        json!({}),
+    ));
+    items.push(tl(
+        "ReopenedEvent",
+        "RE_early",
+        "2024-03-02T08:30:00Z",
+        user("alice"),
+        json!({}),
+    ));
+    pr["timelineItems"] = connection(items, false, None);
+    mount_main(&server, pr_response(pr)).await;
+    mount_checks(&server, &oid(3)).await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    assert_eq!(
+        find(&b, &EventId::timeline("CE_early")).meta.via_merge,
+        Some(false)
+    );
+    assert_eq!(
+        find(&b, &EventId::timeline("CE_1")).meta.via_merge,
+        Some(true)
+    );
+    assert!(
+        of_type(&b, EventType::PrClosed)
+            .iter()
+            .all(|e| e.meta.via_merge.is_some())
+    );
+}
+
+#[tokio::test]
+async fn multiple_reviews_including_pending_and_dismissed() {
+    let b = fetch_rich().await;
+    let reviews = of_type(&b, EventType::ReviewSubmitted);
+    let mut ids: Vec<_> = reviews.iter().map(|e| e.entity_id.as_str()).collect();
+    ids.sort();
+    // The pending review is not a submission.
+    assert_eq!(ids, vec!["PRR_1", "PRR_2", "PRR_3", "PRR_5"]);
+    let state = |id: &str| find(&b, &EventId::review(id)).meta.review_state;
+    assert_eq!(state("PRR_1"), Some(ReviewState::Commented));
+    assert_eq!(state("PRR_3"), Some(ReviewState::Approved));
+    // The dismissed review keeps its original state from the dismissal event.
+    assert_eq!(state("PRR_2"), Some(ReviewState::ChangesRequested));
+    let r1 = find(&b, &EventId::review("PRR_1"));
+    assert_eq!(r1.occurred_at, ts("2024-03-02T11:00:00Z"));
+    assert_eq!(r1.actor.login.as_deref(), Some("bob"));
+    let dismissed = find(&b, &EventId::timeline("RDE_1"));
+    assert_eq!(dismissed.event_type, EventType::ReviewDismissed);
+    assert_eq!(dismissed.meta.review_id.as_deref(), Some("PRR_2"));
+    assert_eq!(dismissed.actor.login.as_deref(), Some("alice"));
+    assert!(b.notes.iter().any(|n| n.contains("pending")));
+}
+
+#[tokio::test]
+async fn inline_conversation_and_summary_comments_are_kept_apart() {
+    let b = fetch_rich().await;
+    // Only a non-blank review body is a summary.
+    let summaries = of_type(&b, EventType::ReviewSummary);
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].event_id, EventId::review_summary("PRR_1"));
+    assert_eq!(summaries[0].occurred_at, ts("2024-03-02T11:00:00Z"));
+
+    // Inline comments appear once although they are listed under both the
+    // review and the thread.
+    let inline = of_type(&b, EventType::InlineComment);
+    let mut ids: Vec<_> = inline.iter().map(|e| e.entity_id.as_str()).collect();
+    ids.sort();
+    assert_eq!(ids, vec!["PRRC_1", "PRRC_2", "PRRC_3"]);
+    let reply = find(&b, &EventId::comment("PRRC_2"));
+    assert_eq!(reply.meta.thread_id.as_deref(), Some("PRRT_1"));
+    assert_eq!(reply.meta.review_id.as_deref(), Some("PRR_5"));
+    assert_eq!(reply.meta.reply_to.as_deref(), Some("PRRC_1"));
+    let edited = find(&b, &EventId::comment("PRRC_3"));
+    assert_eq!(edited.meta.edited_at, Some(ts("2024-03-02T12:30:00Z")));
+    assert_eq!(edited.occurred_at, ts("2024-03-02T11:59:00Z"));
+
+    let conv = of_type(&b, EventType::ConversationComment);
+    assert_eq!(conv.len(), 3);
+    let c3 = find(&b, &EventId::comment("IC_3"));
+    assert_eq!(c3.meta.edited_at, Some(ts("2024-03-01T11:00:00Z")));
+}
+
+#[tokio::test]
+async fn bot_and_unknown_actors() {
+    let b = fetch_rich().await;
+    let by_bot = find(&b, &EventId::comment("IC_2"));
+    assert_eq!(by_bot.actor.kind, ActorKind::Bot);
+    assert!(by_bot.actor.is_bot());
+    let deleted = find(&b, &EventId::comment("IC_3"));
+    assert!(deleted.actor.is_unknown());
+    assert_eq!(deleted.actor.login, None);
+}
+
+#[tokio::test]
+async fn review_threads_resolved_and_outdated() {
+    let b = fetch_rich().await;
+    assert_eq!(b.threads.len(), 2);
+    let t1 = b.threads.iter().find(|t| t.id == "PRRT_1").unwrap();
+    assert!(t1.is_resolved);
+    assert!(!t1.is_outdated);
+    assert_eq!(
+        t1.resolved_by.as_ref().and_then(|a| a.login.as_deref()),
+        Some("alice")
+    );
+    assert_eq!(t1.comment_count, 2);
+    assert_eq!(
+        t1.first_comment_author
+            .as_ref()
+            .and_then(|a| a.login.as_deref()),
+        Some("bob")
+    );
+    assert_eq!(t1.path.as_deref(), Some("src/widget.rs"));
+    assert_eq!(t1.pr_id, PR_ID);
+    let t2 = b.threads.iter().find(|t| t.id == "PRRT_2").unwrap();
+    assert!(!t2.is_resolved);
+    assert!(t2.is_outdated);
+    assert_eq!(t2.resolved_by, None);
+}
+
+#[tokio::test]
+async fn force_push_and_current_commit_set() {
+    let b = fetch_rich().await;
+    assert_eq!(b.current_commit_shas, vec![oid(1), oid(3)]);
+    let pushed = find(&b, &EventId::timeline("HRFPE_1"));
+    assert_eq!(pushed.event_type, EventType::PrHeadForcePushed);
+    assert_eq!(pushed.meta.target, Some(format!("{}->{}", oid(2), oid(3))));
+    let commits = of_type(&b, EventType::PrCommit);
+    assert_eq!(commits.len(), 2);
+    // The replaced commit is not invented.
+    assert!(commits.iter().all(|e| e.entity_id != oid(2)));
+    let c3 = find(&b, &EventId::pr_commit(PR_ID, &oid(3)));
+    // Commit time, not a guessed push time.
+    assert_eq!(c3.occurred_at, ts("2024-03-02T09:59:00Z"));
+    assert_eq!(c3.meta.author_date, Some(ts("2024-03-02T09:00:00Z")));
+    assert_eq!(c3.meta.time_basis.as_deref(), Some("commit_date"));
+    assert_eq!(c3.meta.is_merge_commit, Some(false));
+    assert_eq!(c3.actor.login.as_deref(), Some("alice"));
+    assert_eq!(
+        c3.url.as_deref(),
+        Some(format!("https://github.com/acme/widget/pull/42/commits/{}", oid(3)).as_str())
+    );
+}
+
+#[tokio::test]
+async fn coordination_and_metadata_events() {
+    let b = fetch_rich().await;
+    let target = |id: &str| find(&b, &EventId::timeline(id)).meta.target.clone();
+    assert_eq!(target("RRE_1").as_deref(), Some("bob"));
+    assert_eq!(target("RRE_2").as_deref(), Some("core"));
+    assert_eq!(target("RRRE_1"), None);
+    assert_eq!(target("LE_1").as_deref(), Some("bug"));
+    assert_eq!(target("AE_1").as_deref(), Some("alice"));
+    assert_eq!(target("MIE_1").as_deref(), Some("v1.0"));
+    let renamed = find(&b, &EventId::timeline("RTE_1"));
+    assert_eq!(renamed.event_type, EventType::Renamed);
+    assert_eq!(renamed.meta.previous_title.as_deref(), Some("WIP: widget"));
+    assert_eq!(renamed.meta.target.as_deref(), Some("Add widget"));
+    let ty = |id: &str| find(&b, &EventId::timeline(id)).event_type;
+    assert_eq!(ty("RRRE_1"), EventType::ReviewRequestRemoved);
+    assert_eq!(ty("ULE_1"), EventType::Unlabeled);
+    assert_eq!(ty("UAE_1"), EventType::Unassigned);
+    assert_eq!(ty("DME_1"), EventType::Demilestoned);
+    assert_eq!(ty("CTDE_1"), EventType::PrConvertedToDraft);
+    assert_eq!(ty("RFRE_1"), EventType::PrReadyForReview);
+}
+
+#[tokio::test]
+async fn checks_and_statuses_of_the_head_commit() {
+    let b = fetch_rich().await;
+    let runs = of_type(&b, EventType::CheckRun);
+    // The queued run has no time yet; re-runs are distinct runs.
+    assert_eq!(runs.len(), 2);
+    let ok = find(&b, &EventId::check_run("CR_2"));
+    assert_eq!(ok.meta.check_outcome, Some(CheckOutcome::Success));
+    assert_eq!(ok.meta.check_name.as_deref(), Some("build"));
+    assert_eq!(ok.meta.check_suite_id.as_deref(), Some("902"));
+    assert_eq!(ok.occurred_at, ts("2024-03-02T10:05:00Z"));
+    assert_eq!(ok.source, Source::Rest);
+    assert!(ok.actor.is_bot());
+    let failed = find(&b, &EventId::check_run("CR_1"));
+    assert_eq!(failed.meta.check_outcome, Some(CheckOutcome::Failure));
+    assert_eq!(failed.meta.check_suite_id.as_deref(), Some("901"));
+    let status = find(&b, &EventId::commit_status("SC_11"));
+    assert_eq!(status.event_type, EventType::CommitStatus);
+    assert_eq!(status.meta.check_name.as_deref(), Some("ci/legacy"));
+    assert_eq!(status.meta.check_outcome, Some(CheckOutcome::Success));
+    assert!(
+        b.events
+            .iter()
+            .filter(|e| e.event_type.is_automation())
+            .count()
+            == 3
+    );
+}
+
+#[tokio::test]
+async fn graphql_partial_errors_make_the_collection_partial() {
+    let server = MockServer::start().await;
+    let mut body = pr_response(rich_pr());
+    body["errors"] = json!([{
+        "type": "SOMETHING_WENT_WRONG",
+        "path": ["repository", "pullRequest", "reviews", "nodes", 1, "author"],
+        "locations": [{ "line": 9, "column": 7 }],
+        "message": "Something went wrong while executing your query."
+    }]);
+    mount_main(&server, body).await;
+    mount_checks(&server, &oid(3)).await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    assert_eq!(b.status, CoverageStatus::Partial);
+    assert!(!b.complete_collections.contains(&Collection::Reviews));
+    assert!(b.complete_collections.contains(&Collection::Timeline));
+    assert_eq!(b.pull_request.coverage, CoverageStatus::Partial);
+    let review = find(&b, &EventId::review("PRR_1"));
+    assert_eq!(review.coverage, CoverageStatus::Partial);
+    assert_eq!(
+        find(&b, &EventId::comment("IC_1")).coverage,
+        CoverageStatus::Complete
+    );
+    assert!(b.notes.iter().any(|n| n.contains("Something went wrong")));
+}
+
+/// A pull request whose connections need follow-up pages.
+fn paged_pr() -> Value {
+    let mut pr = rich_pr();
+    let timeline: Vec<Value> = (0..100)
+        .map(|i| {
+            tl(
+                "LabeledEvent",
+                &format!("LE_p1_{i}"),
+                "2024-03-01T12:00:00Z",
+                user("alice"),
+                json!({ "label": { "name": format!("l{i}") } }),
+            )
+        })
+        .collect();
+    pr["timelineItems"] = connection(timeline, true, Some("tl-100"));
+    let comments: Vec<Value> = (0..100)
+        .map(|i| {
+            issue_comment(
+                &format!("IC_p1_{i}"),
+                user("bob"),
+                "2024-03-01T12:00:00Z",
+                None,
+            )
+        })
+        .collect();
+    pr["comments"] = connection(comments, true, Some("ic-100"));
+    let first_thread_comments: Vec<Value> = (0..50)
+        .map(|i| {
+            review_comment(
+                &format!("TC_p1_{i}"),
+                user("carol"),
+                "2024-03-02T12:00:00Z",
+                "PRR_2",
+                None,
+                None,
+            )
+        })
+        .collect();
+    pr["reviewThreads"] = connection(
+        vec![json!({
+            "id": "PRRT_big",
+            "isResolved": false,
+            "isOutdated": false,
+            "path": "src/big.rs",
+            "resolvedBy": null,
+            "comments": { "totalCount": 60, "pageInfo": page_info(true, Some("tc-50")), "nodes": first_thread_comments }
+        })],
+        false,
+        Some("t1"),
+    );
+    pr
+}
+
+async fn mount_page(server: &MockServer, query: &str, after: &str, body: Value) {
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains(format!("query {query}")))
+        .and(body_partial_json(
+            json!({ "variables": { "after": after } }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn nested_connections_are_paginated() {
+    let server = MockServer::start().await;
+    mount_main(&server, pr_response(paged_pr())).await;
+    mount_checks(&server, &oid(3)).await;
+    let tl2: Vec<Value> = (0..20)
+        .map(|i| {
+            tl(
+                "LabeledEvent",
+                &format!("LE_p2_{i}"),
+                "2024-03-01T13:00:00Z",
+                user("alice"),
+                json!({ "label": { "name": "x" } }),
+            )
+        })
+        .collect();
+    mount_page(
+        &server,
+        "PullRequestTimelinePage",
+        "tl-100",
+        gql_data(json!({ "node": { "timelineItems": connection(tl2, false, Some("tl-120")) } })),
+    )
+    .await;
+    let ic2: Vec<Value> = (0..50)
+        .map(|i| {
+            issue_comment(
+                &format!("IC_p2_{i}"),
+                user("bob"),
+                "2024-03-01T13:00:00Z",
+                None,
+            )
+        })
+        .collect();
+    mount_page(
+        &server,
+        "PullRequestCommentsPage",
+        "ic-100",
+        gql_data(json!({ "node": { "comments": connection(ic2, false, Some("ic-150")) } })),
+    )
+    .await;
+    let tc2: Vec<Value> = (0..10)
+        .map(|i| {
+            review_comment(
+                &format!("TC_p2_{i}"),
+                user("carol"),
+                "2024-03-02T13:00:00Z",
+                "PRR_2",
+                None,
+                None,
+            )
+        })
+        .collect();
+    mount_page(
+        &server,
+        "ReviewThreadCommentsPage",
+        "tc-50",
+        gql_data(json!({ "node": { "comments": { "totalCount": 60, "pageInfo": page_info(false, Some("tc-60")), "nodes": tc2 } } })),
+    )
+    .await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    assert_eq!(b.status, CoverageStatus::Complete, "{:?}", b.notes);
+    assert_eq!(of_type(&b, EventType::Labeled).len(), 120);
+    assert_eq!(of_type(&b, EventType::ConversationComment).len(), 150);
+    // 60 thread comments plus the inline comments listed under reviews.
+    let inline = of_type(&b, EventType::InlineComment);
+    assert_eq!(
+        inline
+            .iter()
+            .filter(|e| e.entity_id.starts_with("TC_"))
+            .count(),
+        60
+    );
+    assert_eq!(b.threads[0].comment_count, 60);
+    // The follow-up queries asked for the pull request by node id.
+    let reqs = server.received_requests().await.unwrap();
+    let followups: Vec<Value> = reqs
+        .iter()
+        .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+        .filter(|b| b["variables"]["after"].is_string())
+        .collect();
+    assert_eq!(followups.len(), 3);
+    assert!(
+        followups
+            .iter()
+            .any(|b| b["variables"]["id"] == json!(PR_ID))
+    );
+    assert!(
+        followups
+            .iter()
+            .any(|b| b["variables"]["id"] == json!("PRRT_big"))
+    );
+}
+
+#[tokio::test]
+async fn failure_on_a_later_page_is_partial_never_complete() {
+    let server = MockServer::start().await;
+    mount_main(&server, pr_response(paged_pr())).await;
+    mount_checks(&server, &oid(3)).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query PullRequestTimelinePage"))
+        .respond_with(ResponseTemplate::new(502))
+        .mount(&server)
+        .await;
+    mount_page(
+        &server,
+        "PullRequestCommentsPage",
+        "ic-100",
+        gql_data(json!({ "node": { "comments": connection(vec![], false, None) } })),
+    )
+    .await;
+    mount_page(
+        &server,
+        "ReviewThreadCommentsPage",
+        "tc-50",
+        gql_data(json!({ "node": { "comments": { "totalCount": 50, "pageInfo": page_info(false, None), "nodes": [] } } })),
+    )
+    .await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    assert_eq!(b.status, CoverageStatus::Partial);
+    assert!(!b.complete_collections.contains(&Collection::Timeline));
+    assert!(b.complete_collections.contains(&Collection::Comments));
+    assert!(
+        of_type(&b, EventType::Labeled)
+            .iter()
+            .all(|e| e.coverage == CoverageStatus::Partial)
+    );
+    assert!(b.notes.iter().any(|n| n.contains("timelineItems")));
+}
+
+#[tokio::test]
+async fn graphql_errors_on_a_later_page_are_partial() {
+    let server = MockServer::start().await;
+    mount_main(&server, pr_response(paged_pr())).await;
+    mount_checks(&server, &oid(3)).await;
+    mount_page(
+        &server,
+        "PullRequestTimelinePage",
+        "tl-100",
+        json!({ "data": { "node": null }, "errors": [{ "type": "NOT_FOUND", "path": ["node"], "message": "Could not resolve to a node" }] }),
+    )
+    .await;
+    mount_page(
+        &server,
+        "PullRequestCommentsPage",
+        "ic-100",
+        gql_data(json!({ "node": { "comments": connection(vec![], false, None) } })),
+    )
+    .await;
+    mount_page(
+        &server,
+        "ReviewThreadCommentsPage",
+        "tc-50",
+        gql_data(json!({ "node": { "comments": { "totalCount": 50, "pageInfo": page_info(false, None), "nodes": [] } } })),
+    )
+    .await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    assert!(!b.complete_collections.contains(&Collection::Timeline));
+    assert_eq!(b.status, CoverageStatus::Partial);
+}
+
+#[tokio::test]
+async fn squash_merge_has_merge_event_but_no_merge_commit() {
+    let server = MockServer::start().await;
+    let mut pr = rich_pr();
+    // The squash commit created on the base branch is not a PR commit.
+    pr["commits"] = connection(
+        vec![
+            pr_commit(
+                "acme",
+                "widget",
+                42,
+                &oid(1),
+                Some("alice"),
+                "2024-03-01T08:00:00Z",
+                "2024-03-01T08:00:00Z",
+                1,
+            ),
+            pr_commit(
+                "acme",
+                "widget",
+                42,
+                &oid(3),
+                Some("alice"),
+                "2024-03-02T09:00:00Z",
+                "2024-03-02T09:00:00Z",
+                1,
+            ),
+        ],
+        false,
+        None,
+    );
+    mount_main(&server, pr_response(pr)).await;
+    mount_checks(&server, &oid(3)).await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    assert_eq!(of_type(&b, EventType::PrMerged).len(), 1);
+    let commits = of_type(&b, EventType::PrCommit);
+    assert_eq!(commits.len(), 2);
+    assert!(
+        commits
+            .iter()
+            .all(|c| c.meta.is_merge_commit == Some(false))
+    );
+}
+
+#[tokio::test]
+async fn merge_without_timeline_item_comes_from_merge_time() {
+    let server = MockServer::start().await;
+    let mut pr = rich_pr();
+    pr["timelineItems"] = connection(vec![], false, None);
+    mount_main(&server, pr_response(pr)).await;
+    mount_checks(&server, &oid(3)).await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    let merged = find(&b, &EventId::pr_merged(PR_ID));
+    assert_eq!(merged.occurred_at, ts("2024-03-04T15:30:00Z"));
+    assert_eq!(merged.actor.login.as_deref(), Some("bob"));
+    assert_eq!(merged.entity_id, PR_ID);
+}
+
+#[tokio::test]
+async fn unknown_actor_for_deleted_author_and_unlinked_commit() {
+    let server = MockServer::start().await;
+    let mut pr = rich_pr();
+    pr["author"] = Value::Null;
+    pr["mergedBy"] = Value::Null;
+    pr["timelineItems"] = connection(
+        vec![tl(
+            "MergedEvent",
+            "ME_9",
+            "2024-03-04T15:30:00Z",
+            Value::Null,
+            json!({}),
+        )],
+        false,
+        None,
+    );
+    pr["commits"] = connection(
+        vec![pr_commit(
+            "acme",
+            "widget",
+            42,
+            &oid(3),
+            None,
+            "2024-03-02T09:00:00Z",
+            "2024-03-02T09:00:00Z",
+            1,
+        )],
+        false,
+        None,
+    );
+    mount_main(&server, pr_response(pr)).await;
+    mount_checks(&server, &oid(3)).await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    assert!(b.pull_request.author.is_unknown());
+    assert_eq!(b.pull_request.merged_by, None);
+    assert!(find(&b, &EventId::pr_created(PR_ID)).actor.is_unknown());
+    assert!(find(&b, &EventId::pr_merged(PR_ID)).actor.is_unknown());
+    assert!(
+        find(&b, &EventId::pr_commit(PR_ID, &oid(3)))
+            .actor
+            .is_unknown()
+    );
+}
+
+#[tokio::test]
+async fn cross_repository_contribution_belongs_to_the_base_repository() {
+    let server = MockServer::start().await;
+    let mut pr = rich_pr();
+    pr["author"] = user("outside-contributor");
+    let mut base = gql_repo(
+        "R_upstream",
+        gql_actor("User", "maintainer", "U_maintainer"),
+        "tool",
+        "PUBLIC",
+        true,
+    );
+    base["pullRequest"] = pr;
+    mount_main(&server, gql_data(json!({ "repository": base }))).await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/repos/maintainer/tool/commits/{}/check-runs",
+            oid(3)
+        )))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({ "total_count": 0, "check_runs": [] })),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/repos/maintainer/tool/commits/{}/statuses",
+            oid(3)
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    let b = client(&server)
+        .fetch_pull_request("maintainer", "tool", 42)
+        .await
+        .unwrap();
+    assert_eq!(b.repository.id, "R_upstream");
+    assert_eq!(b.repository.owner, "maintainer");
+    assert_eq!(b.repository.owner_kind, ActorKind::User);
+    assert!(b.repository.is_fork);
+    assert!(b.events.iter().all(|e| e.repository_id == "R_upstream"));
+    assert_eq!(
+        b.pull_request.author.login.as_deref(),
+        Some("outside-contributor")
+    );
+    assert_eq!(b.status, CoverageStatus::Complete, "{:?}", b.notes);
+}
+
+#[tokio::test]
+async fn forbidden_checks_leave_only_checks_partial() {
+    let server = MockServer::start().await;
+    mount_main(&server, pr_response(rich_pr())).await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/repos/acme/widget/commits/{}/check-runs",
+            oid(3)
+        )))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "message": "Resource not accessible by personal access token",
+            "documentation_url": "https://docs.github.com/rest/checks/runs",
+            "status": "403"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/repos/acme/widget/commits/{}/statuses",
+            oid(3)
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(statuses()))
+        .mount(&server)
+        .await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    assert_eq!(b.status, CoverageStatus::Partial);
+    assert_eq!(b.complete_collections.len(), 5);
+    assert!(!b.complete_collections.contains(&Collection::Checks));
+    assert!(b.notes.iter().any(|n| n.contains("check runs")));
+    assert_eq!(of_type(&b, EventType::CommitStatus).len(), 1);
+}
+
+#[tokio::test]
+async fn paginated_check_runs_are_all_fetched() {
+    let server = MockServer::start().await;
+    mount_main(&server, pr_response(rich_pr())).await;
+    let runs_path = format!("/repos/acme/widget/commits/{}/check-runs", oid(3));
+    let mk = |i: u64| {
+        json!({ "id": i, "node_id": format!("CR_p{i}"), "name": format!("job{i}"), "status": "completed",
+                "conclusion": "success", "started_at": "2024-03-02T10:00:00Z", "completed_at": "2024-03-02T10:01:00Z",
+                "html_url": "https://github.com/acme/widget/runs/1", "check_suite": { "id": 1 }, "app": null })
+    };
+    Mock::given(method("GET"))
+        .and(path(runs_path.clone()))
+        .and(wiremock::matchers::query_param("page", "2"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "total_count": 101, "check_runs": [mk(101)] })),
+        )
+        .mount(&server)
+        .await;
+    let first: Vec<Value> = (1..=100).map(mk).collect();
+    Mock::given(method("GET"))
+        .and(path(runs_path.clone()))
+        .and(wiremock::matchers::query_param_is_missing("page"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "total_count": 101, "check_runs": first }))
+                .insert_header(
+                    "link",
+                    next_link(&server, &format!("{runs_path}?per_page=100&page=2")).as_str(),
+                ),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/repos/acme/widget/commits/{}/statuses",
+            oid(3)
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .mount(&server)
+        .await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    let runs = of_type(&b, EventType::CheckRun);
+    assert_eq!(runs.len(), 101);
+    assert!(runs.iter().all(|r| r.actor.is_unknown()));
+}
+
+#[tokio::test]
+async fn missing_pull_request_is_not_found() {
+    let server = MockServer::start().await;
+    let mut r = repo();
+    r["pullRequest"] = Value::Null;
+    mount_main(
+        &server,
+        json!({
+            "data": { "repository": r },
+            "errors": [{
+                "type": "NOT_FOUND",
+                "path": ["repository", "pullRequest"],
+                "locations": [{ "line": 5, "column": 5 }],
+                "message": "Could not resolve to a PullRequest with the number of 4242."
+            }]
+        }),
+    )
+    .await;
+    let err = client(&server)
+        .fetch_pull_request("acme", "widget", 4242)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ApiError::NotFound(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn pull_request_missing_required_field_is_invalid() {
+    let server = MockServer::start().await;
+    let mut pr = rich_pr();
+    pr["createdAt"] = Value::Null;
+    mount_main(&server, pr_response(pr)).await;
+    mount_checks(&server, &oid(3)).await;
+    let err = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ApiError::InvalidResponse(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn null_nodes_and_items_without_ids_are_skipped_as_partial() {
+    let server = MockServer::start().await;
+    let mut pr = rich_pr();
+    pr["comments"]["nodes"].as_array_mut().unwrap().extend([
+        Value::Null,
+        json!({ "createdAt": "2024-03-01T10:00:00Z", "author": null }),
+    ]);
+    mount_main(&server, pr_response(pr)).await;
+    mount_checks(&server, &oid(3)).await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    assert_eq!(of_type(&b, EventType::ConversationComment).len(), 3);
+    assert!(!b.complete_collections.contains(&Collection::Comments));
+    assert_eq!(b.status, CoverageStatus::Partial);
+}
+
+#[tokio::test]
+async fn inaccessible_private_repository_is_not_found_not_unauthorized() {
+    let server = MockServer::start().await;
+    mount_main(
+        &server,
+        json!({
+            "data": { "repository": null },
+            "errors": [{
+                "type": "NOT_FOUND",
+                "path": ["repository"],
+                "locations": [{ "line": 2, "column": 3 }],
+                "message": "Could not resolve to a Repository with the name 'acme/secret'."
+            }]
+        }),
+    )
+    .await;
+    let err = client(&server)
+        .fetch_pull_request("acme", "secret", 1)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ApiError::NotFound(_)), "{err:?}");
+    assert!(!err.is_auth());
+}
+
+#[tokio::test]
+async fn graphql_unauthorized_is_an_auth_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "message": "Bad credentials",
+            "documentation_url": "https://docs.github.com/graphql"
+        })))
+        .mount(&server)
+        .await;
+    let err = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap_err();
+    assert!(err.is_auth());
+    assert_no_token(&err, &err.to_string());
+}
+
+// ---------------------------------------------------------------------------
+// Issues and repositories
+// ---------------------------------------------------------------------------
+
+fn issue_response(item: Value) -> Value {
+    let mut r = repo();
+    r["issueOrPullRequest"] = item;
+    gql_data(json!({ "repository": r }))
+}
+
+#[tokio::test]
+async fn issue_open_close_and_reopen_history() {
+    let server = MockServer::start().await;
+    let issue = json!({
+        "__typename": "Issue",
+        "id": "I_7",
+        "number": 7,
+        "title": "Widget breaks",
+        "url": "https://github.com/acme/widget/issues/7",
+        "state": "OPEN",
+        "createdAt": "2024-02-01T10:00:00Z",
+        "closedAt": null,
+        "author": user("carol"),
+        "timelineItems": connection(vec![
+            tl("ClosedEvent", "CE_7", "2024-02-02T10:00:00Z", bot("github-actions"), json!({ "url": "https://github.com/acme/widget/issues/7#event-1" })),
+            tl("ReopenedEvent", "RE_7", "2024-02-03T10:00:00Z", user("carol"), json!({})),
+        ], false, Some("x"))
+    });
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query IssueDetail"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(issue_response(issue)))
+        .mount(&server)
+        .await;
+    let b = client(&server)
+        .fetch_issue("acme", "widget", 7)
+        .await
+        .unwrap();
+    assert_eq!(b.status, CoverageStatus::Complete);
+    assert_eq!(b.issue.id, "I_7");
+    assert_eq!(b.issue.repository_id, REPO_ID);
+    assert!(b.issue.is_open);
+    assert_eq!(b.issue.created_at, ts("2024-02-01T10:00:00Z"));
+    let types: Vec<_> = b.events.iter().map(|e| e.event_type).collect();
+    assert_eq!(
+        types,
+        vec![
+            EventType::IssueOpened,
+            EventType::IssueClosed,
+            EventType::IssueReopened
+        ]
+    );
+    assert_eq!(b.events[0].event_id, EventId::issue_created("I_7"));
+    assert_eq!(b.events[1].event_id, EventId::timeline("CE_7"));
+    assert!(b.events[1].actor.is_bot());
+    assert!(b.events.iter().all(|e| e.parent_pr_id.is_none()));
+}
+
+#[tokio::test]
+async fn issue_fetch_on_a_pull_request_number_is_rejected() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query IssueDetail"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(issue_response(json!({ "__typename": "PullRequest" }))),
+        )
+        .mount(&server)
+        .await;
+    let err = client(&server)
+        .fetch_issue("acme", "widget", 42)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ApiError::InvalidResponse(_)), "{err:?}");
+    assert!(err.to_string().contains("pull request"));
+}
+
+#[tokio::test]
+async fn issue_timeline_pages_are_followed() {
+    let server = MockServer::start().await;
+    let first: Vec<Value> = (0..100)
+        .map(|i| {
+            tl(
+                if i % 2 == 0 {
+                    "ClosedEvent"
+                } else {
+                    "ReopenedEvent"
+                },
+                &format!("E_{i}"),
+                "2024-02-02T10:00:00Z",
+                user("carol"),
+                json!({}),
+            )
+        })
+        .collect();
+    let issue = json!({
+        "__typename": "Issue", "id": "I_8", "number": 8, "title": "t",
+        "url": "https://github.com/acme/widget/issues/8", "state": "CLOSED",
+        "createdAt": "2024-02-01T10:00:00Z", "closedAt": "2024-02-05T10:00:00Z",
+        "author": user("carol"), "timelineItems": connection(first, true, Some("i-100"))
+    });
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query IssueDetail"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(issue_response(issue)))
+        .mount(&server)
+        .await;
+    mount_page(
+        &server,
+        "IssueTimelinePage",
+        "i-100",
+        gql_data(json!({ "node": { "timelineItems": connection(vec![
+            tl("ClosedEvent", "E_last", "2024-02-05T10:00:00Z", user("carol"), json!({}))
+        ], false, Some("i-101")) } })),
+    )
+    .await;
+    let b = client(&server)
+        .fetch_issue("acme", "widget", 8)
+        .await
+        .unwrap();
+    assert_eq!(b.events.len(), 102);
+    assert!(!b.issue.is_open);
+    assert_eq!(b.status, CoverageStatus::Complete);
+}
+
+#[tokio::test]
+async fn repository_metadata_and_visibility() {
+    let server = MockServer::start().await;
+    let mut r = gql_repo(
+        "R_secret",
+        gql_actor("User", "alice", "U_alice"),
+        "secret",
+        "PRIVATE",
+        false,
+    );
+    r["viewerPermission"] = json!("ADMIN");
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query RepositoryDetail"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(gql_data(json!({ "repository": r }))),
+        )
+        .mount(&server)
+        .await;
+    let repo = client(&server).repository("alice", "secret").await.unwrap();
+    assert_eq!(repo.id, "R_secret");
+    assert_eq!(repo.visibility, Visibility::Private);
+    assert_eq!(repo.viewer_permission.as_deref(), Some("ADMIN"));
+    assert_eq!(repo.owner_kind, ActorKind::User);
+    assert!(repo.accessible);
+}
+
+#[tokio::test]
+async fn missing_repository_is_not_found() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "repository": null },
+            "errors": [{
+                "type": "NOT_FOUND",
+                "path": ["repository"],
+                "locations": [{ "line": 2, "column": 3 }],
+                "message": "Could not resolve to a Repository with the name 'acme/gone'."
+            }]
+        })))
+        .mount(&server)
+        .await;
+    let err = client(&server)
+        .repository("acme", "gone")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ApiError::NotFound(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn saml_protected_repository_is_forbidden() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "repository": null },
+            "errors": [{
+                "type": "FORBIDDEN",
+                "path": ["repository"],
+                "message": "Resource protected by organization SAML enforcement."
+            }]
+        })))
+        .mount(&server)
+        .await;
+    let err = client(&server).repository("acme", "sso").await.unwrap_err();
+    assert!(matches!(err, ApiError::Forbidden(_)), "{err:?}");
+    assert!(!err.is_auth());
+}

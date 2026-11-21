@@ -2,101 +2,28 @@
 //! rate limits and retries, discovery via search, and normalization of
 //! pull requests, issues, commits and checks into the core event model.
 
-use std::path::{Path, PathBuf};
+mod auth;
+mod gql;
+mod http;
+mod issue;
+mod pull_request;
+mod queries;
+mod search;
+mod url;
+
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::model::{
     ActivityEvent, Collection, Issue, PullRequest, Repository, ReviewThread,
 };
 use ghusage_core::time::Period;
+use serde::Deserialize;
+use serde_json::json;
 
-// ---------------------------------------------------------------------------
-// Authentication
-// ---------------------------------------------------------------------------
-
-/// A token that never appears in Debug/Display output.
-#[derive(Clone)]
-pub struct Secret(String);
-
-impl Secret {
-    pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
-    }
-    /// The raw value. Only for building the Authorization header.
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for Secret {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Secret(***)")
-    }
-}
-
-impl std::fmt::Display for Secret {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("***")
-    }
-}
-
-/// Where the token came from.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TokenSource {
-    TokenFile(PathBuf),
-    GhTokenEnv,
-    GithubTokenEnv,
-    GhCli,
-}
-
-impl TokenSource {
-    pub fn describe(&self) -> String {
-        match self {
-            TokenSource::TokenFile(p) => format!("token file {}", p.display()),
-            TokenSource::GhTokenEnv => "GH_TOKEN".into(),
-            TokenSource::GithubTokenEnv => "GITHUB_TOKEN".into(),
-            TokenSource::GhCli => "gh auth token".into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Credentials {
-    pub token: Secret,
-    pub source: TokenSource,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum AuthError {
-    #[error(
-        "no GitHub credentials found: set GH_TOKEN or GITHUB_TOKEN, log in with `gh auth login`, or pass --token-file"
-    )]
-    NotFound,
-    #[error("cannot read token file {path}: {message}")]
-    TokenFile { path: PathBuf, message: String },
-    #[error("token file {0} must not be readable by other users (use chmod 600)")]
-    InsecureTokenFile(PathBuf),
-}
-
-/// Resolves credentials in order: `token_file`, `GH_TOKEN`, `GITHUB_TOKEN`,
-/// `gh auth token`. `env` reads environment variables and `gh_token` runs
-/// `gh auth token`; both are injectable for tests. Empty values are skipped.
-pub fn resolve_credentials(
-    token_file: Option<&Path>,
-    env: &dyn Fn(&str) -> Option<String>,
-    gh_token: &dyn Fn() -> Option<String>,
-) -> Result<Credentials, AuthError> {
-    let _ = (token_file, env, gh_token);
-    todo!()
-}
-
-/// Runs `gh auth token` (without a shell). Returns `None` if gh is missing
-/// or not logged in.
-pub fn gh_cli_token() -> Option<String> {
-    todo!()
-}
+pub use auth::{AuthError, Credentials, Secret, TokenSource, gh_cli_token, resolve_credentials};
+pub use url::parse_pr_url;
 
 // ---------------------------------------------------------------------------
 // Client
@@ -266,33 +193,106 @@ pub struct IssueBundle {
 }
 
 pub struct GitHubClient {
-    _private: (),
+    transport: http::Transport,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct RestUserInfo {
+    login: Option<String>,
+    node_id: Option<String>,
+    #[serde(rename = "type")]
+    kind: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct RateResource {
+    limit: Option<u64>,
+    remaining: Option<u64>,
+    reset: Option<i64>,
 }
 
 impl GitHubClient {
     /// `credentials` is `None` only for unauthenticated public access.
+    /// `config.concurrency` is clamped to 1..=16 and `config.max_attempts`
+    /// to at least 1.
     pub fn new(credentials: Option<Credentials>, config: ClientConfig) -> Result<Self, ApiError> {
-        let _ = (credentials, config);
-        todo!()
+        Ok(Self {
+            transport: http::Transport::new(credentials, config)?,
+        })
     }
 
     pub fn stats(&self) -> ApiStats {
-        todo!()
+        self.transport.stats()
     }
 
     /// The authenticated user (`GET /user`).
     pub async fn viewer(&self) -> Result<Viewer, ApiError> {
-        todo!()
+        let url = self.transport.rest_url(&["user"], &[]);
+        let (value, headers) = self.transport.get_json(&url).await?;
+        let user: RestUserInfo = serde_json::from_value(value)
+            .map_err(|e| ApiError::InvalidResponse(format!("/user: {e}")))?;
+        let scopes = headers
+            .get("x-oauth-scopes")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| {
+                s.split(',')
+                    .map(|p| p.trim().to_string())
+                    .filter(|p| !p.is_empty())
+                    .collect()
+            });
+        Ok(Viewer {
+            id: user
+                .node_id
+                .ok_or_else(|| ApiError::InvalidResponse("/user is missing `node_id`".into()))?,
+            login: user
+                .login
+                .ok_or_else(|| ApiError::InvalidResponse("/user is missing `login`".into()))?,
+            scopes,
+        })
     }
 
     /// A user by login (`GET /users/{login}`).
     pub async fn user(&self, login: &str) -> Result<UserInfo, ApiError> {
-        let _ = login;
-        todo!()
+        let url = self.transport.rest_url(&["users", login], &[]);
+        let (value, _) = self.transport.get_json(&url).await?;
+        let user: RestUserInfo = serde_json::from_value(value)
+            .map_err(|e| ApiError::InvalidResponse(format!("/users: {e}")))?;
+        let login = user
+            .login
+            .ok_or_else(|| ApiError::InvalidResponse("user is missing `login`".into()))?;
+        Ok(UserInfo {
+            id: user
+                .node_id
+                .ok_or_else(|| ApiError::InvalidResponse("user is missing `node_id`".into()))?,
+            is_bot: user.kind.as_deref() == Some("Bot") || login.ends_with("[bot]"),
+            login,
+        })
     }
 
     pub async fn rate_limit(&self) -> Result<RateLimitInfo, ApiError> {
-        todo!()
+        let url = self.transport.rest_url(&["rate_limit"], &[]);
+        let (value, _) = self.transport.get_json(&url).await?;
+        let resources = value.get("resources").ok_or_else(|| {
+            ApiError::InvalidResponse("/rate_limit is missing `resources`".into())
+        })?;
+        let get = |name: &str| -> RateResource { gql::from_value(resources.get(name)) };
+        let core = get("core");
+        let search = get("search");
+        let graphql = get("graphql");
+        Ok(RateLimitInfo {
+            core_remaining: core.remaining.unwrap_or(0),
+            core_limit: core.limit.unwrap_or(0),
+            core_reset: core
+                .reset
+                .and_then(|r| Utc.timestamp_opt(r, 0).single())
+                .unwrap_or_else(Utc::now),
+            search_remaining: search.remaining.unwrap_or(0),
+            search_limit: search.limit.unwrap_or(0),
+            graphql_remaining: graphql.remaining.unwrap_or(0),
+            graphql_limit: graphql.limit.unwrap_or(0),
+        })
     }
 
     /// Commits authored by `author_login` with committer date in `period`
@@ -305,8 +305,7 @@ impl GitHubClient {
         period: Period,
         public_only: bool,
     ) -> Result<Fetched<Vec<CommitRecord>>, ApiError> {
-        let _ = (author_login, period, public_only);
-        todo!()
+        search::commits(&self.transport, author_login, period, public_only).await
     }
 
     /// Pull requests or issues matching `qualifiers` (e.g.
@@ -319,8 +318,7 @@ impl GitHubClient {
         period: Period,
         public_only: bool,
     ) -> Result<Fetched<Vec<IssueRef>>, ApiError> {
-        let _ = (qualifiers, kind, period, public_only);
-        todo!()
+        search::issues(&self.transport, qualifiers, kind, period, public_only).await
     }
 
     /// Fetches a pull request with every page of commits, reviews, review
@@ -333,31 +331,38 @@ impl GitHubClient {
         name: &str,
         number: u64,
     ) -> Result<PrBundle, ApiError> {
-        let _ = (owner, name, number);
-        todo!()
+        pull_request::fetch(&self.transport, owner, name, number).await
     }
 
     /// Fetches an issue with its open/close/reopen history (GraphQL).
+    /// Fails with `InvalidResponse` when the number belongs to a pull request.
     pub async fn fetch_issue(
         &self,
         owner: &str,
         name: &str,
         number: u64,
     ) -> Result<IssueBundle, ApiError> {
-        let _ = (owner, name, number);
-        todo!()
+        issue::fetch(&self.transport, owner, name, number).await
     }
 
     /// Repository metadata by owner and name.
     pub async fn repository(&self, owner: &str, name: &str) -> Result<Repository, ApiError> {
-        let _ = (owner, name);
-        todo!()
+        let what = format!("repository {owner}/{name}");
+        let resp = self
+            .transport
+            .graphql(
+                &queries::repository(),
+                json!({ "owner": owner, "name": name }),
+            )
+            .await?;
+        let Some(repo) = resp
+            .data
+            .as_ref()
+            .and_then(|d| d.get("repository"))
+            .filter(|v| !v.is_null())
+        else {
+            return Err(gql::failure(&resp.errors, &what));
+        };
+        gql::from_value::<gql::GqlRepository>(Some(repo)).to_repository()
     }
-}
-
-/// Parses `https://github.com/{owner}/{repo}/pull/{number}` (optionally with
-/// a trailing path, query or fragment).
-pub fn parse_pr_url(url: &str) -> Option<(String, String, u64)> {
-    let _ = url;
-    todo!()
 }
