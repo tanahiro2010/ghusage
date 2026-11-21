@@ -27,21 +27,71 @@ shows private repository names, like table output.
 
 | Key | Screen | Contents |
 |---|---|---|
-| `1` | Overview | Key numbers (commits, PRs created and merged, reviews submitted and received, comments written, active PRs, open PRs now, issues opened, active days), an activity-per-day chart, and the top repositories |
-| `2` | Daily | One row per day (newest first) with commits, PRs, merged, reviews, received, comments, PR commits, issues and active PRs |
-| `3` | Repositories | Activity per repository, with visibility and owned/external |
-| `4` | Pull Requests | Pull requests you were active in during the period: state, title, events, your events, commits, reviews, comments, people, last activity |
+| `1` | Dashboard | Everything at a glance: commits, PRs created and merged, reviews submitted and received, comments written, issues opened and active days; an activity-per-day chart; the top repositories; the pull requests you were most recently active in; and the coverage of the period |
+| `2` | Overview | Key numbers (commits, PRs created and merged, reviews submitted and received, comments written, active PRs, open PRs now, issues opened, active days), an activity-per-day chart, and the top repositories |
+| `3` | Daily | One row per day (newest first) with commits, PRs, merged, reviews, received, comments, PR commits, issues and active PRs |
+| | Day Detail | Opened with `Enter` on a day: that day's numbers and what happened, in sections: activity, commits, pull requests, reviews (given and received), comments (written and received), issues |
+| `4` | Repositories | Activity per repository, with visibility and owned/external |
+| | Repository Detail | Opened with `Enter` on a repository: its numbers for the period and, in sections, its pull requests, commits, issues, reviews, comments and activity |
+| `5` | Pull Requests | Pull requests you were active in during the period: state, title, events, your events, commits, reviews, comments, people, last activity |
 | | PR Detail | Opened with `Enter` on a pull request: state, author, merge, commits, reviews, comments, review threads, latest CI, participants, timings, coverage, URL |
 | | PR Timeline | Opened with `Enter` on PR Detail: every event of the pull request in order, filterable by event category |
-| `5` | Reviews | Reviews you submitted and reviews on your pull requests |
-| `6` | System | Account, online/offline, credential source, rate limit, last sync, result of this session's syncs, cache location, size and counts, coverage and gaps per data kind, warnings and errors |
+| `6` | Reviews | Reviews you submitted and reviews on your pull requests. `Enter` opens the reviewed pull request |
+| `7` | Issues | Issues you opened, closed or reopened during the period |
+| | Issue Detail | Opened with `Enter` on an issue: title, repository, author, current state, created and closed times, and the issue's events in the period |
+| `8` | System | Account, online/offline, credential source, rate limit, last sync, result of this session's syncs, cache location, size and counts, coverage and gaps per data kind, warnings and errors |
+
+The second line shows the numbered tabs and, on a detail screen, the path
+that led to it (for example `› Day Detail › PR Detail`). On narrow terminals
+the tab titles are shortened, and below about 75 columns only the current
+tab keeps its title.
 
 The status bar shows whether the data comes from the cache, the coverage of
 the data on screen, the last sync time, background sync progress or errors,
-and messages from the last key press.
+and messages from the last key press. On wide terminals it also shows the
+main keys of the current screen.
 
-Activity in the Overview chart is the number of your commits, your events
-inside pull requests, and your issue events per day.
+Activity in the Dashboard and Overview charts is the number of your commits,
+your events inside pull requests, and your issue events per day.
+
+### Dashboard
+
+The Dashboard opens first. It adapts to the terminal size: at 80×24 it shows
+the figures, the coverage line, the chart and both lists side by side; on
+narrower terminals the lists are stacked, and when there is not enough room
+the chart and then the lists are left out (only the list in focus is shown
+when both do not fit). The coverage line starts with `✓` when every data
+kind is complete for the period and `!` otherwise, and names the kinds that
+are partial or not yet synced.
+
+`Tab` moves the focus between the figures, the repository list and the pull
+request list. `Enter` on a repository opens its Repository Detail; on a pull
+request it opens its PR Detail.
+
+### Day and repository details
+
+The numbers at the top of a day or repository detail are the same numbers as
+the Daily row or Repositories row they were opened from. `Tab` and
+`Shift+Tab` switch between the sections; the number of rows of each section
+is shown next to its name. In each section:
+
+- Activity lists your own events (commits, pull request events, reviews,
+  comments, issue events) and the reviews and comments others left on your
+  pull requests, newest first. CI results are not listed. Rows marked
+  `(you)` are your own.
+- Commits lists your commits, counted once each, newest first, with the date
+  chosen by `--commit-date`.
+- Pull requests, Reviews, Comments and Issues use the same rows as the CLI's
+  `prs`, `reviews`, `comments` and `issues` commands for that day or
+  repository.
+
+`Enter` opens the pull request or issue behind the selected row (commits
+have no detail; `o` opens them on GitHub). Changing the time range with `t`
+or the repository filter with `f` leaves a day detail, because the day may
+not be part of the new period; repository and issue details stay open and
+follow the new period.
+
+The Issue Detail lists the issue's events within the selected period only.
 
 ## Keys
 
@@ -49,15 +99,15 @@ inside pull requests, and your issue events per day.
 
 | Key | Action |
 |---|---|
-| `1`–`6` | Switch to Overview, Daily, Repositories, Pull Requests, Reviews, System |
+| `1`–`8` | Switch to Dashboard, Overview, Daily, Repositories, Pull Requests, Reviews, Issues, System |
 | `j` / `Down` | Next row |
 | `k` / `Up` | Previous row |
 | `PageDown` / `PageUp` | Move 10 rows |
 | `g` / `Home` | First row |
 | `G` / `End` | Last row |
-| `Enter` | Pull Requests: open PR Detail. PR Detail: open PR Timeline. Repositories (and the repository pane of Overview): show the pull requests of the selected repository |
-| `Esc` | PR Timeline: back to PR Detail. PR Detail: back to Pull Requests. Elsewhere: clear the current search |
-| `Tab` / `Shift+Tab` | Overview: switch between the summary and the repository pane. Reviews: switch between submitted and received. PR Timeline: next / previous event category filter |
+| `Enter` | Open the detail of the selected row: Daily → Day Detail; Repositories (and the repository panes of Dashboard and Overview) → Repository Detail; Pull Requests (and the pull request pane of Dashboard) → PR Detail → PR Timeline; Reviews → PR Detail of the reviewed pull request; Issues → Issue Detail; a row of a day or repository detail → its PR Detail or Issue Detail |
+| `Esc` | On a detail screen: back to the screen it was opened from. Elsewhere: clear the current search |
+| `Tab` / `Shift+Tab` | Dashboard: move the focus between figures, repositories and pull requests. Overview: switch between the summary and the repository pane. Reviews: switch between submitted and received. Day and repository details: next / previous section. PR Timeline: next / previous event category filter |
 
 Selection stops at the first and last row; it does not wrap around.
 
@@ -65,7 +115,7 @@ Selection stops at the first and last row; it does not wrap around.
 
 | Key | Action |
 |---|---|
-| `/` | Start searching the current list (Daily, Repositories, Pull Requests, Reviews, PR Timeline) |
+| `/` | Start searching the current list (Daily, Repositories, Pull Requests, Reviews, Issues, the sections of day and repository details, Issue Detail, PR Timeline) |
 | any character | Add to the search text; the list is filtered as you type (case-insensitive) |
 | `Backspace` | Delete the last character |
 | `Up` / `Down` | Move the selection while searching |
@@ -78,6 +128,11 @@ What a search matches:
 - Repositories: the repository name;
 - Pull Requests: title, repository, `#number`, author;
 - Reviews: reviewer, repository, pull request title;
+- Issues: title, repository, `#number`;
+- Day and repository details: activity by actor, event name, repository
+  and title; commits by SHA and repository; comments by author, repository
+  and kind; pull requests, reviews and issues as in their own lists;
+- Issue Detail: actor and event name;
 - PR Timeline: actor, event name, detail.
 
 ### Data and display
@@ -87,7 +142,7 @@ What a search matches:
 | `r` | Reload from the cache. When online, also start a background sync of the current period (only one sync runs at a time) |
 | `t` | Cycle the time range: as started → today → last 7 days → last 30 days → last 90 days → this month |
 | `f` | Cycle the repository filter: all → public → private → owned → external (applied on top of the command-line filters) |
-| `o` | Open the selected item (repository, pull request, review, timeline event) in the browser |
+| `o` | Open the selected item (repository, pull request, review, issue, commit, comment, timeline event) in the browser |
 | `?` | Show or hide help |
 | `q` / `Ctrl+C` | Quit |
 
