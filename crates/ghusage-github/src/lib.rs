@@ -359,9 +359,10 @@ impl GitHubClient {
     }
 
     /// Fetches a pull request with every page of commits, reviews, review
-    /// threads and their comments, conversation comments and timeline items
-    /// (GraphQL), plus check runs and commit statuses of the head commit
-    /// (REST).
+    /// threads and their comments, conversation comments, timeline items
+    /// and check runs of the head commit (GraphQL), plus the head commit's
+    /// commit statuses when it has any (REST). Check runs that do not fit in
+    /// the pull request query are fetched over REST.
     pub async fn fetch_pull_request(
         &self,
         owner: &str,

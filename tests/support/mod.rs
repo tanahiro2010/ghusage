@@ -428,6 +428,42 @@ pub fn bot(login: &str) -> Value {
     gql_actor("Bot", login, &format!("BOT_{login}"))
 }
 
+/// The `checkSuites` connection of a head commit in the pull request query
+/// carrying the same check runs as the REST `check-runs` fixtures: one suite
+/// per `check_suite.id` with the suite's app, enum values in upper case and
+/// the REST `html_url` as the run's `permalink`.
+pub fn gql_check_suites(runs: &[Value]) -> Value {
+    let mut suites: Vec<(Value, Value, Vec<Value>)> = Vec::new();
+    for r in runs {
+        let id = r["check_suite"]["id"].clone();
+        let run = json!({
+            "id": r["node_id"],
+            "name": r["name"],
+            "status": r["status"].as_str().map(str::to_ascii_uppercase),
+            "conclusion": r["conclusion"].as_str().map(str::to_ascii_uppercase),
+            "startedAt": r["started_at"],
+            "completedAt": r["completed_at"],
+            "permalink": r["html_url"],
+        });
+        match suites.iter_mut().find(|(s, _, _)| *s == id) {
+            Some((_, _, list)) => list.push(run),
+            None => {
+                let app = if r["app"].is_null() {
+                    Value::Null
+                } else {
+                    json!({ "id": r["app"]["node_id"], "slug": r["app"]["slug"] })
+                };
+                suites.push((id, app, vec![run]));
+            }
+        }
+    }
+    let nodes = suites
+        .into_iter()
+        .map(|(id, app, runs)| json!({ "databaseId": id, "app": app, "checkRuns": connection(runs) }))
+        .collect();
+    connection(nodes)
+}
+
 pub fn page_info(has_next: bool, cursor: Option<&str>) -> Value {
     json!({ "hasNextPage": has_next, "endCursor": cursor })
 }
@@ -1160,9 +1196,17 @@ impl World {
     }
 
     /// The `PullRequestDetail` response body of a pull request.
+    /// The `PullRequestDetail` response. The head commit carries the
+    /// fixture's check runs and no commit statuses, like the REST mocks.
     pub fn pr_body(&self, p: &PrFixture) -> Value {
         let mut repo = self.repo_gql(&p.owner, &p.name);
-        repo["pullRequest"] = p.gql.clone();
+        let mut pr = p.gql.clone();
+        if let Some(head) = pr["headCommit"]["nodes"][0]["commit"].as_object_mut() {
+            head.entry("status").or_insert(Value::Null);
+            head.entry("checkSuites")
+                .or_insert_with(|| gql_check_suites(&p.check_runs));
+        }
+        repo["pullRequest"] = pr;
         json!({ "data": { "repository": repo } })
     }
 

@@ -32,6 +32,17 @@ async fn initial_sync_then_offline_reports_match_the_fixture() {
     assert_eq!(s["pull_requests_found"], 3);
     assert_eq!(s["pull_requests_fetched"], 3);
     assert_eq!(s["issues_fetched"], 2);
+    // Head commit check runs come with the pull request query, and no head
+    // commit has commit statuses, so no REST checks request is needed.
+    let reqs = requests(&server).await;
+    assert!(
+        !reqs.iter().any(|r| {
+            let p = r.url.path();
+            p.ends_with("/check-runs") || p.ends_with("/statuses")
+        }),
+        "{:?}",
+        reqs.iter().map(|r| r.url.path()).collect::<Vec<_>>()
+    );
 
     let before = requests(&server).await.len();
 

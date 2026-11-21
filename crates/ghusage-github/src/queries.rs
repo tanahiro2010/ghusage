@@ -14,6 +14,15 @@ const REPOSITORY: &str = "fragment RepositoryFields on Repository { id name url 
 
 const PR_COMMIT: &str = "fragment PrCommitFields on PullRequestCommit { url commit { oid committedDate authoredDate url parents { totalCount } author { user { id login } } committer { user { id login } } } }";
 
+/// The head commit's latest CI rollup, whether it has any commit statuses,
+/// and its check runs: up to 100 suites with up to 100 runs each (a head
+/// commit with more falls back to the REST checks endpoint). `LATEST`
+/// returns the same runs as the REST `check-runs` endpoint's default
+/// `filter=latest`. Commit statuses themselves are not read here: GraphQL
+/// only exposes the latest status of each context, while every status
+/// posted is an event.
+const HEAD_COMMIT: &str = "fragment HeadCommitFields on Commit { oid statusCheckRollup { state } status { state } checkSuites(first: 100) { pageInfo { hasNextPage endCursor } nodes { databaseId app { id slug } checkRuns(first: 100, filterBy: { checkType: LATEST }) { pageInfo { hasNextPage endCursor } nodes { id name status conclusion startedAt completedAt permalink } } } } }";
+
 const REVIEW_COMMENT: &str = "fragment ReviewCommentFields on PullRequestReviewComment { id state createdAt lastEditedAt url author { ...ActorFields } replyTo { id } pullRequestReview { id } }";
 
 /// Comments listed under a review are a secondary source of inline comments
@@ -67,7 +76,7 @@ pub(crate) fn pull_request() -> String {
       id number title url state isDraft createdAt updatedAt closedAt mergedAt headRefOid
       author {{ ...ActorFields }}
       mergedBy {{ ...ActorFields }}
-      headCommit: commits(last: 1) {{ nodes {{ commit {{ oid statusCheckRollup {{ state }} }} }} }}
+      headCommit: commits(last: 1) {{ nodes {{ commit {{ ...HeadCommitFields }} }} }}
       commits(first: {PAGE_SIZE}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ ...PrCommitFields }} }}
       reviews(first: {PAGE_SIZE}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ ...ReviewFields }} }}
       reviewThreads(first: {THREAD_PAGE_SIZE}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ ...ReviewThreadFields }} }}
@@ -80,6 +89,7 @@ pub(crate) fn pull_request() -> String {
         &[
             ACTOR,
             REPOSITORY,
+            HEAD_COMMIT,
             PR_COMMIT,
             REVIEW_COMMENT,
             REVIEW,

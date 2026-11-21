@@ -76,7 +76,7 @@ fn rich_pr() -> Value {
         "headRefOid": oid(3),
         "author": user("alice"),
         "mergedBy": user("bob"),
-        "headCommit": { "nodes": [ { "commit": { "oid": oid(3), "statusCheckRollup": { "state": "SUCCESS" } } } ] },
+        "headCommit": { "nodes": [ { "commit": head_commit_checks() } ] },
         "commits": connection(vec![
             pr_commit("acme", "widget", 42, &oid(1), Some("alice"), "2024-02-28T23:00:00Z", "2024-03-01T08:00:00Z", 1),
             pr_commit("acme", "widget", 42, &oid(3), Some("alice"), "2024-03-02T09:00:00Z", "2024-03-02T09:59:00Z", 1),
@@ -125,6 +125,41 @@ fn pr_response(pr: Value) -> Value {
     gql_data(json!({ "repository": r }))
 }
 
+/// The head commit as the pull request query returns it: the same check runs
+/// as `check_runs()` (a failed build re-run in a new suite and a queued
+/// lint) and the fact that it has commit statuses.
+fn head_commit_checks() -> Value {
+    let app = json!({ "id": "MDM6QXBwMTUzNjg=", "slug": "github-actions" });
+    let suite = |db_id: u64, runs: Vec<Value>| json!({ "databaseId": db_id, "app": app, "checkRuns": connection(runs, false, Some("Y3Vyc29yOnYyOpHPAAAAAQ==")) });
+    json!({
+        "oid": oid(3),
+        "statusCheckRollup": { "state": "SUCCESS" },
+        "status": { "state": "SUCCESS" },
+        "checkSuites": connection(vec![
+            suite(901, vec![json!({
+                "id": "CR_1", "name": "build", "status": "COMPLETED", "conclusion": "FAILURE",
+                "startedAt": "2024-03-02T10:00:30Z", "completedAt": "2024-03-02T10:00:50Z",
+                "permalink": "https://github.com/acme/widget/actions/runs/1/job/1"
+            })]),
+            suite(902, vec![json!({
+                "id": "CR_2", "name": "build", "status": "COMPLETED", "conclusion": "SUCCESS",
+                "startedAt": "2024-03-02T10:01:00Z", "completedAt": "2024-03-02T10:05:00Z",
+                "permalink": "https://github.com/acme/widget/actions/runs/2/job/2"
+            })]),
+            suite(903, vec![json!({
+                "id": "CR_3", "name": "lint", "status": "QUEUED", "conclusion": null,
+                "startedAt": null, "completedAt": null,
+                "permalink": "https://github.com/acme/widget/actions/runs/3/job/3"
+            })]),
+            // An app that was asked to check the commit but created no runs.
+            json!({ "databaseId": 904, "app": { "id": "MDM6QXBwOTQyNg==", "slug": "dependabot" },
+                    "checkRuns": connection(vec![], false, None) }),
+        ], false, Some("Y3Vyc29yOnYyOpHPAAAABA==")),
+    })
+}
+
+/// REST check runs of the head commit, used when the pull request query
+/// cannot return them all.
 fn check_runs() -> Value {
     let app = json!({ "id": 15368, "slug": "github-actions", "node_id": "MDM6QXBwMTUzNjg=", "name": "GitHub Actions", "owner": rest_user("github", "O_github", "Organization") });
     json!({
@@ -173,6 +208,8 @@ async fn mount_main(server: &MockServer, body: Value) {
         .await;
 }
 
+/// Mounts the REST checks of the head commit: commit statuses and, for the
+/// fallback path, check runs.
 async fn mount_checks(server: &MockServer, head: &str) {
     Mock::given(method("GET"))
         .and(path(format!(
@@ -542,7 +579,7 @@ async fn checks_and_statuses_of_the_head_commit() {
     assert_eq!(ok.meta.check_name.as_deref(), Some("build"));
     assert_eq!(ok.meta.check_suite_id.as_deref(), Some("902"));
     assert_eq!(ok.occurred_at, ts("2024-03-02T10:05:00Z"));
-    assert_eq!(ok.source, Source::Rest);
+    assert_eq!(ok.source, Source::Graphql);
     assert!(ok.actor.is_bot());
     let failed = find(&b, &EventId::check_run("CR_1"));
     assert_eq!(failed.meta.check_outcome, Some(CheckOutcome::Failure));
@@ -558,6 +595,186 @@ async fn checks_and_statuses_of_the_head_commit() {
             .count()
             == 3
     );
+}
+
+/// REST paths requested from the server, in order.
+async fn rest_paths(server: &MockServer) -> Vec<String> {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() != "/graphql")
+        .map(|r| r.url.path().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn head_commit_check_runs_come_from_the_pull_request_query() {
+    let server = MockServer::start().await;
+    mount_main(&server, pr_response(rich_pr())).await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/repos/acme/widget/commits/{}/check-runs",
+            oid(3)
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(check_runs()))
+        .expect(0)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/repos/acme/widget/commits/{}/statuses",
+            oid(3)
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(statuses()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    assert_eq!(b.status, CoverageStatus::Complete, "{:?}", b.notes);
+    // Only the statuses, which GraphQL cannot list in full, use REST.
+    assert_eq!(
+        rest_paths(&server).await,
+        vec![format!("/repos/acme/widget/commits/{}/statuses", oid(3))]
+    );
+    let runs = of_type(&b, EventType::CheckRun);
+    assert_eq!(runs.len(), 2);
+    assert!(runs.iter().all(|r| r.source == Source::Graphql));
+    let ok = find(&b, &EventId::check_run("CR_2"));
+    assert_eq!(ok.actor.id.as_deref(), Some("MDM6QXBwMTUzNjg="));
+    assert_eq!(ok.actor.login.as_deref(), Some("github-actions"));
+    assert_eq!(
+        ok.url.as_deref(),
+        Some("https://github.com/acme/widget/actions/runs/2/job/2")
+    );
+    assert_eq!(ok.meta.sha.as_deref(), Some(oid(3).as_str()));
+    let status = find(&b, &EventId::commit_status("SC_11"));
+    assert_eq!(status.source, Source::Rest);
+}
+
+#[tokio::test]
+async fn head_commit_without_statuses_needs_no_rest_request() {
+    let server = MockServer::start().await;
+    let mut pr = rich_pr();
+    pr["headCommit"]["nodes"][0]["commit"]["status"] = Value::Null;
+    mount_main(&server, pr_response(pr)).await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    assert_eq!(b.status, CoverageStatus::Complete, "{:?}", b.notes);
+    assert!(rest_paths(&server).await.is_empty());
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    assert_eq!(of_type(&b, EventType::CheckRun).len(), 2);
+    assert!(of_type(&b, EventType::CommitStatus).is_empty());
+}
+
+/// Fetches the rich pull request with a modified head commit and returns
+/// the bundle and the REST paths requested.
+async fn fetch_with_head_commit(
+    edit: impl FnOnce(&mut Value),
+    errors: Option<Value>,
+) -> (PrBundle, Vec<String>) {
+    let server = MockServer::start().await;
+    let mut pr = rich_pr();
+    edit(&mut pr["headCommit"]["nodes"][0]["commit"]);
+    let mut body = pr_response(pr);
+    if let Some(errors) = errors {
+        body["errors"] = errors;
+    }
+    mount_main(&server, body).await;
+    mount_checks(&server, &oid(3)).await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    (b, rest_paths(&server).await)
+}
+
+/// A change to the head commit of the pull request query.
+type HeadCommitEdit = Box<dyn FnOnce(&mut Value)>;
+
+#[tokio::test]
+async fn incomplete_check_data_in_the_query_falls_back_to_rest() {
+    let runs_path = format!("/repos/acme/widget/commits/{}/check-runs", oid(3));
+    let statuses_path = format!("/repos/acme/widget/commits/{}/statuses", oid(3));
+    let cases: Vec<(&str, HeadCommitEdit, Option<Value>)> = vec![
+        (
+            "more check runs in a suite than one page",
+            Box::new(|c: &mut Value| {
+                c["checkSuites"]["nodes"][1]["checkRuns"]["pageInfo"]["hasNextPage"] = json!(true)
+            }),
+            None,
+        ),
+        (
+            "more check suites than one page",
+            Box::new(|c: &mut Value| c["checkSuites"]["pageInfo"]["hasNextPage"] = json!(true)),
+            None,
+        ),
+        (
+            "check suites not returned",
+            Box::new(|c: &mut Value| {
+                c.as_object_mut().unwrap().remove("checkSuites");
+            }),
+            None,
+        ),
+        (
+            "null check run",
+            Box::new(|c: &mut Value| {
+                c["checkSuites"]["nodes"][0]["checkRuns"]["nodes"][0] = Value::Null
+            }),
+            None,
+        ),
+        (
+            "error inside the check suites",
+            Box::new(|c: &mut Value| c["checkSuites"] = Value::Null),
+            Some(json!([{
+                "type": "FORBIDDEN",
+                "path": ["repository", "pullRequest", "headCommit", "nodes", 0, "commit", "checkSuites"],
+                "locations": [{ "line": 1, "column": 1 }],
+                "message": "Resource not accessible by integration"
+            }])),
+        ),
+        (
+            "error without a path",
+            Box::new(|_: &mut Value| {}),
+            Some(json!([{ "message": "Something went wrong while executing your query." }])),
+        ),
+    ];
+    for (what, edit, errors) in cases {
+        let (b, paths) = fetch_with_head_commit(edit, errors).await;
+        // The REST runs are the same as the GraphQL ones; none are lost
+        // and none are counted twice.
+        assert_eq!(
+            paths,
+            vec![runs_path.clone(), statuses_path.clone()],
+            "{what}"
+        );
+        let runs = of_type(&b, EventType::CheckRun);
+        assert_eq!(runs.len(), 2, "{what}");
+        assert!(runs.iter().all(|r| r.source == Source::Rest), "{what}");
+        assert_eq!(
+            find(&b, &EventId::check_run("CR_2"))
+                .meta
+                .check_suite_id
+                .as_deref(),
+            Some("902"),
+            "{what}"
+        );
+        assert!(
+            b.complete_collections.contains(&Collection::Checks),
+            "{what}"
+        );
+        assert!(
+            !b.notes.iter().any(|n| n.contains("latest CI state")),
+            "{what}: {:?}",
+            b.notes
+        );
+    }
 }
 
 #[tokio::test]
@@ -987,7 +1204,16 @@ async fn cross_repository_contribution_belongs_to_the_base_repository() {
 #[tokio::test]
 async fn forbidden_checks_leave_only_checks_partial() {
     let server = MockServer::start().await;
-    mount_main(&server, pr_response(rich_pr())).await;
+    let mut pr = rich_pr();
+    pr["headCommit"]["nodes"][0]["commit"]["checkSuites"] = Value::Null;
+    let mut body = pr_response(pr);
+    body["errors"] = json!([{
+        "type": "FORBIDDEN",
+        "path": ["repository", "pullRequest", "headCommit", "nodes", 0, "commit", "checkSuites"],
+        "locations": [{ "line": 1, "column": 1 }],
+        "message": "Resource not accessible by personal access token"
+    }]);
+    mount_main(&server, body).await;
     Mock::given(method("GET"))
         .and(path(format!(
             "/repos/acme/widget/commits/{}/check-runs",
@@ -1022,7 +1248,23 @@ async fn forbidden_checks_leave_only_checks_partial() {
 #[tokio::test]
 async fn paginated_check_runs_are_all_fetched() {
     let server = MockServer::start().await;
-    mount_main(&server, pr_response(rich_pr())).await;
+    // The query returns the first 100 runs of one suite; the rest are
+    // fetched over REST rather than truncated.
+    let mut pr = rich_pr();
+    let first_page: Vec<Value> = (1..=100)
+        .map(|i| {
+            json!({ "id": format!("CR_p{i}"), "name": format!("job{i}"), "status": "COMPLETED",
+                    "conclusion": "SUCCESS", "startedAt": "2024-03-02T10:00:00Z",
+                    "completedAt": "2024-03-02T10:01:00Z", "permalink": "https://github.com/acme/widget/runs/1" })
+        })
+        .collect();
+    pr["headCommit"]["nodes"][0]["commit"]["checkSuites"] = connection(
+        vec![json!({ "databaseId": 1, "app": null,
+                     "checkRuns": connection(first_page, true, Some("Y3Vyc29yOnYyOpHPAAAAZA==")) })],
+        false,
+        Some("Y3Vyc29yOnYyOpHPAAAAAQ=="),
+    );
+    mount_main(&server, pr_response(pr)).await;
     let runs_path = format!("/repos/acme/widget/commits/{}/check-runs", oid(3));
     let mk = |i: u64| {
         json!({ "id": i, "node_id": format!("CR_p{i}"), "name": format!("job{i}"), "status": "completed",
