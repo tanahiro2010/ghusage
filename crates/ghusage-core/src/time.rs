@@ -92,7 +92,7 @@ impl fmt::Display for Zone {
 pub enum TimeError {
     #[error("unknown time zone: {0}")]
     UnknownZone(String),
-    #[error("invalid date or time: {0} (use YYYY-MM-DD, RFC 3339, today, yesterday, or Nd/Nw/Nm)")]
+    #[error("invalid date or time: {0} (use YYYY-MM-DD, RFC 3339, today, yesterday, or Nd/Nw/Nm/Ny)")]
     InvalidBound(String),
     #[error("empty period: start {start} is not before end {end}")]
     EmptyPeriod { start: String, end: String },
@@ -142,6 +142,7 @@ pub enum Granularity {
     Day,
     Week,
     Month,
+    Year,
 }
 
 impl Granularity {
@@ -153,6 +154,9 @@ impl Granularity {
                 date - Duration::days(i64::from(date.weekday().num_days_from_monday()))
             }
             Granularity::Month => date.with_day(1).expect("day 1 exists"),
+            Granularity::Year => {
+                NaiveDate::from_ymd_opt(date.year(), 1, 1).expect("January 1 exists")
+            }
         }
     }
 
@@ -163,6 +167,9 @@ impl Granularity {
             Granularity::Week => start + Duration::days(7),
             Granularity::Month => start
                 .checked_add_months(Months::new(1))
+                .expect("date in range"),
+            Granularity::Year => start
+                .checked_add_months(Months::new(12))
                 .expect("date in range"),
         }
     }
@@ -175,6 +182,7 @@ impl Granularity {
                 format!("{}-W{:02}", w.year(), w.week())
             }
             Granularity::Month => start.format("%Y-%m").to_string(),
+            Granularity::Year => start.format("%Y").to_string(),
         }
     }
 }
@@ -262,6 +270,10 @@ pub fn parse_bound(
         "m" => Granularity::Month
             .bucket_start(today)
             .checked_sub_months(Months::new(n - 1))
+            .ok_or_else(err)?,
+        "y" => Granularity::Year
+            .bucket_start(today)
+            .checked_sub_months(Months::new((n - 1).checked_mul(12).ok_or_else(err)?))
             .ok_or_else(err)?,
         _ => return Err(err()),
     };

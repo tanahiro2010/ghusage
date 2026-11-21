@@ -16,8 +16,9 @@ use wiremock::matchers::{method, path, query_param, query_param_contains};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Every period report command.
-const ALL_REPORTS: [&str; 9] = [
-    "overview", "daily", "weekly", "monthly", "repos", "prs", "reviews", "comments", "issues",
+const ALL_REPORTS: [&str; 10] = [
+    "overview", "daily", "weekly", "monthly", "yearly", "repos", "prs", "reviews", "comments",
+    "issues",
 ];
 
 fn period_args<'a>(cmd: &[&'a str], extra: &[&'a str]) -> Vec<&'a str> {
@@ -214,10 +215,27 @@ async fn weekly_and_monthly_reports_bucket_the_fixture() {
     );
     assert_eq!(m["metrics"]["commits"], 7);
 
+    // One calendar year, clipped to the period: all 7 commits in 2024.
+    let y = report("yearly").await;
+    assert_eq!(y["granularity"], "year");
+    let years: Vec<(String, u64)> = y["activity_breakdown"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| {
+            (
+                b["bucket"]["label"].as_str().unwrap().to_string(),
+                b["summary"]["commits"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(years, vec![("2024".to_string(), 7)]);
+
     // The table forms run and show the week and month labels.
     for (cmd, labels) in [
         ("weekly", ["2024-W09", "2024-W10"]),
         ("monthly", ["2024-02", "2024-03"]),
+        ("yearly", ["2024", "Yearly"]),
     ] {
         let t = env
             .run(&[cmd, "--since", since, "--until", UNTIL, "--offline"])

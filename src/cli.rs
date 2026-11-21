@@ -24,7 +24,7 @@ pub struct Cli {
 
 #[derive(Debug, Clone, Args)]
 pub struct GlobalArgs {
-    /// Start of the period: YYYY-MM-DD, RFC 3339, today, yesterday, or Nd/Nw/Nm (last N days/weeks/months).
+    /// Start of the period: YYYY-MM-DD, RFC 3339, today, yesterday, or Nd/Nw/Nm/Ny (last N days/weeks/months/years).
     #[arg(long, global = true)]
     pub since: Option<String>,
     /// End of the period (exclusive). A date includes that whole day. Defaults to now.
@@ -138,6 +138,8 @@ pub enum Command {
     Weekly,
     /// Activity per calendar month.
     Monthly,
+    /// Activity per calendar year.
+    Yearly,
     /// Activity per repository.
     Repos,
     /// Pull requests with activity in the period.

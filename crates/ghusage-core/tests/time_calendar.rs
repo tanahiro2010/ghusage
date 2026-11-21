@@ -372,3 +372,38 @@ fn buckets_partition_partial_day_periods() {
     // Tokyo days touched: 11-20 (19:00..), 11-21, 11-22, 11-23 (..11:00)
     assert_eq!(buckets(p, zone("Asia/Tokyo"), Granularity::Day).len(), 4);
 }
+
+#[test]
+fn years_are_calendar_years_in_the_report_zone() {
+    // 2026-12-31T15:00Z is already 2027 in Tokyo, still 2026 in UTC.
+    let ds = commits_dataset(&[
+        "2025-06-01T00:00:00Z",
+        "2026-12-31T14:59:59Z",
+        "2026-12-31T15:00:00Z",
+    ]);
+    let tokyo = local_days("2025-01-01", "2028-01-01", zone("Asia/Tokyo"));
+    let b = metrics::breakdown(&ds, &tokyo, Granularity::Year);
+    let labels: Vec<&str> = b.iter().map(|x| x.bucket.label.as_str()).collect();
+    assert_eq!(labels, vec!["2025", "2026", "2027"]);
+    assert_eq!(per_bucket(&ds, &tokyo, Granularity::Year), vec![1, 1, 1]);
+    let utc_years = local_days("2025-01-01", "2028-01-01", zone("UTC"));
+    assert_eq!(
+        per_bucket(&ds, &utc_years, Granularity::Year),
+        vec![1, 2, 0]
+    );
+    // The Tokyo year 2027 starts at 2026-12-31T15:00Z.
+    assert_eq!(b[2].bucket.start, utc("2026-12-31T15:00:00Z"));
+}
+
+#[test]
+fn relative_years_start_on_january_first() {
+    let now = utc("2026-11-21T03:00:00Z");
+    let utc_zone = zone("UTC");
+    // 1y: this calendar year; 3y: this year and the two before.
+    let p = resolve_period(Some("1y"), None, "7d", utc_zone, now).unwrap();
+    assert_eq!(p.start, utc("2026-01-01T00:00:00Z"));
+    let p = resolve_period(Some("3y"), None, "7d", utc_zone, now).unwrap();
+    assert_eq!(p.start, utc("2024-01-01T00:00:00Z"));
+    assert_eq!(p.end, now);
+    assert!(resolve_period(Some("0y"), None, "7d", utc_zone, now).is_err());
+}

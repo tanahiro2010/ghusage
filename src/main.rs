@@ -151,6 +151,7 @@ fn default_since(cmd: &Command) -> &'static str {
     match cmd {
         Command::Weekly => "8w",
         Command::Monthly => "6m",
+        Command::Yearly => "3y",
         Command::Sync(_) | Command::Tui => "30d",
         _ => "7d",
     }
@@ -195,6 +196,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Daily => "daily",
         Command::Weekly => "weekly",
         Command::Monthly => "monthly",
+        Command::Yearly => "yearly",
         Command::Repos => "repos",
         Command::Prs(_) => "prs",
         Command::Reviews => "reviews",
@@ -307,6 +309,16 @@ async fn run(cli: Cli) -> Result<i32> {
                 &cmd,
                 zone,
                 ReportKind::Breakdown(Granularity::Month),
+                false,
+            )
+            .await
+        }
+        Command::Yearly => {
+            report_cmd(
+                &g,
+                &cmd,
+                zone,
+                ReportKind::Breakdown(Granularity::Year),
                 false,
             )
             .await

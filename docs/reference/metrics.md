@@ -62,7 +62,7 @@ They are labeled "(current)" or "(now)" in table output and live under
 
 ### Totals and breakdowns
 
-`daily`, `weekly` and `monthly` split the period into calendar buckets that
+`daily`, `weekly`, `monthly` and `yearly` split the period into calendar buckets that
 cover it exactly, without gaps or overlaps. Event counts in the buckets add up
 to the total of the period. Unique counts do not add up: a pull request
 reviewed on two days counts once on each of those days but once in the
@@ -302,7 +302,7 @@ known.
 | CI results (not counted as activity) | `ci` |
 | Active days | `active_days` |
 
-In `daily` / `weekly` / `monthly`, the columns are: Commits (`commits`), PRs
+In `daily` / `weekly` / `monthly` / `yearly`, the columns are: Commits (`commits`), PRs
 (`prs_created`), Merged (`prs_merged`), Reviews (`reviews_submitted.total`),
 Received (`reviews_received.total`), Comments (comments written, all types),
 PR commits (`pr_commits`), Issues (`issues_opened`), Active PRs

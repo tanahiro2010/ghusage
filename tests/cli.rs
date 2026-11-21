@@ -37,8 +37,8 @@ fn help_and_version_succeed() {
         .success()
         .stdout(predicate::str::starts_with("ghusage "));
     for sub in [
-        "daily", "weekly", "monthly", "repos", "prs", "reviews", "issues", "comments", "tui",
-        "sync", "doctor", "pr",
+        "daily", "weekly", "monthly", "yearly", "repos", "prs", "reviews", "issues", "comments",
+        "tui", "sync", "doctor", "pr",
     ] {
         ghusage(&d).args([sub, "--help"]).assert().success();
     }
@@ -389,7 +389,8 @@ async fn doctor_online_checks_credentials_and_rate_limit() {
 fn table_commands() -> Vec<Vec<&'static str>> {
     let period = ["--since", support::SINCE, "--until", support::UNTIL];
     let mut cmds: Vec<Vec<&str>> = [
-        "overview", "daily", "weekly", "monthly", "repos", "prs", "reviews", "comments", "issues",
+        "overview", "daily", "weekly", "monthly", "yearly", "repos", "prs", "reviews", "comments",
+        "issues",
     ]
     .iter()
     .map(|c| {

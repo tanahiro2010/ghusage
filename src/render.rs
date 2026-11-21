@@ -422,6 +422,7 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
                 ghusage_core::time::Granularity::Day => "Daily",
                 ghusage_core::time::Granularity::Week => "Weekly",
                 ghusage_core::time::Granularity::Month => "Monthly",
+                ghusage_core::time::Granularity::Year => "Yearly",
             };
             out.push_str(&header(r, zone, title, style));
             out.push_str(&breakdown_table(r, true).render(style));

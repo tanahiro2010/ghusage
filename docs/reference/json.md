@@ -32,7 +32,7 @@ names, titles and URLs. See [Private repositories](#private-repositories).
 
 ## Report object
 
-All period reports (`overview`, `daily`, `weekly`, `monthly`, `repos`, `prs`,
+All period reports (`overview`, `daily`, `weekly`, `monthly`, `yearly`, `repos`, `prs`,
 `reviews`, `comments`, `issues`) print one JSON object with these root fields:
 
 | Field | Type | Description |
@@ -44,8 +44,8 @@ All period reports (`overview`, `daily`, `weekly`, `monthly`, `repos`, `prs`,
 | `metrics` | [Summary](#summary) | Summary of the whole period |
 | `snapshot` | [Snapshot](#snapshot) | Current-state values |
 | `repositories` | array of [RepoSummary](#reposummary) | Per-repository summaries, ordered by your activity then name |
-| `activity_breakdown` | array of [BucketSummary](#bucketsummary) | Per-bucket summaries in time order. Daily buckets unless the command is `weekly` or `monthly` |
-| `granularity` | string | `day`, `week` or `month`. Present only for `daily`, `weekly`, `monthly` |
+| `activity_breakdown` | array of [BucketSummary](#bucketsummary) | Per-bucket summaries in time order. Daily buckets unless the command is `weekly`, `monthly` or `yearly` |
+| `granularity` | string | `day`, `week`, `month` or `year`. Present only for `daily`, `weekly`, `monthly`, `yearly` |
 | `coverage` | array of [CoverageSummary](#coveragesummary) | One entry per data kind |
 | `synced_at` | timestamp or `null` | When the last sync of this account finished |
 | `private_repositories_redacted` | boolean | `true` when private names were hidden (JSON/CSV without `--include-private`) |
@@ -299,7 +299,7 @@ Booleans are `true` / `false`. Free text (titles, details) has control
 characters removed, and a leading `=`, `+`, `-` or `@` is prefixed with `'`
 so spreadsheets do not evaluate it as a formula.
 
-### overview, daily, weekly, monthly
+### overview, daily, weekly, monthly, yearly
 
 One row per calendar bucket (`overview` produces daily rows):
 

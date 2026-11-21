@@ -16,6 +16,7 @@ before or after the command (`ghusage --since 30d daily` and
 | `daily` | Activity per day | last 7 days |
 | `weekly` | Activity per week (weeks start on Monday) | last 8 weeks |
 | `monthly` | Activity per calendar month | last 6 months |
+| `yearly` | Activity per calendar year | last 3 years |
 | `repos` | Activity per repository | last 7 days |
 | `prs` | Pull requests with activity in the period | last 7 days |
 | `reviews` | Reviews you submitted and reviews you received | last 7 days |
@@ -36,13 +37,13 @@ months before the current one. See [Periods and time zones](./time.md).
 
 ### Report commands
 
-`overview`, `daily`, `weekly`, `monthly`, `repos`, `prs`, `reviews`,
+`overview`, `daily`, `weekly`, `monthly`, `yearly`, `repos`, `prs`, `reviews`,
 `comments` and `issues` sync missing ranges of the period (unless
 `--offline`), then print the report followed by its coverage. See the
 [metric definitions](./metrics.md) for what each number means.
 
 - `overview`: the summary of the period and the top 5 repositories.
-- `daily` / `weekly` / `monthly`: one row per calendar bucket and a total
+- `daily` / `weekly` / `monthly` / `yearly`: one row per calendar bucket and a total
   row. Weeks are labeled with ISO week numbers (`2026-W47`), months as
   `2026-11`.
 - `repos`: one row per repository with activity in the period, ordered by
@@ -167,8 +168,8 @@ Cache: /Users/me/Library/Application Support/dev.ghusage.ghusage/ghusage.db
 
 | Option | Description |
 |---|---|
-| `--since <SINCE>` | Start of the period: `YYYY-MM-DD`, RFC 3339, `today`, `yesterday`, or `Nd` / `Nw` / `Nm` (last N days / weeks / months) |
-| `--until <UNTIL>` | End of the period (exclusive). A date includes that whole day. Defaults to now. `Nd`/`Nw`/`Nm` are not accepted here |
+| `--since <SINCE>` | Start of the period: `YYYY-MM-DD`, RFC 3339, `today`, `yesterday`, or `Nd` / `Nw` / `Nm` / `Ny` (last N days / weeks / months / years) |
+| `--until <UNTIL>` | End of the period (exclusive). A date includes that whole day. Defaults to now. `Nd`/`Nw`/`Nm`/`Ny` are not accepted here |
 | `--timezone <TZ>` | IANA time zone for day / week / month boundaries (default: `TZ`, then the system setting, then UTC) |
 | `--repo <OWNER/NAME>` | Only this repository (case-insensitive). Repeatable |
 | `--owner <LOGIN>` | Only repositories owned by this user or organization. Repeatable |
@@ -238,7 +239,7 @@ Examples, as printed by the current version:
 
 ```text
 $ ghusage --since 0d
-error: invalid date or time: 0d (use YYYY-MM-DD, RFC 3339, today, yesterday, or Nd/Nw/Nm)
+error: invalid date or time: 0d (use YYYY-MM-DD, RFC 3339, today, yesterday, or Nd/Nw/Nm/Ny)
 $ echo $?
 2
 

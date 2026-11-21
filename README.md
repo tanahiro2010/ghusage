@@ -32,7 +32,7 @@ Coverage: complete  (last sync: 2026-11-21 19:20)
 
 ## Features
 
-- **Period reports**: overview, daily, weekly (Monday weeks), monthly
+- **Period reports**: overview, daily, weekly (Monday weeks), monthly, yearly
   (calendar months), per repository, pull requests, reviews, comments and
   issues.
 - **Pull request detail**: `ghusage pr <url> --timeline` shows commits,
@@ -149,7 +149,7 @@ show the cached data.
 | Command | What it shows |
 |---|---|
 | `overview` | Summary of the period (default command) |
-| `daily`, `weekly`, `monthly` | Activity per day, Monday-based week, or calendar month |
+| `daily`, `weekly`, `monthly`, `yearly` | Activity per day, Monday-based week, calendar month or calendar year |
 | `repos` | Activity per repository |
 | `prs` | Pull requests with activity in the period (`--details`, `--sort`, `--state`, `--all-participants`) |
 | `reviews` | Reviews you submitted and reviews you received |
