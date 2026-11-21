@@ -116,6 +116,7 @@ struct CommitNode {
 #[serde(default, rename_all = "camelCase")]
 struct GitCommit {
     oid: Option<String>,
+    message_headline: Option<String>,
     committed_date: Option<String>,
     authored_date: Option<String>,
     url: Option<String>,
@@ -860,6 +861,10 @@ pub(crate) async fn fetch(
                 .map(|n| n > 1),
             committer: GitActor::user_actor(&c.committer),
             time_basis: Some("commit_date".into()),
+            message_headline: c
+                .message_headline
+                .clone()
+                .map(|h| crate::http::truncate(&h, 300)),
             ..EventMeta::default()
         };
         b.push(

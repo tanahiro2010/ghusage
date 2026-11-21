@@ -345,7 +345,7 @@ fn repo_matches(ds: &Dataset, opts: &metrics::Options, repo_id: &str) -> bool {
     }
 }
 
-fn short_hash(s: &str) -> String {
+pub(crate) fn short_hash(s: &str) -> String {
     let d = Sha256::digest(s.as_bytes());
     hex::encode(&d[..4])
 }
@@ -478,6 +478,7 @@ pub fn redact(ds: &Dataset) -> Dataset {
                 e.meta.target = None;
             }
             e.meta.check_name = None;
+            e.meta.message_headline = None;
         }
     }
     out
@@ -526,6 +527,10 @@ pub struct PrReport {
     pub participants: Vec<String>,
     pub discussion_participants: Vec<String>,
     pub commit_authors: Vec<metrics::AuthorCount>,
+    /// The commits of the pull request, including removed ones. Shown by
+    /// the terminal UI; not part of the JSON output.
+    #[serde(skip)]
+    pub commit_list: Vec<metrics::PrCommitRow>,
     pub timing: PrTiming,
     pub timeline: Vec<TimelineEntry>,
     pub coverage: CoverageStatus,
@@ -589,6 +594,7 @@ pub fn pr_report(
         participants: d.participants,
         discussion_participants: d.discussion_participants,
         commit_authors: d.commit_authors,
+        commit_list: metrics::pr_commit_rows(&ds, pr_id),
         timing: d.timing,
         timeline,
         coverage: pr.coverage,

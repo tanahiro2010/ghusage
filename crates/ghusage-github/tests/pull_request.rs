@@ -285,6 +285,33 @@ async fn fully_fetched_pull_request_is_complete() {
 }
 
 #[tokio::test]
+async fn commit_message_headlines_are_kept_with_pull_request_commits() {
+    let server = MockServer::start().await;
+    let mut pr = rich_pr();
+    pr["commits"]["nodes"][0]["commit"]["messageHeadline"] = json!("fix: parse empty input");
+    mount_main(&server, pr_response(pr)).await;
+    mount_checks(&server, &oid(3)).await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    let commits = of_type(&b, EventType::PrCommit);
+    let first = commits
+        .iter()
+        .find(|e| e.meta.sha.as_deref() == Some(oid(1).as_str()))
+        .unwrap();
+    assert_eq!(
+        first.meta.message_headline.as_deref(),
+        Some("fix: parse empty input")
+    );
+    let second = commits
+        .iter()
+        .find(|e| e.meta.sha.as_deref() == Some(oid(3).as_str()))
+        .unwrap();
+    assert_eq!(second.meta.message_headline, None);
+}
+
+#[tokio::test]
 async fn repository_and_snapshot_are_normalized() {
     let b = fetch_rich().await;
     let r = &b.repository;
