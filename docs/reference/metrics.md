@@ -263,7 +263,13 @@ regardless of who triggered them:
 | `pending` | queued, in progress, waiting, requested, pending |
 | `other` | neutral, skipped, stale, cancelled, unknown |
 
-Only CI results of each pull request's current head commit are available.
+Every attempt is counted: a check that failed and was then re-run
+successfully counts once in `failed` and once in `passed`.
+
+A sync reads the CI results of each pull request's head commit at that
+time. Results already stored for earlier head commits are kept when new
+commits are pushed, so a failure on an earlier head still counts; CI of a
+head commit that was never synced while it was the head is not available.
 
 ### Review threads (current)
 

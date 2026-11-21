@@ -95,6 +95,10 @@ pub struct PrSnapshot {
     /// Collections fetched completely in this sync. For each, stored events
     /// of this PR in that collection whose ids are not in `present` get
     /// `removed_observed_at = observed_at`; present ones get it cleared.
+    /// `Checks` covers only the pull request's head commit (its `head_sha`
+    /// as stored, including this batch's update): check runs and commit
+    /// statuses of earlier head commits are history and are never marked
+    /// removed by a later fetch.
     /// For `ReviewComments`, stored threads of this PR not in
     /// `present_threads` are deleted. For `Commits`, stored commit links of
     /// this PR that are not sent as current links in the same batch are
@@ -1274,15 +1278,31 @@ fn apply_snapshot(
         return Ok(());
     }
     let complete: HashSet<Collection> = s.complete_collections.iter().copied().collect();
-    let stored: Vec<(String, String, bool)> = {
-        let mut stmt = tx.prepare(
-            "SELECT event_id, event_type, removed_observed_at IS NOT NULL \
-             FROM activity_events WHERE parent_pr_id = ?1",
-        )?;
-        stmt.query_map(params![s.pr_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-            .collect::<rusqlite::Result<_>>()?
+    // Checks are only fetched for the current head commit, so a complete
+    // checks fetch says nothing about the checks of earlier heads.
+    let head_sha: Option<String> = if complete.contains(&Collection::Checks) {
+        tx.query_row(
+            "SELECT head_sha FROM pull_requests WHERE id = ?1",
+            params![s.pr_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten()
+        .map(|h| h.to_ascii_lowercase())
+    } else {
+        None
     };
-    for (id, ty, removed) in stored {
+    let stored: Vec<(String, String, bool, Option<String>)> = {
+        let mut stmt = tx.prepare(
+            "SELECT event_id, event_type, removed_observed_at IS NOT NULL, \
+             json_extract(meta, '$.sha') FROM activity_events WHERE parent_pr_id = ?1",
+        )?;
+        stmt.query_map(params![s.pr_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?
+    };
+    for (id, ty, removed, sha) in stored {
         let ty = EventType::parse(&ty)
             .ok_or_else(|| StorageError::Data(format!("unknown stored event type {ty:?}")))?;
         let Some(coll) = Collection::of(ty) else {
@@ -1299,7 +1319,14 @@ fn apply_snapshot(
                 params![id],
             )?;
         } else if !present && !removed {
-            mark_removed(tx, &id, s.observed_at)?;
+            let of_fetched_head = coll != Collection::Checks
+                || matches!(
+                    (&head_sha, &sha),
+                    (Some(head), Some(sha)) if sha.eq_ignore_ascii_case(head)
+                );
+            if of_fetched_head {
+                mark_removed(tx, &id, s.observed_at)?;
+            }
         }
     }
 

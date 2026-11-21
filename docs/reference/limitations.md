@@ -107,7 +107,8 @@ the API does not keep cannot be recovered later:
   not when it was resolved. Thread counts are therefore current state.
 - **CI results are only for the head commit.** Check runs and commit
   statuses are fetched for each pull request's current head commit. Results
-  for earlier commits of the pull request are not fetched.
+  for earlier commits of the pull request are not fetched; those stored by
+  an earlier sync, while the commit was the head, are kept.
 - **Comments nested under reviews.** Inline comments are read from review
   threads (all pages). Comments listed under each review are only used as a
   secondary source (first 20 per review) to fill gaps.

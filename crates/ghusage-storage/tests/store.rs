@@ -5,8 +5,8 @@ use std::collections::HashSet;
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use ghusage_core::coverage::{CoverageRecord, CoverageStatus, DataKind};
 use ghusage_core::model::{
-    ActivityEvent, Actor, ActorKind, Collection, EventId, EventMeta, EventType, Issue, PrState,
-    PullRequest, Repository, ReviewThread, Source, Subject, Visibility,
+    ActivityEvent, Actor, ActorKind, CheckOutcome, Collection, EventId, EventMeta, EventType,
+    Issue, PrState, PullRequest, Repository, ReviewThread, Source, Subject, Visibility,
 };
 use ghusage_core::time::Period;
 use ghusage_storage::{PrCommitLink, PrSnapshot, StorageError, Store, SyncLock, WriteBatch};
@@ -473,6 +473,131 @@ fn comment_missing_from_complete_resync_is_marked_removed_then_restored() {
     };
     s.apply(&b).unwrap();
     assert!(!event_by_id(&alice_dataset(&s), &c1).is_removed());
+}
+
+fn check_run_event(
+    node: &str,
+    sha: &str,
+    outcome: CheckOutcome,
+    at: DateTime<Utc>,
+) -> ActivityEvent {
+    let mut e = event(
+        EventId::check_run(node),
+        EventType::CheckRun,
+        "R1",
+        Some("PR1"),
+        at,
+    );
+    e.entity_id = node.into();
+    e.actor = Actor::new(
+        Some("A_actions".into()),
+        Some("github-actions".into()),
+        Some("Bot"),
+    );
+    e.meta.sha = Some(sha.into());
+    e.meta.check_name = Some("build".into());
+    e.meta.check_outcome = Some(outcome);
+    e
+}
+
+/// A resync of PR1 whose head commit is `head`, with the checks of that
+/// head fetched completely.
+fn checks_resync(head: &str, at: DateTime<Utc>, runs: Vec<ActivityEvent>) -> WriteBatch {
+    let mut p = pr("PR1", "R1", 1);
+    p.head_sha = Some(head.into());
+    let present: Vec<EventId> = runs.iter().map(|e| e.event_id.clone()).collect();
+    WriteBatch {
+        account: "alice".into(),
+        pull_requests: vec![p],
+        events: runs,
+        pr_snapshots: vec![snapshot("PR1", at, &[Collection::Checks], &present)],
+        ..Default::default()
+    }
+}
+
+fn ci_counts(s: &Store) -> ghusage_core::metrics::CiCounts {
+    let opts = ghusage_core::metrics::Options {
+        period: Period::new(t(1, 0), t(20, 0)).unwrap(),
+        zone: ghusage_core::time::Zone::utc(),
+        filter: ghusage_core::metrics::Filter::default(),
+        commit_basis: ghusage_core::metrics::CommitDateBasis::default(),
+    };
+    ghusage_core::metrics::summary(&alice_dataset(s), &opts).ci
+}
+
+#[test]
+fn checks_of_an_older_head_survive_a_resync_with_a_new_head() {
+    let mut s = store_with_base();
+    let failed = EventId::check_run("CR_A");
+    s.apply(&checks_resync(
+        "aaa",
+        t(10, 0),
+        vec![check_run_event(
+            "CR_A",
+            "aaa",
+            CheckOutcome::Failure,
+            t(2, 10),
+        )],
+    ))
+    .unwrap();
+    assert_eq!(ci_counts(&s).failed, 1);
+
+    // A new head was pushed; its checks are fetched completely, but they
+    // only cover the new head: the failure on the old head still happened.
+    s.apply(&checks_resync(
+        "BBB",
+        t(11, 0),
+        vec![check_run_event(
+            "CR_B",
+            "bbb",
+            CheckOutcome::Success,
+            t(3, 10),
+        )],
+    ))
+    .unwrap();
+    let ds = alice_dataset(&s);
+    assert_eq!(event_by_id(&ds, &failed).meta.removed_observed_at, None);
+    let ci = ci_counts(&s);
+    assert_eq!(ci.failed, 1);
+    assert_eq!(ci.passed, 1);
+}
+
+#[test]
+fn check_run_missing_from_a_resync_of_the_same_head_is_marked_removed() {
+    let mut s = store_with_base();
+    let gone = EventId::check_run("CR_1");
+    s.apply(&checks_resync(
+        "aaa",
+        t(10, 0),
+        vec![
+            check_run_event("CR_1", "aaa", CheckOutcome::Failure, t(2, 10)),
+            check_run_event("CR_2", "aaa", CheckOutcome::Success, t(2, 11)),
+        ],
+    ))
+    .unwrap();
+    assert_eq!(ci_counts(&s).failed, 1);
+
+    // The same head, fetched completely again, no longer has CR_1.
+    s.apply(&checks_resync(
+        "AAA",
+        t(11, 0),
+        vec![check_run_event(
+            "CR_2",
+            "aaa",
+            CheckOutcome::Success,
+            t(2, 11),
+        )],
+    ))
+    .unwrap();
+    let ds = alice_dataset(&s);
+    assert_eq!(
+        event_by_id(&ds, &gone).meta.removed_observed_at,
+        Some(t(11, 0))
+    );
+    assert!(!event_by_id(&ds, &EventId::check_run("CR_2")).is_removed());
+    let ci = ci_counts(&s);
+    assert_eq!(ci.failed, 0);
+    assert_eq!(ci.passed, 1);
 }
 
 #[test]
