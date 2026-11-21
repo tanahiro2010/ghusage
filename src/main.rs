@@ -689,6 +689,11 @@ fn cache_cmd(g: &GlobalArgs, c: CacheCommand, zone: Zone) -> Result<i32> {
     let (mut store, dir) = session::open_store(&cfg)?;
     match c {
         CacheCommand::Clear => {
+            // Never clear underneath a running sync.
+            let _lock = match &dir {
+                Some(d) => Some(ghusage_storage::SyncLock::acquire(d)?),
+                None => None,
+            };
             store.clear()?;
             print_stdout("Cache cleared. Credentials were not changed.\n")?;
             Ok(exit::SUCCESS)

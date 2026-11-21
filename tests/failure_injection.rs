@@ -604,6 +604,10 @@ async fn a_second_sync_is_refused_while_one_is_running() {
         "{}",
         second.stderr
     );
+    // Clearing the cache under a running sync is refused too.
+    let clear = env.run(&["cache", "clear"]).await;
+    clear.expect_code(5).assert_clean();
+    assert!(clear.stderr.contains("already running"), "{}", clear.stderr);
 
     let out = tokio::task::spawn_blocking(move || first.wait_with_output().unwrap())
         .await
