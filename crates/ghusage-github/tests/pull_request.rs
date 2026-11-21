@@ -2054,3 +2054,63 @@ async fn failing_later_page_of_commits_reviews_or_threads_is_partial() {
         assert_eq!(tries, 3, "{after}");
     }
 }
+
+#[tokio::test]
+async fn threads_with_only_pending_comments_are_not_counted() {
+    // Thread 1 gets an extra unsubmitted reply; thread 3 holds only an
+    // unsubmitted comment, which only its author's token can see.
+    let mut pending_reply = review_comment(
+        "PRRC_P1",
+        user("dave"),
+        "2024-03-03T09:00:00Z",
+        "PRR_4",
+        Some("PRRC_1"),
+        None,
+    );
+    pending_reply["state"] = json!("PENDING");
+    let mut pending_only = review_comment(
+        "PRRC_P2",
+        user("dave"),
+        "2024-03-03T09:05:00Z",
+        "PRR_4",
+        None,
+        None,
+    );
+    pending_only["state"] = json!("PENDING");
+    let mut pr = rich_pr();
+    let mut t1 = pr["reviewThreads"]["nodes"][0].clone();
+    t1["comments"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(pending_reply);
+    t1["comments"]["totalCount"] = json!(3);
+    pr["reviewThreads"]["nodes"][0] = t1;
+    pr["reviewThreads"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(thread(
+            "PRRT_3",
+            false,
+            false,
+            None,
+            "src/new.rs",
+            vec![pending_only],
+        ));
+    pr["reviewThreads"]["totalCount"] = json!(3);
+
+    let server = MockServer::start().await;
+    mount_main(&server, pr_response(pr)).await;
+    mount_checks(&server, &oid(3)).await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    let mut ids: Vec<&str> = b.threads.iter().map(|t| t.id.as_str()).collect();
+    ids.sort();
+    // Only the two threads with submitted comments.
+    assert_eq!(ids, vec!["PRRT_1", "PRRT_2"]);
+    let t1 = b.threads.iter().find(|t| t.id == "PRRT_1").unwrap();
+    // PRRC_1 and PRRC_2; the pending reply is not counted.
+    assert_eq!(t1.comment_count, 2);
+    assert_eq!(b.status, CoverageStatus::Complete);
+}

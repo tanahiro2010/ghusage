@@ -1104,15 +1104,26 @@ pub(crate) async fn fetch(
         bad += bad_c;
         let mut first_author = None;
         let mut fetched = 0u32;
+        let mut pending = 0u32;
         for c in comment_nodes {
             fetched += 1;
-            if first_author.is_none() {
-                first_author = Some(actor_of(&c.author));
-            }
             match inline_comment(&mut b, &c, Some(&thread_id), None) {
-                CommentOutcome::Added | CommentOutcome::Pending => {}
+                CommentOutcome::Added => {
+                    if first_author.is_none() {
+                        first_author = Some(actor_of(&c.author));
+                    }
+                }
+                // Unsubmitted comments are visible only to their author's
+                // token and are not part of the thread yet.
+                CommentOutcome::Pending => pending += 1,
                 CommentOutcome::Bad => bad += 1,
             }
+        }
+        let fetched_all = total.is_none_or(|n| n <= u64::from(fetched));
+        if fetched_all && pending == fetched {
+            // A thread made only of unsubmitted comments does not exist for
+            // anyone else.
+            continue;
         }
         out_threads.push(ReviewThread {
             id: thread_id,
@@ -1121,7 +1132,10 @@ pub(crate) async fn fetch(
             is_outdated: th.is_outdated.unwrap_or(false),
             resolved_by: th.resolved_by.as_ref().map(GqlActor::actor),
             path: th.path.clone(),
-            comment_count: total.map(|n| n as u32).unwrap_or(fetched),
+            comment_count: total
+                .map(|n| n as u32)
+                .unwrap_or(fetched)
+                .saturating_sub(pending),
             first_comment_author: first_author,
         });
     }
