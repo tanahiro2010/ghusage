@@ -375,6 +375,9 @@ async fn pr_cmd(g: &GlobalArgs, a: &cli::PrArgs, zone: Zone) -> Result<i32> {
         }
     }
     let mut s = Session::open(session_config(g)).await?;
+    if let Some(reason) = &s.offline_reason {
+        eprintln!("warning: GitHub is not reachable ({reason}); showing cached data");
+    }
     // A single pull request is always refreshed when online.
     if let Some(client) = &s.client {
         let bundle = client
@@ -406,8 +409,13 @@ async fn pr_cmd(g: &GlobalArgs, a: &cli::PrArgs, zone: Zone) -> Result<i32> {
         }
     }
     let Some(pr_id) = s.store.find_pr(&owner, &name, number)? else {
+        let hint = if g.offline {
+            "run without --offline to fetch it"
+        } else {
+            "it could not be fetched from GitHub"
+        };
         return Err(AppError::Other(format!(
-            "pull request {owner}/{name}#{number} is not in the cache; run without --offline"
+            "pull request {owner}/{name}#{number} is not in the cache; {hint}"
         )));
     };
     let ds = s.pr_dataset(&pr_id)?;
@@ -431,6 +439,11 @@ async fn sync_cmd(g: &GlobalArgs, cmd: &Command, zone: Zone, full: bool) -> Resu
     }
     let period = period(g, cmd, zone)?;
     let mut s = Session::open(session_config(g)).await?;
+    if let Some(reason) = &s.offline_reason {
+        return Err(AppError::Api(ghusage_github::ApiError::Network(
+            reason.clone(),
+        )));
+    }
     let printer = progress_printer();
     let r = s
         .sync(period, full, g.concurrency as usize, &printer)
