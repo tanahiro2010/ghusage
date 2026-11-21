@@ -49,7 +49,7 @@ fn main() -> ExitCode {
     match runtime.block_on(run(cli)) {
         Ok(code) => ExitCode::from(code as u8),
         Err(e) => {
-            eprintln!("error: {e}");
+            eprintln!("error: {}", clean(&e));
             ExitCode::from(e.exit_code() as u8)
         }
     }
@@ -157,6 +157,12 @@ fn period(g: &GlobalArgs, cmd: &Command, zone: Zone) -> Result<Period> {
         zone,
         Utc::now(),
     )?)
+}
+
+/// Text from errors, which may quote GitHub responses, made safe for the
+/// terminal.
+fn clean(e: &dyn std::fmt::Display) -> String {
+    ghusage_core::sanitize::sanitize_line(&e.to_string())
 }
 
 fn print_stdout(s: &str) -> Result<()> {
@@ -341,7 +347,10 @@ async fn run(cli: Cli) -> Result<i32> {
 async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<(Session, Period)> {
     let mut s = Session::open(session_config(g)).await?;
     if let Some(reason) = &s.offline_reason {
-        eprintln!("warning: GitHub is not reachable ({reason}); showing cached data");
+        eprintln!(
+            "warning: GitHub is not reachable ({}); showing cached data",
+            clean(reason)
+        );
     }
     if !s.is_offline() && s.needs_sync(period)? {
         let now = Utc::now();
@@ -377,7 +386,7 @@ async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<
             }
             Err(e @ (AppError::AuthRejected(_) | AppError::Auth(_))) => return Err(e),
             Err(e) => {
-                eprintln!("warning: sync failed, showing cached data: {e}");
+                eprintln!("warning: sync failed, showing cached data: {}", clean(&e));
             }
         }
     }
@@ -450,7 +459,10 @@ async fn pr_cmd(g: &GlobalArgs, a: &cli::PrArgs, zone: Zone) -> Result<i32> {
     }
     let mut s = Session::open(session_config(g)).await?;
     if let Some(reason) = &s.offline_reason {
-        eprintln!("warning: GitHub is not reachable ({reason}); showing cached data");
+        eprintln!(
+            "warning: GitHub is not reachable ({}); showing cached data",
+            clean(reason)
+        );
     }
     // A single pull request is always refreshed when online.
     if let Some(client) = &s.client {
@@ -478,7 +490,10 @@ async fn pr_cmd(g: &GlobalArgs, a: &cli::PrArgs, zone: Zone) -> Result<i32> {
                 if s.store.find_pr(&owner, &name, number)?.is_none() {
                     return Err(e);
                 }
-                eprintln!("warning: could not refresh pull request, showing cached data: {e}");
+                eprintln!(
+                    "warning: could not refresh pull request, showing cached data: {}",
+                    clean(&e)
+                );
             }
         }
     }

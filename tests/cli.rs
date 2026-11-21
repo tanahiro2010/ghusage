@@ -233,3 +233,38 @@ fn keep_system_env(c: &mut Command) {
         }
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn api_error_messages_are_sanitized_on_stderr() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/user"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+            "message": "\u{1b}]0;pwned\u{7}\u{1b}[2Jdenied",
+        })))
+        .mount(&server)
+        .await;
+    let d = tempfile::tempdir().unwrap();
+    let uri = server.uri();
+    let d_path = d.path().to_path_buf();
+    let out = tokio::task::spawn_blocking(move || {
+        let mut c = Command::cargo_bin("ghusage").unwrap();
+        c.env_clear();
+        keep_system_env(&mut c);
+        c.env("PATH", d_path.join("no-bin"))
+            .env("GHUSAGE_DATA_DIR", &d_path)
+            .env("GH_TOKEN", SENTINEL_TOKEN)
+            .env("GHUSAGE_API_URL", uri)
+            .env("GHUSAGE_BACKOFF_MS", "1");
+        c.args(["auth", "status"]).output().unwrap()
+    })
+    .await
+    .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_ne!(out.status.code(), Some(0));
+    assert!(stderr.contains("denied"), "{stderr}");
+    assert!(
+        !stderr.chars().any(|c| c == '\u{1b}' || c == '\u{7}'),
+        "raw control characters on stderr: {stderr:?}"
+    );
+}
