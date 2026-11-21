@@ -582,7 +582,9 @@ pub fn by_repository(ds: &Dataset, opts: &Options) -> Vec<RepoSummary> {
     out
 }
 
-fn activity_weight(s: &Summary) -> u64 {
+/// Activity measure used to rank repositories and draw activity charts:
+/// commits, the subject's pull request events and issue events.
+pub fn activity_weight(s: &Summary) -> u64 {
     s.commits + s.pr_internal_events + s.issues_opened + s.issues_closed + s.issues_reopened
 }
 

@@ -31,7 +31,7 @@ fn progress_and_completion_update_the_status_bar() {
     );
 
     // The UI keeps responding while the sync runs.
-    app.handle_key(key('4'));
+    app.handle_key(key('5'));
     assert_eq!(app.screen, Screen::PullRequests);
 
     let loads = app.dataset_loads();
@@ -54,7 +54,7 @@ fn progress_and_completion_update_the_status_bar() {
     let status = render(&app, 160, 20).pop().unwrap();
     assert!(status.contains("sync incomplete (1 warnings)"), "{status}");
 
-    app.handle_key(key('6'));
+    app.handle_key(key('8'));
     let text = screen_text(&app, 160, 40);
     assert!(text.contains("token from GH_TOKEN"), "{text}");
     assert!(text.contains("core 4990/5000"), "{text}");
@@ -76,7 +76,7 @@ fn network_loss_is_shown_and_cached_data_stays() {
         "{status}"
     );
     assert_eq!(app.base_report().unwrap().metrics.commits, 3);
-    app.handle_key(key('6'));
+    app.handle_key(key('8'));
     assert!(screen_text(&app, 160, 40).contains("connection reset"));
     // A new sync can be started afterwards.
     assert!(app.start_sync().is_some());

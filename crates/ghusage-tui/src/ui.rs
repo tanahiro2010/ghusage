@@ -4,8 +4,9 @@
 //! no information is carried by color alone.
 
 use chrono::{DateTime, Utc};
+use ghusage_app::report::Report;
 use ghusage_core::coverage::CoverageStatus;
-use ghusage_core::metrics::{ReviewDirection, Summary};
+use ghusage_core::metrics::{IssueRow, ReviewDirection, Summary};
 use ghusage_core::model::{ActorKind, PrState};
 use ghusage_core::sanitize::{display_width, sanitize_line, truncate_width};
 use ghusage_core::time::Zone;
@@ -17,7 +18,7 @@ use ratatui::widgets::{
     Block, Borders, Cell, Clear, Paragraph, Row, Sparkline, Table, TableState, Wrap,
 };
 
-use crate::app::{App, ListId, OverviewPane, Screen, TimelineFilter};
+use crate::app::{App, DashboardPane, DetailTab, ListId, OverviewPane, Screen, TimelineFilter};
 
 const SELECT_SYMBOL: &str = "▶ ";
 
@@ -85,9 +86,10 @@ fn pr_state_style(state: PrState) -> Style {
     }
 }
 
-/// Activity measure used for the timeline chart.
+/// Activity measure used for the timeline chart (the same measure that
+/// ranks repositories).
 pub fn activity(s: &Summary) -> u64 {
-    s.commits + s.pr_internal_events + s.issues_opened + s.issues_closed + s.issues_reopened
+    ghusage_core::metrics::activity_weight(s)
 }
 
 fn bold() -> Style {
@@ -142,7 +144,11 @@ pub fn draw(f: &mut Frame, app: &App) {
         f.render_widget(p, body);
     } else {
         match app.screen {
+            Screen::Dashboard => draw_dashboard(f, app, body),
             Screen::Overview => draw_overview(f, app, body),
+            Screen::DayDetail | Screen::RepoDetail => draw_scope_detail(f, app, body),
+            Screen::Issues => draw_issues(f, app, body),
+            Screen::IssueDetail => draw_issue_detail(f, app, body),
             Screen::Daily => draw_daily(f, app, body),
             Screen::Repositories => draw_repositories(f, app, body),
             Screen::PullRequests => draw_pull_requests(f, app, body),
@@ -175,23 +181,86 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
+/// Tab labels: full titles, short titles, or numbers only (the active tab
+/// keeps its title), whichever fits.
+fn tab_spans(app: &App, width: usize) -> Vec<Span<'static>> {
+    let tab = app.tab();
+    let build = |style: u8| -> Vec<(String, bool)> {
+        Screen::TOP
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let on = *s == tab;
+                let label = match style {
+                    0 => format!("{} {}", i + 1, s.title()),
+                    1 => format!("{} {}", i + 1, s.short_title()),
+                    _ if on => format!("{} {}", i + 1, s.short_title()),
+                    _ => format!("{}", i + 1),
+                };
+                (label, on)
+            })
+            .collect()
+    };
+    let len = |v: &[(String, bool)], gap: usize| -> usize {
+        v.iter().map(|(l, _)| display_width(l) + 2 + gap).sum()
+    };
+    let mut labels = build(0);
+    let mut gap = 1;
+    if len(&labels, gap) > width {
+        labels = build(1);
+    }
+    if len(&labels, gap) > width {
+        labels = build(2);
+        gap = 0;
+    }
     let mut spans = Vec::new();
-    for (i, s) in Screen::TOP.iter().enumerate() {
-        let label = format!("{} {}", i + 1, s.title());
-        if app.screen.top() == *s {
+    for (label, on) in labels {
+        if on {
             spans.push(Span::styled(format!("[{label}]"), highlight()));
         } else {
             spans.push(Span::raw(format!(" {label} ")));
         }
-        spans.push(Span::raw(" "));
+        if gap > 0 {
+            spans.push(Span::raw(" "));
+        }
     }
-    match app.screen {
-        Screen::PrDetail => spans.push(Span::styled("› Detail", bold())),
-        Screen::PrTimeline => spans.push(Span::styled("› Detail › Timeline", bold())),
-        _ => {}
+    spans
+}
+
+fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
+    let width = area.width as usize;
+    let mut spans = tab_spans(app, width);
+    let used: usize = spans.iter().map(|s| display_width(&s.content)).sum();
+    let crumbs = app.breadcrumb();
+    if !crumbs.is_empty() {
+        let full: Vec<&str> = crumbs.iter().map(|s| s.title()).collect();
+        let short: Vec<&str> = crumbs.iter().map(|s| s.short_title()).collect();
+        let room = width.saturating_sub(used);
+        let mut text = format!("› {}", full.join(" › "));
+        if display_width(&text) > room {
+            text = format!("› {}", short.join(" › "));
+        }
+        spans.push(Span::styled(fit(&text, room), bold()));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Key hints for the current screen, shown in the status bar.
+pub fn key_hint(app: &App) -> &'static str {
+    match app.screen {
+        Screen::Dashboard => "Tab pane · Enter open",
+        Screen::Overview => "Tab pane · Enter repo",
+        Screen::Daily => "Enter day detail · / search",
+        Screen::Repositories => "Enter repo detail · / search",
+        Screen::PullRequests => "Enter PR detail · / search",
+        Screen::Reviews => "Tab sub/recv · Enter PR",
+        Screen::Issues => "Enter issue detail · / search",
+        Screen::DayDetail | Screen::RepoDetail => "Tab section · Enter open · Esc back",
+        Screen::PrDetail => "Enter timeline · o open · Esc back",
+        Screen::PrTimeline => "Tab type · o open · Esc back",
+        Screen::IssueDetail => "o open · Esc back",
+        Screen::System => "r refresh",
+    }
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
@@ -236,7 +305,13 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     if let Some(m) = &app.message {
         parts.push(clean(m));
     }
-    let right = "  ? help · q quit ";
+    let base = "  ? help · q quit ";
+    let with_hint = format!("  {} ·{}", key_hint(app), &base[1..]);
+    let right = if area.width >= 110 {
+        with_hint.as_str()
+    } else {
+        base
+    };
     let left_w = (area.width as usize).saturating_sub(display_width(right));
     let left = fit(&format!(" {}", parts.join(" · ")), left_w);
     let pad = left_w.saturating_sub(display_width(&left));
@@ -415,7 +490,7 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let focused = app.overview_pane == OverviewPane::Repositories;
-    let title = "Top repositories (Tab to focus, Enter for PRs)".to_string();
+    let title = "Top repositories (Tab to focus, Enter for detail)".to_string();
     if r.repositories.is_empty() {
         return empty(
             f,
@@ -476,7 +551,7 @@ fn draw_daily(f: &mut Frame, app: &App, area: Rect) {
     let list = ListId::Daily;
     let vis = app.visible(list);
     let title = format!(
-        "Daily · {} days · {} active · newest first",
+        "Daily · {} days · {} active · newest first · Enter for day detail",
         r.activity_breakdown.len(),
         r.metrics.active_days
     );
@@ -547,7 +622,7 @@ fn draw_repositories(f: &mut Frame, app: &App, area: Rect) {
     let list = ListId::Repositories;
     let vis = app.visible(list);
     let title = format!(
-        "Repositories · {} shown of {}",
+        "Repositories · {} shown of {} · Enter for detail",
         vis.len(),
         r.repositories.len()
     );
@@ -944,7 +1019,7 @@ fn draw_reviews(f: &mut Frame, app: &App, area: Rect) {
     };
     let list = app.current_list().unwrap_or(ListId::ReviewsSubmitted);
     let vis = app.visible(list);
-    let title = format!("{title} · {} shown", vis.len());
+    let title = format!("{title} · {} shown · Enter for PR detail", vis.len());
     if rows_all.is_empty() {
         return empty(f, table_area, title, &["No reviews in this period."]);
     }
@@ -989,6 +1064,761 @@ fn draw_reviews(f: &mut Frame, app: &App, area: Rect) {
     )
     .block(block(title, true));
     stateful_table(f, app, table_area, list, t, true);
+}
+
+// ----- Dashboard ---------------------------------------------------------
+
+/// Headline figures of the dashboard: (label, short label, value).
+fn headline(r: &Report) -> [(&'static str, &'static str, u64); 8] {
+    let s = &r.metrics;
+    [
+        ("Commits", "Commits", s.commits),
+        ("PRs created", "PRs created", s.prs_created),
+        ("PRs merged", "PRs merged", s.prs_merged),
+        (
+            "Reviews submitted",
+            "Rev. submitted",
+            s.reviews_submitted.total,
+        ),
+        (
+            "Reviews received",
+            "Rev. received",
+            s.reviews_received.total,
+        ),
+        ("Comments written", "Comments", s.comments_written.total()),
+        ("Issues opened", "Issues", s.issues_opened),
+        ("Active days", "Active days", s.active_days),
+    ]
+}
+
+/// Lines of `cols` figure cells, each `cell_w` wide.
+fn figure_lines(figures: &[(&str, &str, u64)], cols: usize, cell_w: usize) -> Vec<Line<'static>> {
+    figures
+        .chunks(cols.max(1))
+        .map(|row| {
+            let mut spans = Vec::new();
+            for (long, short, v) in row {
+                let v = v.to_string();
+                let room = cell_w.saturating_sub(display_width(&v) + 2);
+                let label = if display_width(long) <= room {
+                    long.to_string()
+                } else if display_width(short) <= room {
+                    short.to_string()
+                } else {
+                    fit(short, room)
+                };
+                let pad = cell_w.saturating_sub(display_width(&label) + display_width(&v) + 2);
+                spans.push(Span::raw(format!("{label} {}", " ".repeat(pad))));
+                spans.push(Span::styled(v, bold()));
+                spans.push(Span::raw(" "));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// One-line coverage state of a report. Problems are spelled out, not
+/// only colored.
+fn coverage_line(app: &App, r: &Report) -> String {
+    let overall = r.overall_coverage();
+    let mark = if overall == CoverageStatus::Complete {
+        "✓"
+    } else {
+        "!"
+    };
+    let mut parts = vec![format!("{mark} coverage: {}", coverage_text(overall))];
+    for c in &r.coverage {
+        if c.status != CoverageStatus::Complete {
+            let gaps = c.gaps().count();
+            parts.push(if gaps > 0 {
+                format!(
+                    "{} {} ({gaps} gap(s))",
+                    c.kind.as_str(),
+                    coverage_text(c.status)
+                )
+            } else {
+                format!("{} {}", c.kind.as_str(), coverage_text(c.status))
+            });
+        }
+    }
+    parts.push(match app.system.synced_at {
+        Some(t) => format!("synced {}", app.zone.format(t, "%Y-%m-%d %H:%M")),
+        None => "never synced".into(),
+    });
+    parts.join(" · ")
+}
+
+/// Bar chart of daily activity, newest on the right.
+fn activity_chart(f: &mut Frame, r: &Report, area: Rect) {
+    let values: Vec<u64> = r
+        .activity_breakdown
+        .iter()
+        .map(|b| activity(&b.summary))
+        .collect();
+    let total: u64 = values.iter().sum();
+    let inner_w = area.width.saturating_sub(2) as usize;
+    if total == 0 {
+        return empty(
+            f,
+            area,
+            "Activity per day".into(),
+            &["No activity in this period. Press t to change the time range or r to refresh."],
+        );
+    }
+    let shown = &values[values.len().saturating_sub(inner_w)..];
+    let first = r
+        .activity_breakdown
+        .len()
+        .checked_sub(shown.len())
+        .and_then(|i| r.activity_breakdown.get(i))
+        .map(|b| b.bucket.label.clone())
+        .unwrap_or_default();
+    let last = r
+        .activity_breakdown
+        .last()
+        .map(|b| b.bucket.label.clone())
+        .unwrap_or_default();
+    let peak = shown.iter().copied().max().unwrap_or(0);
+    let title = format!("Activity per day · {first} → {last} · total {total} · peak {peak}");
+    f.render_widget(
+        Sparkline::default()
+            .block(block(fit(&title, inner_w.saturating_sub(4)), false))
+            .data(shown)
+            .style(Style::new().fg(Color::Cyan)),
+        area,
+    );
+}
+
+fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
+    let Some(r) = app.base_report() else {
+        return loading(f, area, "Dashboard");
+    };
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let cols = match inner_w {
+        w if w >= 72 => 4,
+        w if w >= 36 => 2,
+        _ => 1,
+    };
+    let figures = headline(r);
+    let fig_rows = figures.len().div_ceil(cols) as u16;
+    let head_h = fig_rows + 2;
+    const CHART_H: u16 = 5;
+    const LISTS_MIN: u16 = 5;
+    let h = area.height;
+    let show_chart = h >= head_h + 1 + CHART_H + LISTS_MIN;
+    let show_lists = h >= head_h + 1 + LISTS_MIN;
+    let mut constraints = vec![Constraint::Length(head_h), Constraint::Length(1)];
+    if show_chart {
+        constraints.push(Constraint::Length(CHART_H));
+    }
+    if show_lists {
+        constraints.push(Constraint::Min(LISTS_MIN));
+    }
+    let areas = Layout::vertical(constraints).split(area);
+
+    let title = format!(
+        "At a glance · {} → {}",
+        app.zone.format(app.period.start, "%Y-%m-%d"),
+        app.zone.format(app.period.end, "%Y-%m-%d")
+    );
+    let summary_focus = app.dashboard_pane == DashboardPane::Summary;
+    f.render_widget(
+        Paragraph::new(figure_lines(&figures, cols, inner_w / cols))
+            .block(block(fit(&title, inner_w.saturating_sub(4)), summary_focus)),
+        areas[0],
+    );
+    if areas.len() > 1 {
+        f.render_widget(
+            Paragraph::new(fit(&coverage_line(app, r), area.width as usize)),
+            areas[1],
+        );
+    }
+    let mut next = 2;
+    if show_chart {
+        activity_chart(f, r, areas[next]);
+        next += 1;
+    }
+    if !show_lists {
+        return;
+    }
+    let lists = areas[next];
+    if lists.width >= 70 {
+        let [left, right] =
+            Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)])
+                .areas(lists);
+        dashboard_repos(f, app, r, left);
+        dashboard_prs(f, app, r, right);
+    } else if lists.height >= 10 {
+        let [top, bottom] =
+            Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(lists);
+        dashboard_repos(f, app, r, top);
+        dashboard_prs(f, app, r, bottom);
+    } else if app.dashboard_pane == DashboardPane::PullRequests {
+        // Too small for both: show the focused one.
+        dashboard_prs(f, app, r, lists);
+    } else {
+        dashboard_repos(f, app, r, lists);
+    }
+}
+
+fn dashboard_repos(f: &mut Frame, app: &App, r: &Report, area: Rect) {
+    let focused = app.dashboard_pane == DashboardPane::Repositories;
+    let title = "Top repositories".to_string();
+    if r.repositories.is_empty() {
+        return empty(f, area, title, &["No repository activity in this period."]);
+    }
+    let wide = area.width >= 50;
+    let fixed: &[u16] = if wide { &[7, 4, 7] } else { &[7] };
+    let name_w = flex_width(area, fixed);
+    let rows: Vec<Row> = r
+        .repositories
+        .iter()
+        .map(|x| {
+            let s = &x.summary;
+            let mut cells = vec![fit(&x.full_name, name_w), s.commits.to_string()];
+            if wide {
+                cells.push(s.prs_created.to_string());
+                cells.push(s.reviews_submitted.total.to_string());
+            }
+            Row::new(cells)
+        })
+        .collect();
+    let mut widths = vec![Constraint::Min(8)];
+    widths.extend(fixed.iter().map(|w| Constraint::Length(*w)));
+    let header: &[&str] = if wide {
+        &["Repository", "Commits", "PRs", "Reviews"]
+    } else {
+        &["Repository", "Commits"]
+    };
+    let t = styled_table(rows, widths, header).block(block(title, focused));
+    stateful_table(f, app, area, ListId::DashboardRepos, t, focused);
+}
+
+fn dashboard_prs(f: &mut Frame, app: &App, r: &Report, area: Rect) {
+    let focused = app.dashboard_pane == DashboardPane::PullRequests;
+    let title = "Recently active pull requests".to_string();
+    let rows_all = r.pull_requests.as_deref().unwrap_or(&[]);
+    if rows_all.is_empty() {
+        return empty(
+            f,
+            area,
+            title,
+            &["No pull request activity in this period."],
+        );
+    }
+    let wide = area.width >= 60;
+    let fixed: &[u16] = if wide { &[9, 11] } else { &[9] };
+    let flex = flex_width(area, fixed);
+    let pr_w = (flex * 2 / 5).max(6);
+    let title_w = flex.saturating_sub(pr_w + 1).max(4);
+    let rows: Vec<Row> = rows_all
+        .iter()
+        .map(|p| {
+            let mut cells = vec![
+                Cell::from(Span::styled(
+                    pr_state_text(p.state, p.is_draft),
+                    pr_state_style(p.state),
+                )),
+                Cell::from(fit(&format!("{}#{}", p.repository, p.number), pr_w)),
+                Cell::from(fit(&p.title, title_w)),
+            ];
+            if wide {
+                cells.push(Cell::from(
+                    p.last_activity
+                        .map(|t| app.zone.format(t, "%m-%d %H:%M"))
+                        .unwrap_or_else(|| "-".into()),
+                ));
+            }
+            Row::new(cells)
+        })
+        .collect();
+    let mut widths = vec![
+        Constraint::Length(9),
+        Constraint::Length(pr_w as u16),
+        Constraint::Min(4),
+    ];
+    if wide {
+        widths.push(Constraint::Length(11));
+    }
+    let header: &[&str] = if wide {
+        &["State", "PR", "Title", "Last"]
+    } else {
+        &["State", "PR", "Title"]
+    };
+    let t = styled_table(rows, widths, header).block(block(title, focused));
+    stateful_table(f, app, area, ListId::DashboardPrs, t, focused);
+}
+
+// ----- Issues ---------------------------------------------------------------
+
+fn issue_state_text(open: bool) -> &'static str {
+    if open { "○ open" } else { "✓ closed" }
+}
+
+fn issue_table<'a>(rows_all: &'a [IssueRow], vis: &[usize], area: Rect) -> Table<'a> {
+    let fixed = [9, 6, 6, 8];
+    let flex = flex_width(area, &fixed);
+    let issue_w = (flex * 2 / 5).max(8);
+    let title_w = flex.saturating_sub(issue_w + 1).max(8);
+    let rows: Vec<Row> = vis
+        .iter()
+        .map(|&i| {
+            let x = &rows_all[i];
+            Row::new(vec![
+                issue_state_text(x.is_open).to_string(),
+                fit(&format!("{}#{}", x.repository, x.number), issue_w),
+                fit(&x.title, title_w),
+                if x.opened_in_period { "yes" } else { "-" }.to_string(),
+                x.closed_in_period.to_string(),
+                x.reopened_in_period.to_string(),
+            ])
+        })
+        .collect();
+    styled_table(
+        rows,
+        vec![
+            Constraint::Length(9),
+            Constraint::Length(issue_w as u16),
+            Constraint::Min(8),
+            Constraint::Length(6),
+            Constraint::Length(6),
+            Constraint::Length(8),
+        ],
+        &["State", "Issue", "Title", "Opened", "Closed", "Reopened"],
+    )
+}
+
+fn draw_issues(f: &mut Frame, app: &App, area: Rect) {
+    let Some(r) = app.issues_report() else {
+        return loading(f, area, "Issues");
+    };
+    let rows_all = r.issues.as_deref().unwrap_or(&[]);
+    let list = ListId::Issues;
+    let vis = app.visible(list);
+    let title = format!(
+        "Issues you were active in · {} shown of {} · Enter for detail",
+        vis.len(),
+        rows_all.len()
+    );
+    if rows_all.is_empty() {
+        return empty(
+            f,
+            area,
+            title,
+            &["No issue activity in this period. Press t to change the time range."],
+        );
+    }
+    if vis.is_empty() {
+        return empty(f, area, title, &[&no_match(app, list)]);
+    }
+    let t = issue_table(rows_all, &vis, area).block(block(title, true));
+    stateful_table(f, app, area, list, t, true);
+}
+
+fn actor_text(name: &str, by_subject: bool) -> String {
+    if by_subject {
+        format!("{} (you)", clean(name))
+    } else {
+        clean(name)
+    }
+}
+
+fn draw_issue_detail(f: &mut Frame, app: &App, area: Rect) {
+    let Some(r) = app.issue_report() else {
+        if app.issue_lookup_done() {
+            return empty(
+                f,
+                area,
+                "Issue Detail".into(),
+                &["This issue is not in the cache. Press r to refresh or Esc to go back."],
+            );
+        }
+        return loading(f, area, "Issue Detail");
+    };
+    let z = app.zone;
+    let w = area.width.saturating_sub(26) as usize;
+    let lines = vec![
+        Line::styled(
+            fit(
+                &format!("{}#{} {}", r.repository, r.number, r.title),
+                area.width.saturating_sub(2) as usize,
+            ),
+            bold(),
+        ),
+        kv("Repository", fit(&r.repository, w)),
+        kv("Author", fit(&r.author, w)),
+        kv("State (current)", issue_state_text(r.is_open).to_string()),
+        kv("Created", ts(z, Some(r.created_at))),
+        kv("Closed", ts(z, r.closed_at)),
+        kv("URL", fit(&r.url, w)),
+    ];
+    let info_h = (lines.len() as u16 + 2).min(area.height);
+    let [info, events] =
+        Layout::vertical([Constraint::Length(info_h), Constraint::Min(0)]).areas(area);
+    f.render_widget(
+        Paragraph::new(lines).block(block("Issue Detail".into(), false)),
+        info,
+    );
+    if events.height < 3 {
+        return;
+    }
+    let list = ListId::IssueEvents;
+    let vis = app.visible(list);
+    let title = format!(
+        "Events in the selected period · {} of {}",
+        vis.len(),
+        r.events.len()
+    );
+    if r.events.is_empty() {
+        return empty(
+            f,
+            events,
+            title,
+            &["No events of this issue in the selected period."],
+        );
+    }
+    if vis.is_empty() {
+        return empty(f, events, title, &[&no_match(app, list)]);
+    }
+    let rows: Vec<Row> = vis
+        .iter()
+        .map(|&i| {
+            let e = &r.events[i];
+            Row::new(vec![
+                z.format(e.occurred_at, "%Y-%m-%d %H:%M"),
+                fit(&actor_text(&e.actor, e.by_subject), 30),
+                e.event_type.label().to_string(),
+            ])
+        })
+        .collect();
+    let t = styled_table(
+        rows,
+        vec![
+            Constraint::Length(16),
+            Constraint::Length(30),
+            Constraint::Min(8),
+        ],
+        &["Time", "Actor", "Event"],
+    )
+    .block(block(title, true));
+    stateful_table(f, app, events, list, t, true);
+}
+
+// ----- Day and repository detail ------------------------------------------------
+
+fn detail_count(r: &Report, tab: DetailTab) -> usize {
+    match tab {
+        DetailTab::Activity => r.activity.as_ref().map_or(0, Vec::len),
+        DetailTab::Commits => r.commits.as_ref().map_or(0, Vec::len),
+        DetailTab::PullRequests => r.pull_requests.as_ref().map_or(0, Vec::len),
+        DetailTab::Reviews => {
+            r.reviews_submitted.as_ref().map_or(0, Vec::len)
+                + r.reviews_received.as_ref().map_or(0, Vec::len)
+        }
+        DetailTab::Comments => r.comments.as_ref().map_or(0, Vec::len),
+        DetailTab::Issues => r.issues.as_ref().map_or(0, Vec::len),
+    }
+}
+
+fn draw_scope_detail(f: &mut Frame, app: &App, area: Rect) {
+    let name = match app.screen {
+        Screen::DayDetail => app
+            .detail_day
+            .as_ref()
+            .map(|d| format!("Day {}", d.label))
+            .unwrap_or_else(|| "Day".into()),
+        _ => app
+            .detail_repo
+            .as_ref()
+            .map(|r| format!("Repository {}", clean(&r.full_name)))
+            .unwrap_or_else(|| "Repository".into()),
+    };
+    let Some(r) = app.detail_report() else {
+        return loading(f, area, app.screen.title());
+    };
+    let s = &r.metrics;
+    let summary = [
+        format!(
+            "Commits {} · PRs created {} · merged {} · Reviews submitted {} · received {}",
+            s.commits,
+            s.prs_created,
+            s.prs_merged,
+            s.reviews_submitted.total,
+            s.reviews_received.total
+        ),
+        format!(
+            "Comments written {} · received {} · Issues opened {} · closed {} · Active PRs {} · coverage: {}",
+            s.comments_written.total(),
+            s.comments_received.total(),
+            s.issues_opened,
+            s.issues_closed,
+            s.active_prs,
+            coverage_text(r.overall_coverage())
+        ),
+    ];
+    let show_summary = area.height >= 9;
+    let constraints = if show_summary {
+        vec![
+            Constraint::Length(4),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ]
+    } else {
+        vec![Constraint::Length(1), Constraint::Min(1)]
+    };
+    let areas = Layout::vertical(constraints).split(area);
+    let (tabs_area, list_area) = if show_summary {
+        let inner = area.width.saturating_sub(2) as usize;
+        let lines: Vec<Line> = summary.iter().map(|l| Line::raw(fit(l, inner))).collect();
+        f.render_widget(
+            Paragraph::new(lines).block(block(fit(&name, inner.saturating_sub(4)), false)),
+            areas[0],
+        );
+        (areas[1], areas[2])
+    } else {
+        (areas[0], areas[1])
+    };
+
+    let full: usize = app
+        .detail_tabs()
+        .iter()
+        .map(|t| display_width(t.label()) + 8)
+        .sum::<usize>()
+        + 16;
+    let short = full > tabs_area.width as usize;
+    let mut spans = vec![Span::raw(if short { " " } else { " section (Tab): " })];
+    for t in app.detail_tabs() {
+        let name = if short { t.short_label() } else { t.label() };
+        let label = format!("{name} ({})", detail_count(r, *t));
+        if *t == app.detail_tab {
+            spans.push(Span::styled(format!("[{label}]"), highlight()));
+        } else {
+            spans.push(Span::raw(format!(" {label} ")));
+        }
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), tabs_area);
+
+    let list = app.detail_tab.list();
+    let vis = app.visible(list);
+    let title = format!(
+        "{} · {} · {} shown",
+        fit(&name, 50),
+        app.detail_tab.label(),
+        vis.len()
+    );
+    if detail_count(r, app.detail_tab) == 0 {
+        let msg = format!(
+            "No {} here in this period. Press Tab for another section.",
+            app.detail_tab.label().to_lowercase()
+        );
+        return empty(f, list_area, title, &[&msg]);
+    }
+    if vis.is_empty() {
+        return empty(f, list_area, title, &[&no_match(app, list)]);
+    }
+    let z = app.zone;
+    let t = match app.detail_tab {
+        DetailTab::Activity => {
+            let rows_all = r.activity.as_deref().unwrap_or(&[]);
+            let flex = flex_width(list_area, &[11, 20, 18]);
+            let where_w = (flex * 2 / 5).max(8);
+            let title_w = flex.saturating_sub(where_w + 1).max(8);
+            let rows: Vec<Row> = vis
+                .iter()
+                .map(|&i| {
+                    let a = &rows_all[i];
+                    let place = match a.number {
+                        Some(n) => format!("{}#{n}", a.repository),
+                        None => a.repository.clone(),
+                    };
+                    Row::new(vec![
+                        z.format(a.occurred_at, "%m-%d %H:%M"),
+                        fit(&actor_text(&a.actor, a.by_subject), 20),
+                        a.event_type.label().to_string(),
+                        fit(&place, where_w),
+                        fit(a.title.as_deref().unwrap_or("-"), title_w),
+                    ])
+                })
+                .collect();
+            styled_table(
+                rows,
+                vec![
+                    Constraint::Length(11),
+                    Constraint::Length(20),
+                    Constraint::Length(18),
+                    Constraint::Length(where_w as u16),
+                    Constraint::Min(8),
+                ],
+                &["Time", "Actor", "Event", "Where", "Title"],
+            )
+        }
+        DetailTab::Commits => {
+            let rows_all = r.commits.as_deref().unwrap_or(&[]);
+            let repo_w = flex_width(list_area, &[16, 12, 5]);
+            let rows: Vec<Row> = vis
+                .iter()
+                .map(|&i| {
+                    let c = &rows_all[i];
+                    let sha: String = c.sha.as_deref().unwrap_or("-").chars().take(10).collect();
+                    Row::new(vec![
+                        z.format(c.committed_at, "%Y-%m-%d %H:%M"),
+                        fit(&sha, 12),
+                        fit(&c.repository, repo_w),
+                        if c.is_merge_commit { "merge" } else { "" }.to_string(),
+                    ])
+                })
+                .collect();
+            styled_table(
+                rows,
+                vec![
+                    Constraint::Length(16),
+                    Constraint::Length(12),
+                    Constraint::Min(8),
+                    Constraint::Length(5),
+                ],
+                &["Committed", "SHA", "Repository", "Merge"],
+            )
+        }
+        DetailTab::PullRequests => {
+            let rows_all = r.pull_requests.as_deref().unwrap_or(&[]);
+            let fixed = [9, 6, 5, 7, 8, 11];
+            let flex = flex_width(list_area, &fixed);
+            let pr_w = (flex * 2 / 5).max(8);
+            let title_w = flex.saturating_sub(pr_w + 1).max(8);
+            let rows: Vec<Row> = vis
+                .iter()
+                .map(|&i| {
+                    let p = &rows_all[i];
+                    Row::new(vec![
+                        Cell::from(Span::styled(
+                            pr_state_text(p.state, p.is_draft),
+                            pr_state_style(p.state),
+                        )),
+                        Cell::from(fit(&format!("{}#{}", p.repository, p.number), pr_w)),
+                        Cell::from(fit(&p.title, title_w)),
+                        Cell::from(p.events.to_string()),
+                        Cell::from(p.events_by_subject.to_string()),
+                        Cell::from(p.reviews.to_string()),
+                        Cell::from(p.comments.to_string()),
+                        Cell::from(
+                            p.last_activity
+                                .map(|t| z.format(t, "%m-%d %H:%M"))
+                                .unwrap_or_else(|| "-".into()),
+                        ),
+                    ])
+                })
+                .collect();
+            styled_table(
+                rows,
+                vec![
+                    Constraint::Length(9),
+                    Constraint::Length(pr_w as u16),
+                    Constraint::Min(8),
+                    Constraint::Length(6),
+                    Constraint::Length(5),
+                    Constraint::Length(7),
+                    Constraint::Length(8),
+                    Constraint::Length(11),
+                ],
+                &[
+                    "State", "PR", "Title", "Events", "Yours", "Reviews", "Comments", "Last",
+                ],
+            )
+        }
+        DetailTab::Reviews => {
+            let rows_all = app.detail_reviews();
+            let flex = flex_width(list_area, &[9, 11, 18, 18]);
+            let pr_w = (flex * 2 / 5).max(8);
+            let rows: Vec<Row> = vis
+                .iter()
+                .map(|&i| {
+                    let (dir, x) = rows_all[i];
+                    let state = x
+                        .state
+                        .map(|s| s.as_str().to_ascii_lowercase().replace('_', " "))
+                        .unwrap_or_else(|| "-".into());
+                    let pr = match x.pr_number {
+                        Some(n) => format!("{}#{n}", x.repository),
+                        None => x.repository.clone(),
+                    };
+                    Row::new(vec![
+                        match dir {
+                            ReviewDirection::Submitted => "given",
+                            ReviewDirection::Received => "received",
+                        }
+                        .to_string(),
+                        z.format(x.submitted_at, "%m-%d %H:%M"),
+                        fit(&x.reviewer, 18),
+                        state,
+                        fit(&pr, pr_w),
+                        fit(
+                            x.pr_title.as_deref().unwrap_or("-"),
+                            flex.saturating_sub(pr_w + 1).max(8),
+                        ),
+                    ])
+                })
+                .collect();
+            styled_table(
+                rows,
+                vec![
+                    Constraint::Length(9),
+                    Constraint::Length(11),
+                    Constraint::Length(18),
+                    Constraint::Length(18),
+                    Constraint::Length(pr_w as u16),
+                    Constraint::Min(8),
+                ],
+                &["Direction", "Submitted", "Reviewer", "State", "PR", "Title"],
+            )
+        }
+        DetailTab::Comments => {
+            let rows_all = r.comments.as_deref().unwrap_or(&[]);
+            let pr_w = flex_width(list_area, &[11, 20, 15, 9]);
+            let rows: Vec<Row> = vis
+                .iter()
+                .map(|&i| {
+                    let c = &rows_all[i];
+                    let pr = match c.pr_number {
+                        Some(n) => format!("{}#{n}", c.repository),
+                        None => c.repository.clone(),
+                    };
+                    let mut kind = c.kind.label().to_string();
+                    if c.edited {
+                        kind.push_str(" ✎");
+                    }
+                    Row::new(vec![
+                        z.format(c.created_at, "%m-%d %H:%M"),
+                        fit(&c.author, 20),
+                        kind,
+                        if c.written_by_subject {
+                            "written"
+                        } else {
+                            "received"
+                        }
+                        .to_string(),
+                        fit(&pr, pr_w),
+                    ])
+                })
+                .collect();
+            styled_table(
+                rows,
+                vec![
+                    Constraint::Length(11),
+                    Constraint::Length(20),
+                    Constraint::Length(15),
+                    Constraint::Length(9),
+                    Constraint::Min(8),
+                ],
+                &["Time", "Author", "Kind", "Direction", "PR"],
+            )
+        }
+        DetailTab::Issues => {
+            let rows_all = r.issues.as_deref().unwrap_or(&[]);
+            issue_table(rows_all, &vis, list_area)
+        }
+    }
+    .block(block(title, true));
+    stateful_table(f, app, list_area, list, t, true);
 }
 
 // ----- System ----------------------------------------------------------------
@@ -1147,20 +1977,20 @@ fn draw_system(f: &mut Frame, app: &App, area: Rect) {
 /// Key bindings shown in the help overlay.
 pub const HELP: &[(&str, &str)] = &[
     (
-        "1-6",
-        "Overview / Daily / Repositories / Pull Requests / Reviews / System",
+        "1-8",
+        "Dashboard / Overview / Daily / Repositories / Pull Requests / Reviews / Issues / System",
     ),
     (
         "Enter",
-        "Open detail (PR list → PR detail → timeline; repo → its PRs)",
+        "Open detail: day, repository, PR (then timeline), issue; review → its PR",
     ),
-    ("Esc", "Back / clear search"),
+    ("Esc", "Back to the previous screen / clear search"),
     ("j / Down", "Next item"),
     ("k / Up", "Previous item"),
     ("PgDn PgUp g G", "Page down / up, first, last"),
     (
         "Tab / Shift+Tab",
-        "Next / previous pane (Reviews: submitted/received)",
+        "Next / previous pane or section (Reviews: submitted/received)",
     ),
     ("/", "Search the current list"),
     (
@@ -1178,7 +2008,7 @@ pub const HELP: &[(&str, &str)] = &[
 ];
 
 fn draw_help(f: &mut Frame, area: Rect) {
-    let w = area.width.saturating_sub(4).min(86);
+    let w = area.width.saturating_sub(4).min(112);
     let h = area.height.saturating_sub(2).min(HELP.len() as u16 + 4);
     let x = area.x + (area.width - w) / 2;
     let y = area.y + (area.height - h) / 2;
@@ -1196,7 +2026,9 @@ fn draw_help(f: &mut Frame, area: Rect) {
     lines.push(Line::raw(""));
     lines.push(Line::styled("Press ? or Esc to close", dim()));
     f.render_widget(
-        Paragraph::new(lines).block(block("Help".into(), true)),
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(block("Help".into(), true)),
         rect,
     );
 }

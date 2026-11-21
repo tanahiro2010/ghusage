@@ -75,7 +75,7 @@ fn ui_responds_and_shows_a_placeholder_while_a_report_is_computed() {
     assert!(text.contains("Computing…"), "{text}");
     assert!(text.contains("⧗ computing"), "{text}");
 
-    for k in ['2', '3', 'j', '?', '?', '6', '1'] {
+    for k in ['3', '4', 'j', '?', '?', '8', '2'] {
         let t = Instant::now();
         app.handle_key(key(k));
         app.poll_results();
@@ -142,7 +142,7 @@ fn superseded_requests_are_skipped_when_cycling_quickly() {
 fn background_computation_shows_the_same_numbers_as_inline() {
     let mut threaded = threaded_app(Box::new(MemorySource::new(dataset())));
     let mut inline = app();
-    for k in ['1', '2', '3', '4', '5'] {
+    for k in ['1', '2', '3', '4', '5', '6', '7'] {
         threaded.handle_key(key(k));
         inline.handle_key(key(k));
         assert!(threaded.settle(SETTLE));
@@ -155,7 +155,7 @@ fn background_computation_shows_the_same_numbers_as_inline() {
         threaded.reviews_report().unwrap().reviews_received,
         inline.reviews_report().unwrap().reviews_received
     );
-    threaded.handle_key(key('4'));
+    threaded.handle_key(key('5'));
     threaded.handle_key(code(KeyCode::Enter));
     assert!(threaded.settle(SETTLE));
     assert_eq!(threaded.screen, Screen::PrDetail);
@@ -171,7 +171,7 @@ fn warm_up_computes_other_screens_in_the_background() {
     assert!(app.warm_up());
     assert!(app.settle(SETTLE));
     let builds = app.report_builds();
-    for k in ['1', '2', '3', '4', '5', '6'] {
+    for k in ['1', '2', '3', '4', '5', '6', '7', '8'] {
         app.handle_key(key(k));
         assert!(!app.is_computing(), "screen {k} was precomputed");
     }

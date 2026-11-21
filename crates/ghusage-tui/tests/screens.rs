@@ -10,11 +10,11 @@ use ratatui::crossterm::event::KeyCode;
 
 fn all_screens(app: &mut ghusage_tui::app::App) -> Vec<(Screen, String)> {
     let mut out = Vec::new();
-    for k in ['1', '2', '3', '4', '5', '6'] {
+    for k in ['1', '2', '3', '4', '5', '6', '7', '8'] {
         app.handle_key(key(k));
         out.push((app.screen, screen_text(app, 160, 40)));
     }
-    app.handle_key(key('4'));
+    app.handle_key(key('5'));
     app.handle_key(code(KeyCode::Enter));
     out.push((app.screen, screen_text(app, 160, 40)));
     app.handle_key(code(KeyCode::Enter));
@@ -30,22 +30,26 @@ fn every_screen_renders_with_its_title() {
     assert_eq!(
         screens,
         vec![
+            Screen::Dashboard,
             Screen::Overview,
             Screen::Daily,
             Screen::Repositories,
             Screen::PullRequests,
             Screen::Reviews,
+            Screen::Issues,
             Screen::System,
             Screen::PrDetail,
             Screen::PrTimeline,
         ]
     );
     let expect = [
+        "At a glance",
         "Summary",
         "Daily",
         "Repositories",
         "Pull Requests you were active in",
         "Reviews you submitted",
+        "Issues you were active in",
         "Coverage for the selected period",
         "PR Detail",
         "timeline",
@@ -61,11 +65,11 @@ fn every_screen_renders_with_its_title() {
 #[test]
 fn japanese_and_emoji_titles_are_drawn() {
     let mut app = app();
-    press(&mut app, "4");
+    press(&mut app, "5");
     let text = screen_text(&app, 160, 30);
     assert!(text.contains("パ"), "{text}");
     assert!(text.contains("🚀"), "{text}");
-    press(&mut app, "3");
+    press(&mut app, "4");
     let text = screen_text(&app, 160, 30);
     assert!(text.contains("org/ウ"), "{text}");
 }
@@ -73,13 +77,13 @@ fn japanese_and_emoji_titles_are_drawn() {
 #[test]
 fn hostile_text_never_reaches_the_terminal_as_control_characters() {
     let mut app = app();
-    for k in ['1', '2', '3', '4', '5', '6'] {
+    for k in ['1', '2', '3', '4', '5', '6', '7', '8'] {
         app.handle_key(key(k));
         assert_clean(&app, 160, 40);
         assert_clean(&app, 40, 10);
     }
     // Open the pull request with the hostile title.
-    press(&mut app, "4");
+    press(&mut app, "5");
     app.handle_key(key('/'));
     press(&mut app, "#7");
     app.handle_key(code(KeyCode::Enter));
@@ -95,33 +99,41 @@ fn hostile_text_never_reaches_the_terminal_as_control_characters() {
 #[test]
 fn empty_data_shows_friendly_messages() {
     let mut app = app_with(empty_dataset(), false);
-    for k in ['1', '2', '3', '4', '5', '6'] {
+    for k in ['1', '2', '3', '4', '5', '6', '7', '8'] {
         app.handle_key(key(k));
         let text = screen_text(&app, 120, 30);
         assert!(!text.contains("Computing"), "{text}");
         let _ = screen_text(&app, 40, 10);
     }
     press(&mut app, "1");
+    let text = screen_text(&app, 120, 30);
+    assert!(text.contains("No activity in this period"), "{text}");
+    assert!(text.contains("No pull request activity"), "{text}");
+    press(&mut app, "2");
     assert!(screen_text(&app, 120, 30).contains("No activity in this period"));
-    press(&mut app, "3");
-    assert!(screen_text(&app, 120, 30).contains("No repository activity"));
     press(&mut app, "4");
+    assert!(screen_text(&app, 120, 30).contains("No repository activity"));
+    press(&mut app, "5");
     assert!(screen_text(&app, 120, 30).contains("No pull request activity"));
     app.handle_key(code(KeyCode::Enter));
     assert_eq!(app.screen, Screen::PullRequests, "nothing to open");
-    press(&mut app, "5");
+    press(&mut app, "6");
     assert!(screen_text(&app, 120, 30).contains("No reviews in this period"));
+    press(&mut app, "7");
+    assert!(screen_text(&app, 120, 30).contains("No issue activity"));
+    app.handle_key(code(KeyCode::Enter));
+    assert_eq!(app.screen, Screen::Issues, "nothing to open");
 }
 
 #[test]
 fn small_and_large_terminals_render() {
     let mut app = app();
     for (w, h) in [(40, 10), (200, 60), (20, 6), (10, 3), (1, 1)] {
-        for k in ['1', '2', '3', '4', '5', '6'] {
+        for k in ['1', '2', '3', '4', '5', '6', '7', '8'] {
             app.handle_key(key(k));
             let _ = render(&app, w, h);
         }
-        press(&mut app, "4");
+        press(&mut app, "5");
         app.handle_key(code(KeyCode::Enter));
         let _ = render(&app, w, h);
         app.handle_key(code(KeyCode::Enter));
@@ -136,7 +148,8 @@ fn small_and_large_terminals_render() {
 
 #[test]
 fn overview_shows_the_same_numbers_as_the_shared_report() {
-    let app = app();
+    let mut app = app();
+    press(&mut app, "2");
     let ctx = QueryContext {
         period: period_30d(),
         zone: zone(),
@@ -178,7 +191,7 @@ fn overview_shows_the_same_numbers_as_the_shared_report() {
 #[test]
 fn pull_request_list_matches_the_shared_report() {
     let mut app = app();
-    press(&mut app, "4");
+    press(&mut app, "5");
     let ctx = app.query_context();
     let kind = ReportKind::PullRequests {
         participation: ghusage_core::metrics::Participation::Subject,
@@ -205,20 +218,20 @@ fn status_bar_says_data_is_cached_and_shows_coverage() {
 #[test]
 fn colors_are_not_the_only_carrier_of_state() {
     let mut app = app();
-    press(&mut app, "4");
+    press(&mut app, "5");
     let text = screen_text(&app, 160, 20);
     assert!(text.contains("merged"), "{text}");
     assert!(text.contains("open"), "{text}");
     // The selected row carries a symbol, not only a highlight color.
     assert!(text.contains("▶"), "{text}");
     // The active screen tab is bracketed.
-    assert!(text.contains("[4 Pull Requests]"), "{text}");
+    assert!(text.contains("[5 Pull Requests]"), "{text}");
 }
 
 #[test]
 fn system_screen_reports_unknown_rate_limit_offline() {
     let mut app = app();
-    press(&mut app, "6");
+    press(&mut app, "8");
     let text = screen_text(&app, 160, 40);
     assert!(text.contains("Rate limit"), "{text}");
     assert!(text.contains("unknown"), "{text}");

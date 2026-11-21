@@ -5,11 +5,11 @@
 use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, Sender};
 
-use ghusage_app::report::{self, PrReport, QueryContext, Report, ReportKind};
+use ghusage_app::report::{self, IssueReport, PrReport, QueryContext, Report, ReportKind};
 use ghusage_core::metrics::Dataset;
 use ghusage_core::time::Period;
 
-use crate::app::CacheKey;
+use crate::app::{CacheKey, IssueKey};
 use crate::source::{DataSource, SystemInfo};
 
 /// What to compute.
@@ -17,7 +17,18 @@ use crate::source::{DataSource, SystemInfo};
 pub(crate) enum Job {
     Report(CacheKey),
     Pr(String),
+    Issue(IssueKey),
     System,
+}
+
+/// Which shared report builder produces a report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Build {
+    Kind(ReportKind),
+    /// Overview plus the most recently active pull requests.
+    Dashboard,
+    /// Every listing, for one day or one repository.
+    Detail,
 }
 
 #[derive(Debug, Clone)]
@@ -28,14 +39,18 @@ pub(crate) struct Request {
     pub generation: u64,
     /// Requested for the view on screen (as opposed to warm-up).
     pub foreground: bool,
+    /// The period selected in the UI; the dataset read covers it. A day
+    /// detail narrows `ctx.period` to one day inside it.
+    pub view: Period,
     pub ctx: QueryContext,
-    pub kind: ReportKind,
+    pub build: Build,
 }
 
 #[derive(Debug)]
 pub(crate) enum Outcome {
     Report(Result<Box<Report>, String>),
     Pr(Result<Option<Box<PrReport>>, String>),
+    Issue(Result<Option<Box<IssueReport>>, String>),
     System(Box<SystemInfo>),
     /// Skipped because a newer request superseded it.
     Dropped,
@@ -63,42 +78,55 @@ impl Worker {
         }
     }
 
+    /// The dataset of `period`, read from the source unless already read
+    /// for this period and generation.
+    fn load(&mut self, period: Period, generation: u64) -> (Result<&Dataset, String>, bool) {
+        let fresh = self
+            .dataset
+            .as_ref()
+            .is_some_and(|(p, g, _)| *p == period && *g == generation);
+        if fresh {
+            return (Ok(&self.dataset.as_ref().expect("checked above").2), false);
+        }
+        self.dataset = None;
+        match self.source.dataset(period) {
+            Ok(ds) => {
+                let (_, _, ds) = self.dataset.insert((period, generation, ds));
+                (Ok(ds), true)
+            }
+            Err(e) => (Err(e), true),
+        }
+    }
+
     pub fn handle(&mut self, req: Request) -> Response {
         let mut loaded_dataset = false;
-        let outcome =
-            match &req.job {
-                Job::Report(_) => {
-                    let period = req.ctx.period;
-                    let fresh = self
-                        .dataset
-                        .as_ref()
-                        .is_some_and(|(p, g, _)| *p == period && *g == req.generation);
-                    if !fresh {
-                        loaded_dataset = true;
-                        self.dataset = None;
-                        match self.source.dataset(period) {
-                            Ok(ds) => self.dataset = Some((period, req.generation, ds)),
-                            Err(e) => {
-                                return Response {
-                                    job: req.job,
-                                    generation: req.generation,
-                                    outcome: Outcome::Report(Err(e)),
-                                    loaded_dataset,
-                                };
-                            }
-                        }
-                    }
-                    let (_, _, ds) = self.dataset.as_ref().expect("dataset loaded above");
-                    Outcome::Report(Ok(Box::new(report::build(ds, &req.ctx, req.kind))))
-                }
-                Job::Pr(id) => {
-                    loaded_dataset = true;
-                    Outcome::Pr(self.source.pr_dataset(id).map(|ds| {
+        let outcome = match &req.job {
+            Job::Report(_) => {
+                let (ds, loaded) = self.load(req.view, req.generation);
+                loaded_dataset = loaded;
+                Outcome::Report(ds.map(|ds| {
+                    Box::new(match req.build {
+                        Build::Kind(kind) => report::build(ds, &req.ctx, kind),
+                        Build::Dashboard => report::build_dashboard(ds, &req.ctx),
+                        Build::Detail => report::build_detail(ds, &req.ctx),
+                    })
+                }))
+            }
+            Job::Issue(k) => {
+                let (ds, loaded) = self.load(req.view, req.generation);
+                loaded_dataset = loaded;
+                Outcome::Issue(ds.map(|ds| report::issue_report(ds, &req.ctx, &k.id).map(Box::new)))
+            }
+            Job::Pr(id) => {
+                loaded_dataset = true;
+                Outcome::Pr(
+                    self.source.pr_dataset(id).map(|ds| {
                         report::pr_report(&ds, id, &[], req.ctx.zone, false).map(Box::new)
-                    }))
-                }
-                Job::System => Outcome::System(Box::new(self.source.system_info())),
-            };
+                    }),
+                )
+            }
+            Job::System => Outcome::System(Box::new(self.source.system_info())),
+        };
         Response {
             job: req.job,
             generation: req.generation,
@@ -110,7 +138,7 @@ impl Worker {
 
 fn view_of(r: &Request) -> Option<(Period, crate::app::FilterPreset)> {
     match &r.job {
-        Job::Report(k) => Some((r.ctx.period, k.filter)),
+        Job::Report(k) => Some((r.view, k.filter)),
         _ => None,
     }
 }
@@ -193,6 +221,7 @@ pub(crate) fn spawn(worker: Worker) -> std::io::Result<(Sender<Request>, Receive
                             Response {
                                 outcome: match &job {
                                     Job::Pr(_) => Outcome::Pr(Err(msg)),
+                                    Job::Issue(_) => Outcome::Issue(Err(msg)),
                                     Job::Report(_) => Outcome::Report(Err(msg)),
                                     Job::System => Outcome::System(Box::new(SystemInfo {
                                         error: Some(msg),
