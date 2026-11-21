@@ -305,6 +305,10 @@ async fn run_inner(
     let probe = Period::new(opts.now, opts.now + Duration::seconds(1))?;
     let cached = store.load_dataset(subject, false, Some(probe))?;
     let known_repos: HashMap<String, Repository> = cached.repositories.into_iter().collect();
+    // Pull requests already linked to this account. One cached for another
+    // account (another `--user`, or only viewed) still has to be fetched
+    // for this one, even if it has not changed.
+    let linked_prs: HashSet<String> = cached.pull_requests.keys().cloned().collect();
     let cached_prs: Vec<CachedPr> = cached
         .pull_requests
         .into_values()
@@ -319,6 +323,7 @@ async fn run_inner(
     let pr_states: HashMap<String, (Option<DateTime<Utc>>, CoverageStatus)> = store
         .pr_sync_states()?
         .into_iter()
+        .filter(|s| linked_prs.contains(&s.pr_id))
         .map(|s| (s.pr_id, (s.updated_at, s.coverage)))
         .collect();
 
