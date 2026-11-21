@@ -1,4 +1,5 @@
 mod cli;
+mod progress;
 mod render;
 
 use std::io::{IsTerminal, Write};
@@ -8,7 +9,6 @@ use chrono::Utc;
 use clap::Parser;
 use ghusage_app::report::{self, QueryContext, ReportKind};
 use ghusage_app::session::{self, Session, SessionConfig};
-use ghusage_app::sync::SyncProgress;
 use ghusage_app::{AppError, Result, csv_out, exit};
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::metrics::{
@@ -157,26 +157,6 @@ fn period(g: &GlobalArgs, cmd: &Command, zone: Zone) -> Result<Period> {
         zone,
         Utc::now(),
     )?)
-}
-
-/// Progress on stderr only when it is a terminal.
-fn progress_printer() -> impl Fn(SyncProgress) {
-    let tty = std::io::stderr().is_terminal();
-    move |p| {
-        if !tty {
-            return;
-        }
-        let msg = match p {
-            SyncProgress::Searching(k) => format!("searching {}…", k.as_str()),
-            SyncProgress::Fetching { kind, done, total } => {
-                format!("fetching {} {done}/{total}", kind.as_str())
-            }
-            SyncProgress::Finished => String::new(),
-        };
-        let mut err = std::io::stderr();
-        let _ = write!(err, "\r\u{1b}[2K{msg}");
-        let _ = err.flush();
-    }
 }
 
 fn print_stdout(s: &str) -> Result<()> {
@@ -355,20 +335,42 @@ async fn run(cli: Cli) -> Result<i32> {
     }
 }
 
-/// Opens a session and fills gaps for `period` unless offline.
-async fn prepared_session(g: &GlobalArgs, period: Period) -> Result<Session> {
+/// Opens a session and fills gaps for `period` unless offline. Returns the
+/// period to report: when the cache was synced within `--max-age`, it ends
+/// at that sync instead of fetching the last few minutes again.
+async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<(Session, Period)> {
     let mut s = Session::open(session_config(g)).await?;
     if let Some(reason) = &s.offline_reason {
         eprintln!("warning: GitHub is not reachable ({reason}); showing cached data");
     }
     if !s.is_offline() && s.needs_sync(period)? {
-        let printer = progress_printer();
-        match s
-            .sync(period, false, g.concurrency as usize, &printer)
-            .await
+        let now = Utc::now();
+        let max_age = chrono::Duration::from_std(g.max_age).unwrap_or(chrono::Duration::MAX);
+        if let Some(until) = s.synced_until(period)?
+            && until < period.end
+            && now - until <= max_age
         {
+            let mins = (now - until).num_minutes();
+            eprintln!(
+                "note: showing data synced {} ago (up to {}); use --max-age 0 to fetch the latest",
+                if mins < 1 {
+                    "less than a minute".to_string()
+                } else {
+                    format!("{mins} min")
+                },
+                zone.format(until, "%Y-%m-%d %H:%M")
+            );
+            return Ok((s, Period::new(period.start, until)?));
+        }
+        let progress = progress::Progress::start();
+        let synced = s
+            .sync(period, false, g.concurrency as usize, &|p| {
+                progress.update(p)
+            })
+            .await;
+        drop(progress);
+        match synced {
             Ok(r) => {
-                printer(SyncProgress::Finished);
                 for f in r.failures.iter().take(5) {
                     eprintln!("warning: {}", ghusage_core::sanitize::sanitize_line(f));
                 }
@@ -379,7 +381,7 @@ async fn prepared_session(g: &GlobalArgs, period: Period) -> Result<Session> {
             }
         }
     }
-    Ok(s)
+    Ok((s, period))
 }
 
 fn require_complete(g: &GlobalArgs, status: CoverageStatus) -> i32 {
@@ -401,8 +403,7 @@ async fn report_cmd(
     kind: ReportKind,
     details: bool,
 ) -> Result<i32> {
-    let period = period(g, cmd, zone)?;
-    let s = prepared_session(g, period).await?;
+    let (s, period) = prepared_session(g, period(g, cmd, zone)?, zone).await?;
     let ds = s.dataset(Some(period))?;
     let ctx = QueryContext {
         period,
@@ -517,11 +518,14 @@ async fn sync_cmd(g: &GlobalArgs, cmd: &Command, zone: Zone, full: bool) -> Resu
             reason.clone(),
         )));
     }
-    let printer = progress_printer();
-    let r = s
-        .sync(period, full, g.concurrency as usize, &printer)
-        .await?;
-    printer(SyncProgress::Finished);
+    let progress = progress::Progress::start();
+    let synced = s
+        .sync(period, full, g.concurrency as usize, &|p| {
+            progress.update(p)
+        })
+        .await;
+    drop(progress);
+    let r = synced?;
     let out = match g.format {
         Format::Json => to_json(&r)?,
         _ => {

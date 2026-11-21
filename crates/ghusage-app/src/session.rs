@@ -153,6 +153,20 @@ impl Session {
         }))
     }
 
+    /// End of the longest leading part of `period` that every data kind has
+    /// completely synced, or `None` when even its start is missing.
+    pub fn synced_until(&self, period: Period) -> Result<Option<DateTime<Utc>>> {
+        let records = self.coverage()?;
+        let mut until = period.end;
+        for k in DataKind::ALL {
+            let summary = coverage::summarize(&records, k, period.start, period.end);
+            if let Some(gap) = summary.gaps().map(|g| g.start).min() {
+                until = until.min(gap);
+            }
+        }
+        Ok((until > period.start).then_some(until))
+    }
+
     /// Syncs `period` (only missing ranges unless `full`).
     pub async fn sync(
         &mut self,

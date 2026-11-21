@@ -1191,6 +1191,7 @@ dependencies = [
  "ghusage-storage",
  "ghusage-tui",
  "predicates",
+ "ratatui",
  "serde",
  "serde_json",
  "tempfile",

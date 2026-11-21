@@ -72,6 +72,8 @@ pub enum SyncProgress {
         done: usize,
         total: usize,
     },
+    /// The latest step, e.g. a repository or pull request just fetched.
+    Detail(String),
     Finished,
 }
 
@@ -394,6 +396,10 @@ async fn search_prs(
             format!("involves:{}", subject.login),
             format!("reviewed-by:{}", subject.login),
         ] {
+            (sh.progress)(SyncProgress::Detail(format!(
+                "searching pull requests: {q} updated since {}",
+                range.start.format("%Y-%m-%d")
+            )));
             let found = client
                 .search_issues(
                     &q,
@@ -450,6 +456,11 @@ async fn fetch_prs(
     let mut pr_partial: Vec<String> = Vec::new();
     let total = to_fetch.len();
     let mut done = 0;
+    progress(SyncProgress::Fetching {
+        kind: DataKind::PullRequests,
+        done,
+        total,
+    });
     let mut stream = futures::stream::iter(to_fetch.into_iter().map(|(o, n, num)| async move {
         let res = client.fetch_pull_request(&o, &n, num).await;
         (o, n, num, res)
@@ -462,6 +473,7 @@ async fn fetch_prs(
             done,
             total,
         });
+        progress(SyncProgress::Detail(format!("pull request {o}/{n}#{num}")));
         match res {
             Ok(bundle) => {
                 if !bundle.status.is_complete() {
@@ -520,6 +532,10 @@ async fn sync_issues(sh: &Shared<'_, '_>, ranges: &[Period]) -> Result<()> {
     let (client, subject, opts, progress) = (sh.client, sh.subject, sh.opts, sh.progress);
     for &range in ranges {
         progress(SyncProgress::Searching(DataKind::Issues));
+        progress(SyncProgress::Detail(format!(
+            "searching issues updated since {}",
+            range.start.format("%Y-%m-%d")
+        )));
         let found = client
             .search_issues(
                 &format!("involves:{}", subject.login),
@@ -543,6 +559,11 @@ async fn sync_issues(sh: &Shared<'_, '_>, ranges: &[Period]) -> Result<()> {
         }
         let mut failures = Vec::new();
         let total = changed.len();
+        progress(SyncProgress::Fetching {
+            kind: DataKind::Issues,
+            done: 0,
+            total,
+        });
         let mut stream = futures::stream::iter(changed.into_iter().map(|r| async move {
             let res = client.fetch_issue(&r.owner, &r.name, r.number).await;
             (r, res)
@@ -556,6 +577,10 @@ async fn sync_issues(sh: &Shared<'_, '_>, ranges: &[Period]) -> Result<()> {
                 done,
                 total,
             });
+            progress(SyncProgress::Detail(format!(
+                "issue {}/{}#{}",
+                r.owner, r.name, r.number
+            )));
             match res {
                 Ok(bundle) => {
                     if !bundle.status.is_complete() {
@@ -671,6 +696,9 @@ async fn sync_commits(
     progress(SyncProgress::Searching(DataKind::Commits));
     // Repositories pushed to since the earliest range, newest first.
     let user = (!opts.subject_is_viewer).then_some(subject.login.as_str());
+    progress(SyncProgress::Detail(
+        "listing repositories with recent pushes".into(),
+    ));
     let (pushed, listing_failure) = match client.pushed_repositories(user, earliest).await {
         Ok(list) => (list, None),
         Err(e @ ApiError::Unauthorized) => return Err(e.into()),
@@ -705,6 +733,11 @@ async fn sync_commits(
     for range in ranges {
         let range = *range;
         progress(SyncProgress::Searching(DataKind::Commits));
+        progress(SyncProgress::Detail(format!(
+            "searching commits {} – {}",
+            range.start.format("%Y-%m-%d"),
+            range.end.format("%Y-%m-%d")
+        )));
         let fetched = client
             .search_commits(&subject.login, range, opts.public_only)
             .await?;
@@ -756,6 +789,11 @@ async fn sync_commits(
 
         let total = to_list.len();
         let mut done = 0;
+        progress(SyncProgress::Fetching {
+            kind: DataKind::Commits,
+            done,
+            total,
+        });
         let mut found: BTreeMap<EventId, CommitRecord> = BTreeMap::new();
         for c in fetched.items {
             found.insert(c.event.event_id.clone(), c);
@@ -776,6 +814,14 @@ async fn sync_commits(
                 done,
                 total,
             });
+            progress(SyncProgress::Detail(match &res {
+                Ok(listed) => format!(
+                    "commits in {}: {} found",
+                    repo.full_name(),
+                    listed.items.len()
+                ),
+                Err(_) => format!("commits in {}: failed", repo.full_name()),
+            }));
             match res {
                 Ok(listed) => {
                     statuses.push(listed.status);

@@ -970,3 +970,59 @@ async fn public_only_sync_does_not_list_private_repositories() {
     assert_eq!(request_count(&reqs, "/repos/acme/secret/commits"), 0);
     assert_eq!(request_count(&reqs, "/repos/acme/widget/commits"), 1);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reports_reuse_a_fresh_sync_and_say_how_old_it_is() {
+    let world = World::base();
+    let server = serve(&world).await;
+    let env = Env::new(&server);
+    // A period that runs until now.
+    env.run(&["sync", "--since", SINCE, "--format", "json"])
+        .await
+        .expect_code(0);
+    let synced = requests(&server).await.len();
+
+    let r = env
+        .run(&["overview", "--since", SINCE, "--format", "json"])
+        .await;
+    r.expect_code(0).assert_clean();
+    assert!(
+        r.stderr
+            .contains("note: showing data synced less than a minute ago"),
+        "{}",
+        r.stderr
+    );
+    // Only the identity check; nothing is fetched again.
+    let after: Vec<String> = requests(&server).await[synced..]
+        .iter()
+        .map(|r| r.url.path().to_string())
+        .collect();
+    assert_eq!(after, vec!["/user".to_string()]);
+    // The report ends where the sync ended, so it is complete.
+    for kind in ["commits", "pull_requests", "issues"] {
+        assert_eq!(coverage_status(&r.json(), kind), "complete");
+    }
+    let end = r.json()["period"]["end"].as_str().unwrap().to_string();
+    let end = chrono::DateTime::parse_from_rfc3339(&end).unwrap();
+    assert!(chrono::Utc::now() - end.to_utc() < chrono::Duration::minutes(1));
+
+    // --max-age 0 fetches the latest data.
+    let r = env
+        .run(&[
+            "overview",
+            "--since",
+            SINCE,
+            "--format",
+            "json",
+            "--max-age",
+            "0",
+        ])
+        .await;
+    r.expect_code(0);
+    assert!(
+        !r.stderr.contains("note: showing data synced"),
+        "{}",
+        r.stderr
+    );
+    assert!(requests(&server).await.len() > synced);
+}

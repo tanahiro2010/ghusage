@@ -58,7 +58,7 @@ Synced octocat for 2026-10-23 00:00 → 2026-11-21 19:30
   status: complete
 ```
 
-Progress is printed to stderr when stderr is a terminal. `--format json`
+Progress is shown on stderr when stderr is a terminal (see [Progress](#progress)). `--format json`
 prints the sync result as JSON (see [JSON output](../reference/json.md#sync)).
 
 Exit codes of `sync`:
@@ -82,6 +82,27 @@ authentication, they print a warning and show what is in the cache:
 ```text
 warning: sync failed, showing cached data: ...
 ```
+
+### Recently synced data
+
+When the requested period was fully synced a moment ago and only the last
+few minutes are missing, report commands do not sync again. They show the
+data as of the last sync and say so on stderr:
+
+```text
+note: showing data synced 2 min ago (up to 2026-11-21 23:41); use --max-age 0 to fetch the latest
+```
+
+The period then ends at that sync. `--max-age` (default `5m`, or the
+`GHUSAGE_MAX_AGE` environment variable) sets how old the data may be;
+`--max-age 0` always fetches the latest data.
+
+### Progress
+
+While a sync runs and stderr is a terminal, `ghusage` shows a spinner with
+the state of pull requests, commits and issues, and below it the latest
+step (the repository or pull request just fetched). Both lines are erased
+when the sync ends, so the report output stays clean.
 
 ### When GitHub is not reachable
 

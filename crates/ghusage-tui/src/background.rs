@@ -35,6 +35,7 @@ pub fn describe_progress(p: &SyncProgress) -> String {
         SyncProgress::Fetching { kind, done, total } => {
             format!("fetching {} {done}/{total}", kind.as_str())
         }
+        SyncProgress::Detail(d) => d.clone(),
         SyncProgress::Finished => "finishing".into(),
     }
 }
