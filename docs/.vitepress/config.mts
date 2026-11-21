@@ -3,7 +3,7 @@ import { defineConfig } from 'vitepress'
 export default defineConfig({
   title: 'ghusage',
   description: 'Know what you actually did on GitHub.',
-  base: '/ghusage/',
+  base: '/',
   lang: 'en-US',
   cleanUrls: true,
   lastUpdated: false,
