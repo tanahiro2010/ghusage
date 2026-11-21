@@ -236,6 +236,34 @@ fn immutable_uri(path: &Path) -> Result<String> {
     Ok(uri)
 }
 
+/// Creates `dir` (and its parents) if missing; a directory created here is
+/// readable only by the user.
+pub fn create_private_dir(dir: &Path) -> Result<()> {
+    if dir.is_dir() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dir)?;
+    restrict_to_user(dir, 0o700);
+    Ok(())
+}
+
+/// Best effort: on Unix, sets `path`'s permission bits to `mode`. Fails
+/// silently, e.g. for a read-only file the user does not own.
+fn restrict_to_user(path: &Path, mode: u32) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path)
+            && meta.permissions().mode() & 0o777 != mode
+            && meta.permissions().mode() & 0o200 != 0
+        {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (path, mode);
+}
+
 fn check_header(path: &Path) -> Result<()> {
     let file = match File::open(path) {
         Ok(f) => f,
@@ -264,10 +292,13 @@ impl Store {
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
-            std::fs::create_dir_all(parent)?;
+            create_private_dir(parent)?;
         }
         check_header(path)?;
         let mut conn = Connection::open(path)?;
+        // The cache holds private repository names and titles. SQLite gives
+        // its journal files the same permissions as the database.
+        restrict_to_user(path, 0o600);
         configure(&conn)?;
         schema::migrate(&mut conn, schema::MIGRATIONS, Some(path))?;
         probe(&conn)?;
@@ -1597,14 +1628,13 @@ impl SyncLock {
     /// Acquires `<dir>/sync.lock` without blocking; fails with
     /// [`StorageError::Locked`] if another process holds it.
     pub fn acquire(dir: &Path) -> Result<Self> {
-        std::fs::create_dir_all(dir)?;
+        create_private_dir(dir)?;
         let path = dir.join("sync.lock");
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)?;
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(&path)?;
         match fs4::FileExt::try_lock(&file) {
             Ok(()) => {}
             Err(fs4::TryLockError::WouldBlock) => return Err(StorageError::Locked(path)),

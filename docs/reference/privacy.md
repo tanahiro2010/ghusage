@@ -26,7 +26,11 @@ metadata that your token can read.
 - Tokens are **never** written to the cache, to logs or to output. Error
   messages do not include them.
 - The cache is a normal file protected by your user account's file
-  permissions. Treat it like other files that contain your work data.
+  permissions. On macOS and Linux, `ghusage` creates the data directory
+  readable only by you (`0700`) and the database and lock files as `0600`.
+  A directory you created yourself (for example with `--data-dir`) keeps
+  its permissions. Treat the cache like other files that contain your work
+  data.
 - `ghusage cache clear` deletes all cached GitHub data (the empty database
   file remains). Deleting the data directory removes everything.
 - `--no-cache` keeps fetched data in memory only for the duration of one

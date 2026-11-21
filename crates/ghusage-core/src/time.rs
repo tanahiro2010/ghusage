@@ -92,7 +92,9 @@ impl fmt::Display for Zone {
 pub enum TimeError {
     #[error("unknown time zone: {0}")]
     UnknownZone(String),
-    #[error("invalid date or time: {0} (use YYYY-MM-DD, RFC 3339, today, yesterday, or Nd/Nw/Nm/Ny)")]
+    #[error(
+        "invalid date or time: {0} (use YYYY-MM-DD, RFC 3339, today, yesterday, or Nd/Nw/Nm/Ny)"
+    )]
     InvalidBound(String),
     #[error("empty period: start {start} is not before end {end}")]
     EmptyPeriod { start: String, end: String },

@@ -1374,3 +1374,24 @@ fn a_period_brings_every_event_of_its_active_pull_requests() {
     };
     assert_eq!(ghusage_core::metrics::summary(&ds, &opts).prs_created, 0);
 }
+
+#[cfg(unix)]
+#[test]
+fn cache_files_are_private_to_the_user() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("data");
+    let path = dir.join("ghusage.db");
+    let mut s = Store::open(&path).unwrap();
+    s.apply(&base_batch()).unwrap();
+    // The cache holds private repository names and titles.
+    assert_eq!(mode(&dir), 0o700);
+    assert_eq!(mode(&path), 0o600);
+    let wal = dir.join("ghusage.db-wal");
+    if wal.exists() {
+        assert_eq!(mode(&wal), 0o600);
+    }
+    let lock = SyncLock::acquire(&dir).unwrap();
+    assert_eq!(mode(lock.path()), 0o600);
+}
