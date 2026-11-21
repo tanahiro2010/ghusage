@@ -145,7 +145,7 @@ The report's overall coverage is `complete` only if every entry is
 | `created_at`, `merged_at` | Timestamps (`merged_at` is `null` if not merged) |
 | `events`, `events_by_subject` | Counted non-CI events in the period by anyone / by you |
 | `commits`, `reviews`, `comments`, `participants` | Counts in the period |
-| `last_activity` | Latest event time in the period |
+| `last_activity` | Latest event time in the period (commits use the selected `--commit-date`) |
 | `latest_ci` | Current CI state of the head commit: `success`, `failure`, `pending`, `neutral`, `skipped`, `cancelled`, `unknown`, or `null` |
 
 Ordered by `--sort` (largest or newest first), then repository and number.

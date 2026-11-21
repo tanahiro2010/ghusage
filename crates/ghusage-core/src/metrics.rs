@@ -723,7 +723,7 @@ pub fn pr_rows(
             if participation == Participation::Subject && by_subject == 0 {
                 return None;
             }
-            Some(pr_row(ds, pr, &events, by_subject))
+            Some(pr_row(ds, pr, &events, by_subject, opts.commit_basis))
         })
         .collect();
     rows.sort_by(|a, b| {
@@ -742,7 +742,13 @@ pub fn pr_rows(
     rows
 }
 
-fn pr_row(ds: &Dataset, pr: &PullRequest, events: &[&ActivityEvent], by_subject: u64) -> PrRow {
+fn pr_row(
+    ds: &Dataset,
+    pr: &PullRequest,
+    events: &[&ActivityEvent],
+    by_subject: u64,
+    basis: CommitDateBasis,
+) -> PrRow {
     let mut commits: HashSet<&str> = HashSet::new();
     let mut reviews = 0;
     let mut comments = 0;
@@ -764,7 +770,7 @@ fn pr_row(ds: &Dataset, pr: &PullRequest, events: &[&ActivityEvent], by_subject:
         if let Some(key) = participant_key(&e.actor) {
             participants.insert(key);
         }
-        last = last.max(Some(e.occurred_at));
+        last = last.max(Some(event_time(e, basis)));
     }
     PrRow {
         pr_id: pr.id.clone(),

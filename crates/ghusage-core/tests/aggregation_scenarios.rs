@@ -181,6 +181,28 @@ fn author_date_basis_moves_commit_to_author_day() {
     assert_eq!(author, vec![0, 1, 0, 0]);
 }
 
+#[test]
+fn pr_row_last_activity_follows_the_commit_date_basis() {
+    // The only PR event is a commit authored 11-18 and committed 11-20.
+    let c = with_meta(
+        pr_commit("R_tool", "P1", "abc", me(), "2026-11-20T10:00:00Z"),
+        |m| m.author_date = Some(utc("2026-11-18T09:00:00Z")),
+    );
+    let ds = dataset(
+        vec![tool()],
+        vec![pull("P1", "R_tool", 1, me())],
+        vec![],
+        vec![c],
+    );
+    let mut opts = november_utc();
+    let row = &pr_rows(&ds, &opts, Participation::All, None, PrSort::Updated)[0];
+    assert_eq!(row.last_activity, Some(utc("2026-11-20T10:00:00Z")));
+    opts.commit_basis = CommitDateBasis::Author;
+    let row = &pr_rows(&ds, &opts, Participation::All, None, PrSort::Updated)[0];
+    assert_eq!(row.last_activity, Some(utc("2026-11-18T09:00:00Z")));
+    assert_eq!(summary(&ds, &opts).last_activity, row.last_activity);
+}
+
 // ---------------------------------------------------------------------------
 // Commit identity
 // ---------------------------------------------------------------------------
