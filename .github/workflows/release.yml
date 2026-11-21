@@ -37,6 +37,7 @@ jobs:
           - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, bin: ghusage }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, bin: ghusage }
           - { os: windows-latest, target: x86_64-pc-windows-msvc, bin: ghusage.exe }
+          - { os: windows-11-arm, target: aarch64-pc-windows-msvc, bin: ghusage.exe }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -110,8 +111,9 @@ jobs:
         run: |
           node npm/scripts/build-packages.mjs --version "${{ steps.version.outputs.version }}" \
             --binaries binaries --out dist \
-            --only ghusage-darwin-arm64 --only ghusage-darwin-x64 \
-            --only ghusage-linux-x64 --only ghusage-linux-arm64 --only ghusage-win32-x64
+            --only @ghusage/ghusage-darwin-arm64 --only @ghusage/ghusage-darwin-x64 \
+            --only @ghusage/ghusage-linux-arm64 --only @ghusage/ghusage-linux-x64 \
+            --only @ghusage/ghusage-win32-arm64 --only @ghusage/ghusage-win32-x64
       - name: Pack
         run: |
           mkdir -p tgz
@@ -131,11 +133,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-15, pkg: ghusage-darwin-arm64 }
-          - { os: macos-15-intel, pkg: ghusage-darwin-x64 }
-          - { os: ubuntu-latest, pkg: ghusage-linux-x64 }
-          - { os: ubuntu-24.04-arm, pkg: ghusage-linux-arm64 }
-          - { os: windows-latest, pkg: ghusage-win32-x64 }
+          # npm pack names @ghusage/ghusage-<platform> as ghusage-ghusage-<platform>-<version>.tgz
+          - { os: macos-15, pkg: ghusage-ghusage-darwin-arm64 }
+          - { os: macos-15-intel, pkg: ghusage-ghusage-darwin-x64 }
+          - { os: ubuntu-latest, pkg: ghusage-ghusage-linux-x64 }
+          - { os: ubuntu-24.04-arm, pkg: ghusage-ghusage-linux-arm64 }
+          - { os: windows-latest, pkg: ghusage-ghusage-win32-x64 }
+          - { os: windows-11-arm, pkg: ghusage-ghusage-win32-arm64 }
     steps:
       - uses: actions/setup-node@v4
         with:
