@@ -115,6 +115,13 @@ fn client_config(g: &GlobalArgs) -> ClientConfig {
     {
         c.backoff_base = std::time::Duration::from_millis(ms);
     }
+    if let Some(ms) = std::env::var("GHUSAGE_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|ms| *ms > 0)
+    {
+        c.request_timeout = std::time::Duration::from_millis(ms);
+    }
     c
 }
 

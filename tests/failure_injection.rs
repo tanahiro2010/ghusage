@@ -898,3 +898,97 @@ async fn failing_issue_history_page_is_not_reported_complete() {
     );
     assert_eq!(r.code, Some(4), "{}", r.stdout);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn request_timeout_makes_sync_partial_and_a_rerun_completes_it() {
+    let world = World::base();
+    let server = serve(&world).await;
+    // PR #20's detail answers only after 3 s; the client gives up on a
+    // request after 300 ms.
+    let slow = world.pr_body(world.prs.iter().find(|p| p.number == 20).unwrap());
+    pr_detail_mock(
+        "acme",
+        "widget",
+        20,
+        ResponseTemplate::new(200)
+            .set_body_json(slow)
+            .set_delay(Duration::from_secs(3)),
+        1,
+    )
+    .mount(&server)
+    .await;
+    let env = Env::new(&server);
+    let timed_sync = || {
+        let mut c = env.command(&[
+            "sync", "--since", SINCE, "--until", UNTIL, "--format", "json",
+        ]);
+        c.env("GHUSAGE_TIMEOUT_MS", "300");
+        c
+    };
+
+    let start = Instant::now();
+    let r = env.run_command(timed_sync()).await;
+    // 5 attempts x 300 ms plus tiny backoffs: far below a single default
+    // 30 s timeout, so the setting took effect.
+    assert!(
+        start.elapsed() < Duration::from_secs(20),
+        "{:?}",
+        start.elapsed()
+    );
+    r.expect_code(4).assert_clean();
+    let s = r.json();
+    assert_eq!(s["status"], "partial");
+    // #3 and #10 were fetched; #20 timed out.
+    assert_eq!(s["pull_requests_fetched"], 2, "{s}");
+    let failures = s["failures"].to_string();
+    assert!(failures.contains("acme/widget#20"), "{failures}");
+    assert!(failures.contains("timed out"), "{failures}");
+    // The client tries one request at most 5 times (its default attempt
+    // limit); the other pull requests need a single request each.
+    let reqs = requests(&server).await;
+    assert_eq!(pr_detail_requests(&reqs, 20), 5);
+    assert_eq!(pr_detail_requests(&reqs, 10), 1);
+    assert_eq!(pr_detail_requests(&reqs, 3), 1);
+
+    // What did arrive is stored and the gap is visible.
+    assert_eq!(cached_prs(&env).await, vec![3, 10]);
+    let o = env.offline_json(&["overview"]).await;
+    o.expect_code(0).assert_clean();
+    let o = o.json();
+    assert_eq!(coverage_status(&o, "pull_requests"), "partial");
+    assert_eq!(coverage_status(&o, "commits"), "complete");
+    // Commits are unaffected: search sha 1, 2, 3 plus my pull request
+    // commits sha 11, 12 (#10) and 21 (#3) = 6, as after a clean sync.
+    assert_eq!(o["metrics"]["commits"], 6);
+    env.run(&[
+        "overview",
+        "--since",
+        SINCE,
+        "--until",
+        UNTIL,
+        "--offline",
+        "--require-complete",
+    ])
+    .await
+    .expect_code(6);
+
+    // GitHub answers promptly again: the rerun fills the gap.
+    reserve(&server, &world).await;
+    let r = env.run_command(timed_sync()).await;
+    r.expect_code(0).assert_clean();
+    let s = r.json();
+    assert_eq!(s["status"], "complete");
+    assert_eq!(s["pull_requests_fetched"], 1, "{s}");
+    assert_eq!(cached_prs(&env).await, vec![3, 10, 20]);
+    env.run(&[
+        "overview",
+        "--since",
+        SINCE,
+        "--until",
+        UNTIL,
+        "--offline",
+        "--require-complete",
+    ])
+    .await
+    .expect_code(0);
+}
