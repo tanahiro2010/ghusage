@@ -1,14 +1,11 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Application services shared by the ghusage CLI and TUI: synchronization,
+//! reports and export formats.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub mod csv_out;
+pub mod error;
+pub mod paths;
+pub mod report;
+pub mod session;
+pub mod sync;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use error::{AppError, Result, exit};

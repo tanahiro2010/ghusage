@@ -8,5 +8,9 @@ repository.workspace = true
 [dependencies]
 chrono = "0.4.45"
 chrono-tz = "0.10.4"
+ghusage-app = { version = "0.1.0", path = "../ghusage-app" }
+ghusage-core = { version = "0.1.0", path = "../ghusage-core" }
+ghusage-github = { version = "0.1.0", path = "../ghusage-github" }
 ratatui = "0.30"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync"] }
 unicode-width = "0.2.3"
