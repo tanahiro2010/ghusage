@@ -175,7 +175,7 @@ every command. See the [CLI reference](docs/reference/cli.md).
 ## Documentation
 
 The full documentation lives in [`docs/`](docs/index.md) and is built as the
-documentation site at <https://tanahiro2010.github.io/ghusage/>.
+documentation site at <https://ghusage.under18.dev/>.
 
 - [Getting started](docs/guide/getting-started.md)
 - [Authentication](docs/guide/authentication.md)
