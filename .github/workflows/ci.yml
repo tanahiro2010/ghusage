@@ -77,6 +77,8 @@ jobs:
         with:
           node-version: 22
       - run: node --test "npm/test/*.test.mjs"
+      - name: Benchmark report script tests
+        run: node --test scripts/bench-report.test.mjs
 
   audit:
     name: dependency audit

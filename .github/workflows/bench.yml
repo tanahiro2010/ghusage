@@ -1,0 +1,138 @@
+name: Benchmarks
+
+# Compares the benchmarks of a pull request into `release` with its base,
+# measured back to back on the same runner, and reports the result as a
+# single pull request comment that is updated on every push.
+on:
+  pull_request:
+    branches: [release]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: bench-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Explicit warm-up and measurement times keep each side to a few minutes
+  # and stop a Criterion upgrade from silently changing run time or precision.
+  CRITERION_ARGS: --warm-up-time 2 --measurement-time 5 --noplot
+  REGRESSION_THRESHOLD: "10"
+
+jobs:
+  bench:
+    name: compare with base
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out the pull request
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          # The build must never depend on private submodules.
+          submodules: false
+          persist-credentials: false
+      - name: Check out the base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .bench-base
+          submodules: false
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Report script tests
+        run: node --test scripts/bench-report.test.mjs
+      # Pinned like the main CI so both sides build with the same compiler.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+      # Each checkout keeps its own target directory: Cargo decides freshness
+      # from file times and workspace-relative paths, so a shared one could
+      # reuse the other side's build of the workspace crates.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            .bench-base -> target
+      - name: Keep Criterion results out of the cached target directory
+        run: echo "CRITERION_HOME=$RUNNER_TEMP/criterion" >> "$GITHUB_ENV"
+
+      - name: Benchmark the base
+        working-directory: .bench-base
+        run: |
+          # shellcheck disable=SC2086
+          cargo bench --bench aggregation -- $CRITERION_ARGS --save-baseline base
+          # The latency bench exits non-zero when a percentile misses its
+          # target; the report shows that, so keep going.
+          cargo bench --bench latency > "$RUNNER_TEMP/latency-base.txt" \
+            || echo "::warning::latency targets missed on the base"
+          cat "$RUNNER_TEMP/latency-base.txt"
+      - name: Benchmark the pull request
+        run: |
+          # shellcheck disable=SC2086
+          cargo bench --bench aggregation -- $CRITERION_ARGS --save-baseline head
+          cargo bench --bench latency > "$RUNNER_TEMP/latency-head.txt" \
+            || echo "::warning::latency targets missed on the pull request"
+          cat "$RUNNER_TEMP/latency-head.txt"
+
+      - name: Build the report
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          node scripts/bench-report.mjs \
+            --criterion "$CRITERION_HOME" \
+            --base-name base --head-name head \
+            --latency-base "$RUNNER_TEMP/latency-base.txt" \
+            --latency-head "$RUNNER_TEMP/latency-head.txt" \
+            --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" --base-ref "$BASE_REF" \
+            --threshold "$REGRESSION_THRESHOLD" \
+            --out "$RUNNER_TEMP/bench-report.md"
+          cat "$RUNNER_TEMP/bench-report.md" >> "$GITHUB_STEP_SUMMARY"
+          cp "$RUNNER_TEMP/bench-report.md" "$RUNNER_TEMP/latency-base.txt" \
+            "$RUNNER_TEMP/latency-head.txt" "$CRITERION_HOME/"
+      - name: Upload the report
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-report
+          path: ${{ runner.temp }}/criterion
+          retention-days: 30
+
+      # Pull requests from forks get a read-only token, so they only get the
+      # job summary and the artifact.
+      - name: Comment on the pull request
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        # A read-only token (for example on Dependabot pull requests) must not
+        # fail the benchmark job; the summary and artifact still have the report.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          marker='<!-- ghusage-bench -->'
+          ids=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id")
+          id=${ids%%$'\n'*}
+          payload=$(jq -n --rawfile body "$RUNNER_TEMP/bench-report.md" '{body: $body}')
+          if [ -n "$id" ]; then
+            echo "$payload" | gh api --method PATCH "repos/$REPO/issues/comments/$id" --input - > /dev/null
+            echo "updated comment $id"
+          else
+            echo "$payload" | gh api --method POST "repos/$REPO/issues/$PR/comments" --input - > /dev/null
+            echo "created a comment"
+          fi
+      - name: Note when no comment can be posted
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          {
+            echo ""
+            echo "_This pull request comes from a fork, so the results are only in this summary and the \`bench-report\` artifact._"
+          } >> "$GITHUB_STEP_SUMMARY"
