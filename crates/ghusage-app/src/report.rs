@@ -457,6 +457,9 @@ fn event_detail(e: &ghusage_core::model::ActivityEvent) -> Option<String> {
     } else if let Some(o) = m.check_outcome {
         parts.push(o.as_str().to_string());
     }
+    if m.thread_reply_only == Some(true) {
+        parts.push("thread reply only, not counted as a review".into());
+    }
     if m.edited_at.is_some() {
         parts.push("edited".into());
     }

@@ -523,6 +523,11 @@ pub struct EventMeta {
     pub previous_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edited_at: Option<DateTime<Utc>>,
+    /// Set on a `ReviewSubmitted` event when the review only carries replies
+    /// to existing review threads (GitHub records every thread reply as a
+    /// review with no body). Such reviews are not counted as submissions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_reply_only: Option<bool>,
     /// Set when a resync observed that the source object no longer exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub removed_observed_at: Option<DateTime<Utc>>,

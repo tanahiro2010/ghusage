@@ -61,6 +61,7 @@ impl Dataset {
             }
         }
         let mut events: Vec<ActivityEvent> = by_id.into_values().collect();
+        mark_thread_reply_reviews(&mut events);
         sort_events(&mut events);
         Self {
             subject,
@@ -91,6 +92,43 @@ impl Dataset {
         pr_id
             .and_then(|id| self.pull_requests.get(id))
             .is_some_and(|pr| pr.author.is(&self.subject))
+    }
+}
+
+fn review_key(e: &ActivityEvent) -> &str {
+    e.meta.review_id.as_deref().unwrap_or(&e.entity_id)
+}
+
+/// Marks reviews that only contain replies to existing threads: commented,
+/// without a summary, and every inline comment of the review is a reply.
+fn mark_thread_reply_reviews(events: &mut [ActivityEvent]) {
+    let mut with_summary: HashSet<String> = HashSet::new();
+    // review id -> (has inline comments, all of them are replies)
+    let mut inline: HashMap<String, (bool, bool)> = HashMap::new();
+    for e in events.iter() {
+        match e.event_type {
+            EventType::ReviewSummary => {
+                with_summary.insert(review_key(e).to_string());
+            }
+            EventType::InlineComment => {
+                if let Some(rid) = e.meta.review_id.as_deref() {
+                    let entry = inline.entry(rid.to_string()).or_insert((false, true));
+                    entry.0 = true;
+                    entry.1 &= e.meta.reply_to.is_some();
+                }
+            }
+            _ => {}
+        }
+    }
+    for e in events.iter_mut() {
+        if e.event_type == EventType::ReviewSubmitted
+            && e.meta.review_state == Some(ReviewState::Commented)
+        {
+            let key = review_key(e).to_string();
+            let reply_only = !with_summary.contains(&key)
+                && inline.get(&key).is_some_and(|(has, all)| *has && *all);
+            e.meta.thread_reply_only = reply_only.then_some(true);
+        }
     }
 }
 
@@ -215,9 +253,10 @@ pub fn event_time(e: &ActivityEvent, basis: CommitDateBasis) -> DateTime<Utc> {
 
 /// Events counted by default: not removed, not pending reviews.
 fn is_countable(e: &ActivityEvent) -> bool {
-    let pending = e.event_type == EventType::ReviewSubmitted
-        && e.meta.review_state == Some(ReviewState::Pending);
-    !e.is_removed() && !pending
+    let not_a_submission = e.event_type == EventType::ReviewSubmitted
+        && (e.meta.review_state == Some(ReviewState::Pending)
+            || e.meta.thread_reply_only == Some(true));
+    !e.is_removed() && !not_a_submission
 }
 
 fn selected<'a>(ds: &'a Dataset, opts: &'a Options) -> impl Iterator<Item = &'a ActivityEvent> {
@@ -846,11 +885,16 @@ pub fn pr_timing(ds: &Dataset, pr: &PullRequest) -> PrTiming {
     let events: Vec<&ActivityEvent> = ds
         .events
         .iter()
-        .filter(|e| {
-            e.parent_pr_id.as_deref() == Some(pr.id.as_str())
-                && is_countable(e)
-                && !e.event_type.is_automation()
-        })
+        .filter(|e| e.parent_pr_id.as_deref() == Some(pr.id.as_str()))
+        .collect();
+    timing_of(pr, &events)
+}
+
+/// Timings from one pull request's events (in dataset order).
+fn timing_of(pr: &PullRequest, all: &[&ActivityEvent]) -> PrTiming {
+    let events: Vec<&&ActivityEvent> = all
+        .iter()
+        .filter(|e| is_countable(e) && !e.event_type.is_automation())
         .collect();
     let first_review = events.iter().find(|e| {
         e.event_type == EventType::ReviewSubmitted
@@ -900,11 +944,29 @@ pub struct TimingStats {
 
 pub fn timing_stats(ds: &Dataset, opts: &Options) -> TimingStats {
     let rows = pr_rows(ds, opts, Participation::All, None, PrSort::Activity);
-    let timings: Vec<PrTiming> = rows
+    let wanted: HashSet<&str> = rows
         .iter()
         .filter_map(|r| ds.pull_requests.get(&r.pr_id))
         .filter(|pr| pr.author.is(&ds.subject))
-        .map(|pr| pr_timing(ds, pr))
+        .map(|pr| pr.id.as_str())
+        .collect();
+    // Group each wanted pull request's events in one pass.
+    let mut per: HashMap<&str, Vec<&ActivityEvent>> = HashMap::new();
+    for e in &ds.events {
+        if let Some(pr) = e.parent_pr_id.as_deref()
+            && wanted.contains(pr)
+        {
+            per.entry(pr).or_default().push(e);
+        }
+    }
+    let mut ids: Vec<&str> = wanted.into_iter().collect();
+    ids.sort_unstable();
+    let timings: Vec<PrTiming> = ids
+        .into_iter()
+        .filter_map(|id| {
+            let pr = ds.pull_requests.get(id)?;
+            Some(timing_of(pr, per.get(id).map_or(&[][..], |v| v.as_slice())))
+        })
         .collect();
     let col = |f: &dyn Fn(&PrTiming) -> Option<i64>| {
         Stats::from_values(timings.iter().filter_map(f).map(|v| v as f64).collect())

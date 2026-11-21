@@ -11,7 +11,7 @@ use chrono::{DateTime, Duration, Utc};
 use futures::StreamExt;
 use ghusage_core::coverage::{self, CoverageRecord, CoverageStatus, DataKind};
 use ghusage_core::model::{
-    ActivityEvent, Collection, EventId, EventType, PrState, Source, Subject,
+    ActivityEvent, Collection, EventId, EventType, PrState, Repository, Source, Subject,
 };
 use ghusage_core::time::Period;
 use ghusage_github::{
@@ -266,6 +266,12 @@ async fn run_inner(
 ) -> Result<SyncReport> {
     let mut report = SyncReport::default();
     let existing = store.coverage(&subject.login)?;
+    let probe = Period::new(opts.now, opts.now + Duration::seconds(1))?;
+    let mut known_repos: HashMap<String, Repository> = store
+        .load_dataset(subject, false, Some(probe))?
+        .repositories
+        .into_iter()
+        .collect();
 
     // Commits.
     for range in ranges_to_fetch(&existing, DataKind::Commits, opts) {
@@ -279,6 +285,22 @@ async fn run_inner(
             ..Default::default()
         };
         add_commits(&mut batch, fetched.items);
+        // Commit search does not report the viewer's permission, which
+        // ownership depends on; complete repository metadata once.
+        for repo in &mut batch.repositories {
+            if let Some(known) = known_repos.get(&repo.id)
+                && known.viewer_permission.is_some()
+            {
+                *repo = known.clone();
+                continue;
+            }
+            match client.repository(&repo.owner, &repo.name).await {
+                Ok(full) => *repo = full,
+                Err(e @ ApiError::Unauthorized) => return Err(e.into()),
+                Err(_) => {}
+            }
+            known_repos.insert(repo.id.clone(), repo.clone());
+        }
         let rec = record(
             DataKind::Commits,
             range,
