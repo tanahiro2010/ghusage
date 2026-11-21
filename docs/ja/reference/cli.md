@@ -21,6 +21,7 @@ ghusage [OPTIONS] [COMMAND]
 | `comments` | 自分が書いたコメントと、自分のプルリクエストに付いたコメント | 直近 7 日 |
 | `issues` | 自分が作成・クローズ・再オープンした Issue | 直近 7 日 |
 | `pr <URL>` | 1つのプルリクエストの詳細とタイムライン | (期間に依存しません) |
+| `commit <COMMIT>` | 1 つのコミット。メッセージ、作者とコミッター、親コミット、変更ファイル。`--patch` を付けると diff も出す | (期間に依存しません) |
 | `tui` | 対話型のターミナル UI | 直近 30 日 |
 | `sync` | GitHub からデータを取得してローカルのキャッシュに入れる | 直近 30 日 |
 | `doctor` | 認証、キャッシュ、接続を確認する | |
@@ -79,6 +80,28 @@ ghusage pr <URL> [--timeline] [--event-type <TYPES>]...
 ```sh
 ghusage pr https://github.com/OWNER/REPO/pull/123 --timeline \
   --event-type review_submitted,inline_comment
+```
+
+### `commit` {#commit}
+
+```text
+ghusage commit <COMMIT> [--patch]
+```
+
+1 つのコミットを表示します。表示するのは、リポジトリ、SHA、作者とコミッター(git の名前、ひも付いた GitHub のログイン名、日時)、親コミット(2 つ以上あればマージコミット)、メッセージの全文、変更ファイルの一覧です。変更ファイルには、状態(`added`、`modified`、`removed`、`renamed` など)、追加・削除した行数、合計を付けます。
+
+| オプション | 説明 |
+|---|---|
+| `<COMMIT>` | `OWNER/REPO@SHA` か `https://github.com/OWNER/REPO/commit/SHA`(`.../pull/NUMBER/commits/SHA` も可)。SHA は 7 桁以上の 16 進数に省略できる |
+| `--patch` | 各ファイルの diff も出す。表形式では、色が有効なら追加した行を緑、削除した行を赤、hunk ヘッダーをシアンで表示する。JSON では各ファイルに `patch` フィールドが付く |
+
+コミットは、前に見たことがあれば(このコマンドでもターミナル UI でも)キャッシュから読みます。なければ GitHub から `GET /repos/{owner}/{repo}/commits/{sha}` で取得し、ファイルが複数ページにわたるときは全ページをたどって、キャッシュに保存します。コミットの中身がレポートの数値を変えることはありません。`--offline` のときは、コミットがすでにキャッシュにある必要があります。
+
+GitHub は、バイナリファイルや大きすぎる diff を返しません。そのようなファイルは「no diff available from GitHub」と表示します。また、GitHub が 1 つのコミットについて返すファイルは 3000 件までです。それを超えて欠けたファイルがあるときはその旨を表示します(JSON では `files_truncated`)。`--public-only` のときは、公開されていないリポジトリのコミットを拒否します。
+
+```sh
+ghusage commit OWNER/REPO@1a2b3c4 --patch
+ghusage commit https://github.com/OWNER/REPO/commit/1a2b3c4d5e6f --format json
 ```
 
 ### `sync`

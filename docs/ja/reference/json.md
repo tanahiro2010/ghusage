@@ -231,6 +231,25 @@ ghusage prs --format csv > prs.csv
 
 同じ時刻のイベントは、プルリクエストの流れに沿った順(作成、コミット、フォースプッシュ、…、マージ、クローズ、再オープン)に並べます。
 
+## コミット(`ghusage commit`) {#commit-ghusage-commit}
+
+| フィールド | 説明 |
+|---|---|
+| `schema_version` | レポートと同じ |
+| `repository`、`sha`、`url` | コミット(`url` は GitHub 上のページ。なければ `null`) |
+| `message` | コミットメッセージの全文 |
+| `author`、`committer` | `{name, login, date}`。git の名前、ひも付いた GitHub のログイン名、日時(それぞれ `null` のことがある) |
+| `parents` | 親コミットの SHA |
+| `is_merge` | 親コミットが 2 つ以上あるかどうか |
+| `stats` | `files`、`additions`、`deletions`、`total` |
+| `files` | `{filename, previous_filename, status, additions, deletions, changes, patch_available}` の配列。`--patch` を付けると、GitHub が diff を返したファイルには `patch`(unified diff)も付く |
+| `files_truncated` | 一覧に載っていない変更ファイルがあるかどうか |
+| `source` | `cache` か `github` |
+| `fetched_at` | GitHub から取得した日時 |
+| `private_repositories_redacted` | レポートと同じ |
+
+`ghusage commit` に CSV 出力はありません。
+
 ## その他のコマンド {#other-commands}
 
 ### sync
@@ -331,5 +350,6 @@ error: --format csv is not available for this command; use table or json
 | レビュー、コメント、イベントの URL、リポジトリの URL | `null` |
 | レビュースレッドのファイルパス、ラベル名とマイルストーン名、変更前のタイトル、CI のチェック名 | 削除 |
 | カバレッジの理由と `sync` の失敗の説明に出てくるリポジトリ名 | `[private repository]`(公開だと分かっていないリポジトリすべて) |
+| 公開だと分かっていないリポジトリの `ghusage commit` | リポジトリは `private/repo-<16 進数 8 文字>`、`url` は `null`、メッセージは `[private]`、ファイルパスは `[private]`。旧パス、diff、git の名前は出さない |
 
 人のログイン名(自分の分もほかの人の分も)と GitHub node ID は伏せません。表形式の出力とターミナル UI は、自分にだけ表示されるものなので、常に実際の名前を表示します。
