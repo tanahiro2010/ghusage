@@ -3,6 +3,7 @@
 //! pull requests, issues, commits and checks into the core event model.
 
 mod auth;
+mod commit;
 mod gql;
 mod http;
 mod issue;
@@ -24,7 +25,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 pub use auth::{AuthError, Credentials, Secret, TokenSource, gh_cli_token, resolve_credentials};
-pub use url::parse_pr_url;
+pub use url::{parse_commit_ref, parse_pr_url};
 
 // ---------------------------------------------------------------------------
 // Client
@@ -381,6 +382,20 @@ impl GitHubClient {
         number: u64,
     ) -> Result<IssueBundle, ApiError> {
         issue::fetch(&self.transport, owner, name, number).await
+    }
+
+    /// Fetches one commit with its message, people, parents, totals and
+    /// every page of its changed files with their diffs
+    /// (`GET /repos/{owner}/{name}/commits/{sha}`). `sha` may be abbreviated.
+    /// The repository's visibility is not part of the response and is left
+    /// `Unknown`. A missing commit is `NotFound`.
+    pub async fn fetch_commit(
+        &self,
+        owner: &str,
+        name: &str,
+        sha: &str,
+    ) -> Result<ghusage_core::commit::CommitDetail, ApiError> {
+        commit::fetch(&self.transport, owner, name, sha).await
     }
 
     /// Repository metadata by owner and name.

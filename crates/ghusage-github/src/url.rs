@@ -37,6 +37,53 @@ pub fn parse_pr_url(url: &str) -> Option<(String, String, u64)> {
     Some((owner.to_string(), repo.to_string(), number))
 }
 
+/// Parses a commit reference: `owner/repo@sha`,
+/// `https://github.com/{owner}/{repo}/commit/{sha}` or
+/// `https://github.com/{owner}/{repo}/pull/{n}/commits/{sha}` (optionally
+/// followed by a query or a fragment). The SHA must be 7 to 40 hexadecimal
+/// digits and is returned in lower case.
+pub fn parse_commit_ref(input: &str) -> Option<(String, String, String)> {
+    let input = input.trim();
+    let (owner, repo, sha) = if let Some(scheme_end) = input.find("://") {
+        if !input[..scheme_end].eq_ignore_ascii_case("https") {
+            return None;
+        }
+        let rest = &input[scheme_end + 3..];
+        let rest = rest.split(['#', '?']).next()?;
+        let i = rest.find('/')?;
+        let (host, path) = (&rest[..i], &rest[i + 1..]);
+        if !host.eq_ignore_ascii_case("github.com") {
+            return None;
+        }
+        let segments: Vec<&str> = path.trim_end_matches('/').split('/').collect();
+        match segments.as_slice() {
+            [owner, repo, "commit", sha] => (*owner, *repo, *sha),
+            [owner, repo, "pull", number, "commits", sha]
+                if !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) =>
+            {
+                (*owner, *repo, *sha)
+            }
+            _ => return None,
+        }
+    } else {
+        let (name, sha) = input.split_once('@')?;
+        let (owner, repo) = name.split_once('/')?;
+        (owner, repo, sha)
+    };
+    if !valid_owner(owner) || !valid_repo(repo) || !valid_sha(sha) {
+        return None;
+    }
+    Some((
+        owner.to_string(),
+        repo.to_string(),
+        sha.to_ascii_lowercase(),
+    ))
+}
+
+fn valid_sha(s: &str) -> bool {
+    (7..=40).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 fn valid_owner(s: &str) -> bool {
     !s.is_empty() && s.len() <= 100 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
@@ -84,6 +131,56 @@ mod tests {
             parse_pr_url("  https://github.com/o/r/pull/1  "),
             ok("o", "r", 1)
         );
+    }
+
+    fn commit(owner: &str, repo: &str, sha: &str) -> Option<(String, String, String)> {
+        Some((owner.into(), repo.into(), sha.into()))
+    }
+
+    #[test]
+    fn accepts_commit_references() {
+        let full = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(
+            parse_commit_ref(&format!("https://github.com/o/r/commit/{full}")),
+            commit("o", "r", full)
+        );
+        assert_eq!(
+            parse_commit_ref(&format!(
+                "https://github.com/o/r.rs/commit/{full}/?diff=split#x"
+            )),
+            commit("o", "r.rs", full)
+        );
+        assert_eq!(
+            parse_commit_ref("https://github.com/o/r/pull/12/commits/ABCDEF0"),
+            commit("o", "r", "abcdef0")
+        );
+        assert_eq!(
+            parse_commit_ref("  o-x/r_y@abcdef01  "),
+            commit("o-x", "r_y", "abcdef01")
+        );
+    }
+
+    #[test]
+    fn rejects_other_commit_references() {
+        for bad in [
+            "o/r@abc",
+            "o/r@xyz1234",
+            "o/r@0123456789abcdef0123456789abcdef012345678",
+            "o@abcdef0",
+            "/r@abcdef0",
+            "o/../r@abcdef0",
+            "http://github.com/o/r/commit/abcdef0",
+            "https://evil.com/o/r/commit/abcdef0",
+            "https://github.com:443/o/r/commit/abcdef0",
+            "https://github.com/o/r/commits/abcdef0",
+            "https://github.com/o/r/pull/x/commits/abcdef0",
+            "https://github.com/o/r/commit/abcdef0/extra",
+            "https://github.com/o/r/commit/",
+            "abcdef0",
+            "",
+        ] {
+            assert_eq!(parse_commit_ref(bad), None, "{bad}");
+        }
     }
 
     #[test]

@@ -26,6 +26,18 @@ pub fn sanitize_line(input: &str) -> String {
     out
 }
 
+/// Like [`sanitize_line`] for one line of code or diff: tabs become four
+/// spaces instead of one, so indentation keeps its shape, and a trailing
+/// carriage return is dropped.
+pub fn sanitize_code_line(input: &str) -> String {
+    let line = input.strip_suffix('\r').unwrap_or(input);
+    if line.contains('\t') {
+        sanitize_line(&line.replace('\t', "    "))
+    } else {
+        sanitize_line(line)
+    }
+}
+
 fn is_unsafe_char(c: char) -> bool {
     c.is_control()
         // Bidirectional overrides/isolates can visually reorder text.
@@ -165,6 +177,13 @@ mod tests {
         assert_eq!(sanitize_line("line1\nline2\r\n"), "line1 line2 ");
         assert_eq!(sanitize_line("abc\u{202e}fed"), "abcfed");
         assert_eq!(sanitize_line("\u{1b}c"), "");
+    }
+
+    #[test]
+    fn code_lines_keep_indentation_and_lose_escapes() {
+        assert_eq!(sanitize_code_line("+\tif x {\r"), "+    if x {");
+        assert_eq!(sanitize_code_line("-  a\u{1b}[2Jb\u{7}"), "-  ab");
+        assert_eq!(sanitize_code_line(" \u{202e}x"), " x");
     }
 
     #[test]
