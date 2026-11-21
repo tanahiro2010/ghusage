@@ -8,7 +8,7 @@ that cache.
 ## Install
 
 Prebuilt binaries are not published yet. You need a Rust toolchain
-(Rust 1.88 or newer).
+(Rust 1.89 or newer).
 
 Install directly from the repository:
 

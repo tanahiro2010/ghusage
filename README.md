@@ -54,8 +54,23 @@ Coverage: complete  (last sync: 2026-11-21 19:20)
 
 ## Install
 
-Prebuilt binaries are not published yet. Install from source with a Rust
-toolchain (Rust 1.88 or newer):
+### npm
+
+```sh
+npm install -g ghusage
+```
+
+The npm package contains a small launcher and installs a prebuilt native
+binary for your platform as an optional dependency. Supported platforms:
+macOS (Apple Silicon, Intel), Linux (x64, arm64; statically linked) and
+Windows (x64). Node.js 18 or newer is required. If your package manager
+skips optional dependencies (`--omit=optional`), the binary is not installed
+and `ghusage` exits with an explanation. `GHUSAGE_BINARY` can point the
+launcher at a binary you built yourself.
+
+### From source
+
+With a Rust toolchain (Rust 1.89 or newer):
 
 ```sh
 cargo install --git https://github.com/tanahiro2010/ghusage
