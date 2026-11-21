@@ -2,7 +2,7 @@
 
 **Know what you actually did on GitHub.**
 
-日本語のドキュメント: <https://tanahiro2010.github.io/ghusage/ja/>
+日本語のドキュメント: <https://ghusage.under18.dev/ja/>
 
 `ghusage` is a command-line tool and terminal UI that analyzes a developer's
 GitHub activity. It goes beyond contribution graphs and treats a pull request
