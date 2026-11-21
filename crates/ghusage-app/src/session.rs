@@ -53,8 +53,9 @@ pub fn open_store(cfg: &SessionConfig) -> Result<(Store, Option<PathBuf>)> {
     if cfg.no_cache {
         return Ok((Store::open_in_memory()?, None));
     }
-    let dir = paths::data_dir(cfg.data_dir.clone())
-        .ok_or_else(|| AppError::Other("cannot determine a data directory; use --data-dir".into()))?;
+    let dir = paths::data_dir(cfg.data_dir.clone()).ok_or_else(|| {
+        AppError::Other("cannot determine a data directory; use --data-dir".into())
+    })?;
     std::fs::create_dir_all(&dir).map_err(|e| {
         AppError::Storage(ghusage_storage::StorageError::Io(std::io::Error::new(
             e.kind(),

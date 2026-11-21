@@ -163,9 +163,26 @@ pub fn summarize(
         if a >= b {
             continue;
         }
-        let latest = relevant.iter().rev().find(|r| r.start <= a && r.end >= b);
-        let (status, reason) = match latest {
-            Some(r) => (r.status, r.reason.clone()),
+        // The most recent records covering this segment decide its status.
+        // Records recorded at the same instant that disagree are combined
+        // (never complete), so the result does not depend on record order.
+        let covering: Vec<&&CoverageRecord> = relevant
+            .iter()
+            .filter(|r| r.start <= a && r.end >= b)
+            .collect();
+        let (status, reason) = match covering.iter().map(|r| r.recorded_at).max() {
+            Some(latest_at) => {
+                let latest: Vec<&&CoverageRecord> = covering
+                    .into_iter()
+                    .filter(|r| r.recorded_at == latest_at)
+                    .collect();
+                let status = CoverageStatus::combine(latest.iter().map(|r| r.status));
+                let mut reasons: Vec<String> =
+                    latest.iter().filter_map(|r| r.reason.clone()).collect();
+                reasons.sort();
+                reasons.dedup();
+                (status, (!reasons.is_empty()).then(|| reasons.join("; ")))
+            }
             None => (CoverageStatus::NotYetSynced, None),
         };
         match segments.last_mut() {

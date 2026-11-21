@@ -124,10 +124,12 @@ impl Actor {
     }
 
     /// Whether this actor is the given subject. Unknown actors never match.
+    /// When both ids are known they decide; the login is only compared when
+    /// an id is missing, so a renamed or reused login cannot match.
     pub fn is(&self, subject: &Subject) -> bool {
-        match (&self.id, &self.login) {
-            (Some(id), _) if subject.id.as_deref() == Some(id.as_str()) => true,
-            (_, Some(login)) => login.eq_ignore_ascii_case(&subject.login),
+        match (&self.id, subject.id.as_deref(), &self.login) {
+            (Some(id), Some(sid), _) => id == sid,
+            (_, _, Some(login)) => login.eq_ignore_ascii_case(&subject.login),
             _ => false,
         }
     }

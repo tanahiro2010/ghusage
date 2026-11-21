@@ -15,6 +15,12 @@ use crate::model::{
 use crate::time::{Bucket, Granularity, Period, Zone, bucket_key, buckets};
 
 /// Everything the engine aggregates over.
+///
+/// The subject's commit count is the number of distinct `CommitAuthored`
+/// events. Callers that also discover the subject's commits through pull
+/// requests add them as `CommitAuthored` events with the same
+/// [`EventId::commit`](crate::model::EventId::commit) id, so they are
+/// counted once alongside commit search results.
 #[derive(Debug, Clone)]
 pub struct Dataset {
     pub subject: Subject,
@@ -381,7 +387,8 @@ fn summarize_events<'a>(
                     s.merges_performed += 1;
                 }
             }
-            EventType::PrClosed if on_subject_pr && e.meta.via_merge != Some(true) => {
+            // Only closures known not to be part of a merge.
+            EventType::PrClosed if on_subject_pr && e.meta.via_merge == Some(false) => {
                 s.prs_closed_without_merge += 1;
             }
             EventType::PrReopened if on_subject_pr => s.prs_reopened += 1,
@@ -804,7 +811,7 @@ pub fn intensity(ds: &Dataset, opts: &Options, participation: Participation) -> 
         {
             days.entry(pr)
                 .or_default()
-                .insert(opts.zone.local_date(e.occurred_at));
+                .insert(opts.zone.local_date(event_time(e, opts.commit_basis)));
         }
     }
     let col = |f: &dyn Fn(&PrRow) -> f64| Stats::from_values(rows.iter().map(f).collect());

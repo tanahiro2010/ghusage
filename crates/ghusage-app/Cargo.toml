@@ -23,6 +23,7 @@ tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "
 tracing = "0.1.44"
 
 [dev-dependencies]
+ghusage-github = { path = "../ghusage-github" }
 proptest = "1.11.0"
 tempfile = "3.27.0"
 wiremock = "0.6.5"

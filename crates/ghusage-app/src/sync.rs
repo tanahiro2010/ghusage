@@ -60,7 +60,11 @@ impl SyncOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyncProgress {
     Searching(DataKind),
-    Fetching { kind: DataKind, done: usize, total: usize },
+    Fetching {
+        kind: DataKind,
+        done: usize,
+        total: usize,
+    },
     Finished,
 }
 

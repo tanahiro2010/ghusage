@@ -176,11 +176,7 @@ pub fn build(ds: &Dataset, ctx: &QueryContext, kind: ReportKind) -> Report {
             r.timing = Some(metrics::timing_stats(ds, &opts));
         }
         ReportKind::Reviews => {
-            r.reviews_submitted = Some(metrics::review_rows(
-                ds,
-                &opts,
-                ReviewDirection::Submitted,
-            ));
+            r.reviews_submitted = Some(metrics::review_rows(ds, &opts, ReviewDirection::Submitted));
             r.reviews_received = Some(metrics::review_rows(ds, &opts, ReviewDirection::Received));
         }
         ReportKind::Comments => r.comments = Some(metrics::comment_rows(ds, &opts)),
