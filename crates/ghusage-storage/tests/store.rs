@@ -687,6 +687,153 @@ fn force_push_keeps_old_commit_link_and_marks_its_event_removed() {
     assert!(event_by_id(&alice_dataset(&s), &new).is_removed());
 }
 
+fn file_store_with_base(dir: &tempfile::TempDir) -> (Store, std::path::PathBuf) {
+    let path = dir.path().join("ghusage.db");
+    let mut s = Store::open(&path).unwrap();
+    s.apply(&base_batch()).unwrap();
+    (s, path)
+}
+
+/// Result of a `count(*)` query, read straight from the database file.
+fn count_rows(path: &std::path::Path, sql: &str) -> i64 {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.query_row(sql, [], |r| r.get(0)).unwrap()
+}
+
+fn march() -> ghusage_core::metrics::Options {
+    ghusage_core::metrics::Options {
+        period: Period::new(t(1, 0), Utc.with_ymd_and_hms(2026, 4, 1, 0, 0, 0).unwrap()).unwrap(),
+        zone: ghusage_core::time::Zone::utc(),
+        filter: ghusage_core::metrics::Filter::default(),
+        commit_basis: ghusage_core::metrics::CommitDateBasis::Committer,
+    }
+}
+
+#[test]
+fn same_sha_linked_to_two_pull_requests_is_two_links() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut s, path) = file_store_with_base(&dir);
+    let link = |pr_id: &str, sha: &str, current: bool| PrCommitLink {
+        pr_id: pr_id.into(),
+        repository_id: "R1".into(),
+        sha: sha.into(),
+        is_current: current,
+    };
+    let shared = "ddd444";
+    let b = WriteBatch {
+        account: "alice".into(),
+        pull_requests: vec![pr("PR2", "R1", 2)],
+        events: vec![
+            pr_commit_event("PR1", "R1", shared, t(4, 11)),
+            pr_commit_event("PR2", "R1", shared, t(4, 11)),
+        ],
+        pr_commits: vec![link("PR1", shared, true), link("PR2", shared, true)],
+        pr_snapshots: vec![
+            snapshot(
+                "PR1",
+                t(10, 0),
+                &[Collection::Commits],
+                &[EventId::pr_commit("PR1", shared)],
+            ),
+            snapshot(
+                "PR2",
+                t(10, 0),
+                &[Collection::Commits],
+                &[EventId::pr_commit("PR2", shared)],
+            ),
+        ],
+        ..Default::default()
+    };
+    s.apply(&b).unwrap();
+
+    // One commit object in the repository, linked from both pull requests.
+    assert_eq!(
+        count_rows(
+            &path,
+            "SELECT count(*) FROM commits WHERE repository_id = 'R1' AND sha = 'ddd444'"
+        ),
+        1
+    );
+    assert_eq!(
+        count_rows(
+            &path,
+            "SELECT count(*) FROM pull_request_commits WHERE sha = 'ddd444' AND is_current = 1"
+        ),
+        2
+    );
+    // Distinct (pull request, sha) pairs: (PR1, ddd444) and (PR2, ddd444) = 2.
+    // The globally counted commits stay the base batch's single aaa111.
+    let sum = ghusage_core::metrics::summary(&alice_dataset(&s), &march());
+    assert_eq!((sum.pr_commits, sum.commits), (2, 1));
+
+    // A force push on PR2 replaces the commit there only; PR1 keeps its link.
+    let b = WriteBatch {
+        account: "alice".into(),
+        events: vec![pr_commit_event("PR2", "R1", "eee555", t(5, 11))],
+        pr_commits: vec![link("PR2", "eee555", true)],
+        pr_snapshots: vec![snapshot(
+            "PR2",
+            t(11, 0),
+            &[Collection::Commits],
+            &[EventId::pr_commit("PR2", "eee555")],
+        )],
+        ..Default::default()
+    };
+    s.apply(&b).unwrap();
+    assert_eq!(
+        count_rows(
+            &path,
+            "SELECT count(*) FROM pull_request_commits \
+             WHERE pr_id = 'PR1' AND sha = 'ddd444' AND is_current = 1"
+        ),
+        1
+    );
+    assert_eq!(
+        count_rows(
+            &path,
+            "SELECT count(*) FROM pull_request_commits \
+             WHERE pr_id = 'PR2' AND sha = 'ddd444' AND is_current = 0"
+        ),
+        1
+    );
+    let ds = alice_dataset(&s);
+    assert!(!event_by_id(&ds, &EventId::pr_commit("PR1", shared)).is_removed());
+    assert_eq!(
+        event_by_id(&ds, &EventId::pr_commit("PR2", shared))
+            .meta
+            .removed_observed_at,
+        Some(t(11, 0))
+    );
+    // Now (PR1, ddd444) and (PR2, eee555): still 2 pairs.
+    assert_eq!(ghusage_core::metrics::summary(&ds, &march()).pr_commits, 2);
+}
+
+#[test]
+fn reapplying_the_same_review_thread_keeps_one_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut s, path) = file_store_with_base(&dir);
+    s.apply(&base_batch()).unwrap();
+    s.apply(&base_batch()).unwrap();
+    // The same thread twice in one batch, the later copy resolved.
+    let mut resolved = thread("TH1", "PR1");
+    resolved.is_resolved = true;
+    let b = WriteBatch {
+        account: "alice".into(),
+        threads: vec![thread("TH1", "PR1"), resolved.clone()],
+        ..Default::default()
+    };
+    s.apply(&b).unwrap();
+
+    assert_eq!(count_rows(&path, "SELECT count(*) FROM review_threads"), 1);
+    let ds = alice_dataset(&s);
+    assert_eq!(ds.threads.len(), 1);
+    assert_eq!(ds.threads["TH1"], resolved);
+    // PR1 is active in March (opened 03-01 09:00), so its one thread counts:
+    // total 1, resolved 1, open 0.
+    let threads = ghusage_core::metrics::snapshot(&ds, &march()).threads;
+    assert_eq!((threads.total, threads.resolved, threads.open), (1, 1, 0));
+}
+
 // ---------------------------------------------------------------------------
 // Atomicity and validation
 
