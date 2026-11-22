@@ -1503,3 +1503,44 @@ async fn diff_stats_are_fetched_once_and_unknown_ones_stay_unknown() {
     assert_eq!(s["diff_stats"]["already_known"], commits - 1);
     assert_eq!(asked(&requests(&server).await), before + 1);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failing_line_count_query_keeps_the_sync_and_leaves_counts_unknown() {
+    let world = World::base();
+    let server = serve(&world).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query CommitLineCounts"))
+        .respond_with(ResponseTemplate::new(502))
+        .mount(&server)
+        .await;
+    let env = Env::new(&server);
+    let r = env.sync(&["--diff-stats"]).await;
+    // The line count query fails as an API error ...
+    r.expect_code(4).assert_clean();
+    // ... but what the sync fetched before it is kept, and nothing is
+    // presented as zero.
+    let o = env.offline_json(&["overview"]).await;
+    o.expect_code(0).assert_clean();
+    let o = o.json();
+    assert_eq!(o["metrics"]["commits"], 6);
+    let d = &o["metrics"]["diff_stats"];
+    assert_eq!(d["coverage"], "unavailable", "{d}");
+    assert_eq!(d["commits_with_stats"], 0);
+    // A later run fetches them once GitHub answers again.
+    server.reset().await;
+    let world = World::base();
+    reserve(&server, &world).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query CommitLineCounts"))
+        .respond_with(|req: &wiremock::Request| line_count_answer(req, &[]))
+        .mount(&server)
+        .await;
+    env.sync(&["--diff-stats"])
+        .await
+        .expect_code(0)
+        .assert_clean();
+    let d = env.offline_json(&["overview"]).await.json()["metrics"]["diff_stats"].clone();
+    assert_eq!(d["coverage"], "complete", "{d}");
+}
