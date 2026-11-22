@@ -1284,6 +1284,7 @@ dependencies = [
  "ghusage-github",
  "ghusage-storage",
  "ratatui",
+ "signal-hook",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
