@@ -5,6 +5,9 @@ hero:
   name: ghusage
   text: GitHub で実際に何をしたのかを把握する。
   tagline: GitHub での活動を、プルリクエストの中で起きたことまで含めて分析する CLI とターミナル UI です。
+  image:
+    src: /overview.webp
+    alt: ターミナルでの ghusage overview の出力
   actions:
     - theme: brand
       text: はじめる

@@ -5,6 +5,9 @@ hero:
   name: ghusage
   text: Know what you actually did on GitHub.
   tagline: A CLI and terminal UI that analyzes your GitHub activity, including everything that happens inside pull requests.
+  image:
+    src: /overview.webp
+    alt: ghusage overview output in a terminal
   actions:
     - theme: brand
       text: Get started
