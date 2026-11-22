@@ -650,7 +650,38 @@ fn draw_repositories(f: &mut Frame, app: &App, area: Rect) {
     if vis.is_empty() {
         return empty(f, area, title, &[&no_match(app, list)]);
     }
-    let fixed = [16, 7, 5, 6, 7, 8, 6, 10, 9, 16];
+    // Columns after the name: header, width. On a narrow terminal the
+    // least important ones are dropped (last in `DROP_ORDER` first) so the
+    // repository name stays readable.
+    const COLS: [(&str, u16); 10] = [
+        ("Visibility", 16),
+        ("Commits", 7),
+        ("PRs", 5),
+        ("Merged", 6),
+        ("Reviews", 7),
+        ("Comments", 8),
+        ("Issues", 6),
+        ("Active PRs", 10),
+        ("PR events", 9),
+        ("Last activity", 16),
+    ];
+    const DROP_ORDER: [usize; 6] = [8, 7, 6, 3, 4, 0];
+    const MIN_NAME: usize = 28;
+    let mut keep = [true; COLS.len()];
+    let widths_of = |keep: &[bool; COLS.len()]| -> Vec<u16> {
+        COLS.iter()
+            .zip(keep)
+            .filter(|(_, k)| **k)
+            .map(|((_, w), _)| *w)
+            .collect()
+    };
+    for &i in &DROP_ORDER {
+        if flex_width(area, &widths_of(&keep)) >= MIN_NAME {
+            break;
+        }
+        keep[i] = false;
+    }
+    let fixed = widths_of(&keep);
     let name_w = flex_width(area, &fixed);
     let rows: Vec<Row> = vis
         .iter()
@@ -661,8 +692,7 @@ fn draw_repositories(f: &mut Frame, app: &App, area: Rect) {
             if !x.accessible {
                 name.push_str(" (no access)");
             }
-            Row::new(vec![
-                fit(&name, name_w),
+            let cells = [
                 visibility_text(x.visibility.as_str(), x.owned),
                 s.commits.to_string(),
                 s.prs_created.to_string(),
@@ -673,29 +703,28 @@ fn draw_repositories(f: &mut Frame, app: &App, area: Rect) {
                 s.active_prs.to_string(),
                 s.pr_internal_events.to_string(),
                 ts(app.zone, s.last_activity),
-            ])
+            ];
+            let mut row = vec![fit(&name, name_w)];
+            row.extend(
+                cells
+                    .into_iter()
+                    .zip(keep)
+                    .filter(|(_, k)| *k)
+                    .map(|(c, _)| c),
+            );
+            Row::new(row)
         })
         .collect();
     let mut widths = vec![Constraint::Min(8)];
     widths.extend(fixed.iter().map(|w| Constraint::Length(*w)));
-    let t = styled_table(
-        rows,
-        widths,
-        &[
-            "Repository",
-            "Visibility",
-            "Commits",
-            "PRs",
-            "Merged",
-            "Reviews",
-            "Comments",
-            "Issues",
-            "Active PRs",
-            "PR events",
-            "Last activity",
-        ],
-    )
-    .block(block(title, true));
+    let mut headers = vec!["Repository"];
+    headers.extend(
+        COLS.iter()
+            .zip(keep)
+            .filter(|(_, k)| *k)
+            .map(|((h, _), _)| *h),
+    );
+    let t = styled_table(rows, widths, &headers).block(block(title, true));
     stateful_table(f, app, area, list, t, true);
 }
 
