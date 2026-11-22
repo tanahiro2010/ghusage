@@ -217,6 +217,10 @@ pub struct SyncArgs {
     /// Refetch the whole period instead of only missing ranges.
     #[arg(long)]
     pub full: bool,
+    /// Also fetch lines added and deleted by your commits in the period
+    /// that do not have them yet (one GraphQL request per 100 commits).
+    #[arg(long)]
+    pub diff_stats: bool,
 }
 
 #[derive(Debug, Subcommand)]

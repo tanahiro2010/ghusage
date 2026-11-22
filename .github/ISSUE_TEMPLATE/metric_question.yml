@@ -1,0 +1,77 @@
+name: Metric question
+description: Ask how a number is counted, or report a number that does not match what you expected.
+title: "question: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every number in ghusage has a written definition. Please read these first:
+        - [Metric definitions](https://ghusage.under18.dev/reference/metrics) (`docs/reference/metrics.md`)
+        - [Periods and time zones](https://ghusage.under18.dev/reference/time)
+        - [Known limitations](https://ghusage.under18.dev/reference/limitations)
+
+        Japanese: [指標の定義](https://ghusage.under18.dev/ja/reference/metrics)
+
+        **Do not paste tokens.** For private repositories, do not include names, titles or URLs;
+        `--format json` hides them by default (do not add `--include-private`).
+  - type: input
+    id: metric
+    attributes:
+      label: Metric
+      description: The label as shown in the output, or the JSON field name.
+      placeholder: Reviews submitted / reviews.submitted
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What is unclear, or which number differs from what you expected and by how much?
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command and output
+      description: The exact command and its output. `--format json` output is the easiest to compare.
+      render: text
+      placeholder: |
+        $ ghusage reviews --since 2026-11-01 --until 2026-11-08 --timezone Asia/Tokyo --format json
+    validations:
+      required: true
+  - type: textarea
+    id: reference
+    attributes:
+      label: What you compared it with
+      description: |
+        Where your expected number comes from, for example the GitHub web page, a `gh api` query
+        (include the query), or `ghusage pr <URL> --timeline` for a public pull request.
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: ghusage version
+      description: Output of `ghusage --version`.
+    validations:
+      required: true
+  - type: input
+    id: timezone
+    attributes:
+      label: Time zone
+      description: The `--timezone` value or `TZ` you used, if any.
+      placeholder: Asia/Tokyo
+    validations:
+      required: false
+  - type: dropdown
+    id: coverage
+    attributes:
+      label: Coverage shown by the report
+      description: The `Coverage:` line at the end of table output.
+      options:
+        - complete
+        - partial or incomplete
+        - I don't know
+    validations:
+      required: false

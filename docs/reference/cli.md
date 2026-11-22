@@ -77,6 +77,11 @@ By default only pull requests in which you had at least one event in the
 period are listed. Column meanings are in
 [Metric definitions](./metrics.md#pull-request-list).
 
+The `Changes` column shows each pull request's base-to-head diff as
+`+A -D` (`?` when not known). It is a snapshot as of the last sync, not
+changes made in the period; a note below the table says so. See
+[Pull request changes](./metrics.md#pull-request-changes).
+
 ### `pr`
 
 ```text
@@ -86,7 +91,9 @@ ghusage pr <URL> [--timeline] [--event-type <TYPES>]...
 Shows one pull request: state, author, merge, commits (and commits that are
 no longer in the pull request), reviews by state, comments by type, review
 threads (current state), latest CI result, participants, timings and
-coverage.
+coverage. The `Changes (current snapshot)` line shows the pull request's
+diff as `+A -D in F files (base to head as of <time>)`, or that it is not
+known yet.
 
 | Option | Description |
 |---|---|
@@ -152,12 +159,21 @@ ghusage commit https://github.com/OWNER/REPO/commit/1a2b3c4d5e6f --format json
 ### `sync`
 
 ```text
-ghusage sync [--full]
+ghusage sync [--full] [--diff-stats]
 ```
 
 Fetches the period into the cache. Without `--full`, only ranges that are not
 yet complete are fetched; `--full` refetches the whole period. Cannot be
 combined with `--offline`. See [Syncing and the cache](../guide/syncing.md).
+
+| Option | Description |
+|---|---|
+| `--full` | Refetch the whole period instead of only missing ranges |
+| `--diff-stats` | Also fetch lines added and deleted by your commits in the period that do not have them yet (one GraphQL request per 100 commits). See [Line counts](../guide/syncing.md#line-counts) |
+
+With `--diff-stats`, the output has an extra line,
+`line counts: N commits (already known K, fetched F, unavailable U)`, and
+the JSON output a `diff_stats` object (see [JSON output](./json.md#sync)).
 
 Filters (`--repo`, `--owner`, `--visibility`, `--ownership`) do not restrict
 what `sync` fetches.

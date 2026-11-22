@@ -81,6 +81,7 @@ Definitions of every count are in [Metric definitions](./metrics.md).
 | `ci` | object: `passed`, `failed`, `pending`, `other` (integers). Never part of activity |
 | `active_days` | integer |
 | `last_activity` | timestamp or `null` |
+| `diff_stats` | [DiffTotals](#difftotals) |
 
 #### ReviewCounts
 
@@ -91,6 +92,33 @@ Definitions of every count are in [Metric definitions](./metrics.md).
 
 `total`, `conversation`, `inline`, `review_summary` (integers). `total` is
 the sum of the three types.
+
+#### DiffTotals
+
+Lines added and deleted by your counted commits. See
+[Lines changed](./metrics.md#lines-changed).
+
+| Field | Type | Description |
+|---|---|---|
+| `commits` | integer | Non-merge commits counted in `commits` |
+| `excluded` | integer | Of those, commits left out of the line totals because their changes are counted through other commits |
+| `commits_with_stats` | integer | Of the remaining `commits - excluded`, commits with known line counts |
+| `additions`, `deletions` | integer | Sums over the `commits_with_stats` commits only |
+| `coverage` | string | `no_commits`, `complete`, `partial` or `unavailable` |
+
+`additions` and `deletions` are `0` when `coverage` is `unavailable`; that
+`0` means unknown, not zero lines. Check `coverage` before using the sums.
+
+```json
+"diff_stats": {
+  "commits": 42,
+  "excluded": 6,
+  "commits_with_stats": 30,
+  "additions": 1830,
+  "deletions": 612,
+  "coverage": "partial"
+}
+```
 
 ### Snapshot
 
@@ -149,8 +177,21 @@ The report's overall coverage is `complete` only if every entry is
 | `threads` | Review threads with an inline comment in the period |
 | `last_activity` | Latest event time in the period (commits use the selected `--commit-date`) |
 | `latest_ci` | Current CI state of the head commit: `success`, `failure`, `pending`, `neutral`, `skipped`, `cancelled`, `unknown`, or `null` |
+| `diff` | [PrDiff](#prdiff) or `null` when not known |
 
 Ordered by `--sort` (largest or newest first), then repository and number.
+
+#### PrDiff
+
+The pull request's diff between its base and head as of the last sync. It is
+a snapshot of the pull request, not changes made in the period. See
+[Pull request changes](./metrics.md#pull-request-changes).
+
+| Field | Description |
+|---|---|
+| `additions`, `deletions` | Lines added and deleted (integers) |
+| `changed_files` | Number of changed files |
+| `observed_at` | When the diff was fetched |
 
 ### Intensity
 
@@ -235,6 +276,7 @@ Ordered by repository and number.
 | `discussion_participants` | Logins of known accounts that wrote a conversation, inline or review summary comment, sorted |
 | `commit_authors` | Array of `{author, commits}`: commits currently in the pull request by commit author, most first |
 | `timing` | `time_to_first_review_secs`, `creation_to_merge_secs`, `review_to_next_author_activity_secs`, `first_to_last_activity_secs` (integers or `null`) |
+| `diff` | [PrDiff](#prdiff) as of the last sync, or `null` when not known |
 | `timeline` | Array of [TimelineEntry](#timelineentry) in event order (filtered by `--event-type`) |
 | `coverage` | Coverage status of this pull request's data |
 | `synced_at` | When the pull request was last fetched |
@@ -290,7 +332,8 @@ request's life (opened, commits, force pushes, ..., merged, closed, reopened).
 | `issues_found`, `issues_fetched`, `issues_unchanged` | Issues found by search / fetched / skipped as unchanged |
 | `failures` | Descriptions of pull requests or issues that failed or were partially fetched |
 | `coverage` | Coverage records written: `kind`, `start`, `end`, `status`, `scope`, `reason`, `recorded_at` |
-| `api` | `requests`, `retries`, `rate_limit_waits`, `total_api_time_ms`, `bytes_received` |
+| `api` | `requests`, `retries`, `rate_limit_waits`, `total_api_time_ms`, `bytes_received` (including the line count requests of `--diff-stats`) |
+| `diff_stats` | Only with `--diff-stats`: `commits` (your non-merge commits in the period whose line counts go into the totals), `already_known` (already in the cache, not fetched again), `fetched` (fetched now), `unavailable` (not returned by GitHub; left unknown) |
 
 ### doctor
 
@@ -323,18 +366,31 @@ so spreadsheets do not evaluate it as a formula.
 One row per calendar bucket (`overview` produces daily rows):
 
 ```text
-period,start,end,commits,merge_commits,prs_created,prs_merged,merges_performed,prs_closed_without_merge,reviews_submitted,reviewed_prs,reviews_received,comments_written,comments_received,review_responses,pr_commits,issues_opened,issues_closed,active_prs,pr_internal_events,ci_passed,ci_failed,coverage
+period,start,end,commits,merge_commits,prs_created,prs_merged,merges_performed,prs_closed_without_merge,reviews_submitted,reviewed_prs,reviews_received,comments_written,comments_received,review_responses,pr_commits,issues_opened,issues_closed,active_prs,pr_internal_events,ci_passed,ci_failed,additions,deletions,line_count_commits,line_count_commits_known,line_count_commits_excluded,line_count_coverage,coverage
 ```
 
 `period` is the bucket label, `reviews_submitted` / `reviews_received` are
 totals, `comments_written` / `comments_received` are totals of all three
-types, and `coverage` is the combined coverage of that bucket.
+types, and `coverage` is the combined coverage of that bucket. The line
+count columns are described [below](#line-count-columns).
 
 ### repos
 
 ```text
-repository,visibility,owned,accessible,commits,prs_created,prs_merged,reviews_submitted,comments_written,issues_opened,active_prs,pr_internal_events,last_activity,period_coverage
+repository,visibility,owned,accessible,commits,prs_created,prs_merged,reviews_submitted,comments_written,issues_opened,active_prs,pr_internal_events,additions,deletions,line_count_commits,line_count_commits_known,line_count_commits_excluded,line_count_coverage,last_activity,period_coverage
 ```
+
+#### Line count columns
+
+| Column | Description |
+|---|---|
+| `additions`, `deletions` | `diff_stats.additions` and `diff_stats.deletions`. Empty when no commit has known line counts (`unavailable`); with `partial` they cover only the commits with known counts |
+| `line_count_commits` | Commits whose line counts go into the sums: `diff_stats.commits - diff_stats.excluded` |
+| `line_count_commits_known` | Of those, commits with known line counts (`diff_stats.commits_with_stats`) |
+| `line_count_commits_excluded` | Commits left out as counted through other commits (`diff_stats.excluded`) |
+| `line_count_coverage` | `no_commits`, `complete`, `partial` or `unavailable` |
+
+The `prs` CSV has no line count columns; use JSON for pull request diffs.
 
 ### prs
 

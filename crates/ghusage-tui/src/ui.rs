@@ -382,6 +382,18 @@ fn styled_table<'a>(rows: Vec<Row<'a>>, widths: Vec<Constraint>, header: &[&'a s
 }
 
 /// Width left for a flexible column after fixed ones.
+/// Added and deleted lines of the counted commits: `~` for a sum over only
+/// some commits, `?` when none has known counts.
+fn line_cells(d: &ghusage_core::metrics::DiffTotals) -> [String; 2] {
+    use ghusage_core::metrics::DiffCoverage;
+    let mark = |n: u64| match d.coverage {
+        DiffCoverage::NoCommits | DiffCoverage::Complete => n.to_string(),
+        DiffCoverage::Partial => format!("~{n}"),
+        DiffCoverage::Unavailable => "?".into(),
+    };
+    [mark(d.additions), mark(d.deletions)]
+}
+
 fn flex_width(area: Rect, fixed: &[u16]) -> usize {
     let inner = area.width.saturating_sub(2) as usize;
     let used: usize = fixed.iter().map(|w| *w as usize + 1).sum::<usize>() + SELECT_SYMBOL.len();
@@ -395,7 +407,7 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
         return loading(f, area, "Overview");
     };
     let [metrics_area, chart_area, repos_area] = Layout::vertical([
-        Constraint::Length(7),
+        Constraint::Length(8),
         Constraint::Length(5),
         Constraint::Min(3),
     ])
@@ -432,6 +444,12 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
             s.issues_opened.to_string(),
             "Active days",
             s.active_days.to_string(),
+        ),
+        (
+            "Lines added",
+            line_cells(&s.diff_stats)[0].clone(),
+            "Lines deleted",
+            line_cells(&s.diff_stats)[1].clone(),
         ),
     ];
     let rows: Vec<Row> = rows
@@ -578,6 +596,7 @@ fn draw_daily(f: &mut Frame, app: &App, area: Rect) {
             let b = &r.activity_breakdown[i];
             let s = &b.summary;
             let quiet = activity(s) == 0;
+            let [added, deleted] = line_cells(&s.diff_stats);
             let row = Row::new(vec![
                 b.bucket.label.clone(),
                 s.commits.to_string(),
@@ -589,6 +608,8 @@ fn draw_daily(f: &mut Frame, app: &App, area: Rect) {
                 s.pr_commits.to_string(),
                 s.issues_opened.to_string(),
                 s.active_prs.to_string(),
+                added,
+                deleted,
             ]);
             if quiet { row.style(dim()) } else { row }
         })
@@ -606,6 +627,8 @@ fn draw_daily(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(10),
             Constraint::Length(6),
             Constraint::Length(10),
+            Constraint::Length(8),
+            Constraint::Length(8),
         ],
         &[
             "Day",
@@ -618,6 +641,8 @@ fn draw_daily(f: &mut Frame, app: &App, area: Rect) {
             "PR commits",
             "Issues",
             "Active PRs",
+            "+Lines",
+            "-Lines",
         ],
     )
     .block(block(title, true));
@@ -651,9 +676,9 @@ fn draw_repositories(f: &mut Frame, app: &App, area: Rect) {
         return empty(f, area, title, &[&no_match(app, list)]);
     }
     // Columns after the name: header, width. On a narrow terminal the
-    // least important ones are dropped (last in `DROP_ORDER` first) so the
+    // least important ones are dropped (in `DROP_ORDER` order) so the
     // repository name stays readable.
-    const COLS: [(&str, u16); 10] = [
+    const COLS: [(&str, u16); 12] = [
         ("Visibility", 16),
         ("Commits", 7),
         ("PRs", 5),
@@ -663,10 +688,12 @@ fn draw_repositories(f: &mut Frame, app: &App, area: Rect) {
         ("Issues", 6),
         ("Active PRs", 10),
         ("PR events", 9),
+        ("+Lines", 8),
+        ("-Lines", 8),
         ("Last activity", 16),
     ];
-    const DROP_ORDER: [usize; 6] = [8, 7, 6, 3, 4, 0];
-    const MIN_NAME: usize = 28;
+    const DROP_ORDER: [usize; 8] = [8, 7, 6, 10, 9, 3, 4, 0];
+    const MIN_NAME: usize = 32;
     let mut keep = [true; COLS.len()];
     let widths_of = |keep: &[bool; COLS.len()]| -> Vec<u16> {
         COLS.iter()
@@ -702,6 +729,8 @@ fn draw_repositories(f: &mut Frame, app: &App, area: Rect) {
                 s.issues_opened.to_string(),
                 s.active_prs.to_string(),
                 s.pr_internal_events.to_string(),
+                line_cells(&s.diff_stats)[0].clone(),
+                line_cells(&s.diff_stats)[1].clone(),
                 ts(app.zone, s.last_activity),
             ];
             let mut row = vec![fit(&name, name_w)];
@@ -865,6 +894,22 @@ fn draw_pr_detail(f: &mut Frame, app: &App, area: Rect) {
             },
         ),
         kv(
+            "Changes (now)",
+            fit(
+                &match &r.diff {
+                    Some(d) => format!(
+                        "+{} -{} in {} files (base to head as of {})",
+                        d.additions,
+                        d.deletions,
+                        d.changed_files,
+                        ts(z, Some(d.observed_at))
+                    ),
+                    None => "unknown (sync again to fetch it)".into(),
+                },
+                w,
+            ),
+        ),
+        kv(
             "Reviews",
             format!(
                 "{} (approved {}, changes requested {}, commented {})",
@@ -995,7 +1040,7 @@ fn draw_pr_commits(
         return empty(f, area, title, &[&no_match(app, list)]);
     }
     let wide = area.width >= 70;
-    let fixed: &[u16] = if wide { &[8, 7, 11, 14] } else { &[8, 7] };
+    let fixed: &[u16] = if wide { &[8, 7, 11, 14, 13] } else { &[8, 7] };
     let msg_w = flex_width(area, fixed);
     let rows: Vec<Row> = vis
         .iter()
@@ -1015,6 +1060,10 @@ fn draw_pr_commits(
             if wide {
                 cells.push(Cell::from(app.zone.format(c.committed_at, "%m-%d %H:%M")));
                 cells.push(Cell::from(fit(&c.author, 14)));
+                cells.push(Cell::from(match c.lines {
+                    Some(l) => format!("+{} -{}", l.additions, l.deletions),
+                    None => "?".into(),
+                }));
             }
             cells.push(Cell::from(fit(c.headline.as_deref().unwrap_or("-"), msg_w)));
             let row = Row::new(cells);
@@ -1024,7 +1073,7 @@ fn draw_pr_commits(
     let mut widths: Vec<Constraint> = fixed.iter().map(|w| Constraint::Length(*w)).collect();
     widths.push(Constraint::Min(8));
     let header: &[&str] = if wide {
-        &["SHA", "", "Committed", "Author", "Message"]
+        &["SHA", "", "Committed", "Author", "Lines", "Message"]
     } else {
         &["SHA", "", "Message"]
     };

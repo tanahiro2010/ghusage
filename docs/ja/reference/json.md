@@ -68,6 +68,7 @@ ghusage prs --format csv > prs.csv
 | `ci` | object: `passed`、`failed`、`pending`、`other`(integer)。活動には決して含めません |
 | `active_days` | integer |
 | `last_activity` | タイムスタンプまたは `null` |
+| `diff_stats` | [DiffTotals](#difftotals) |
 
 #### ReviewCounts
 
@@ -76,6 +77,31 @@ ghusage prs --format csv > prs.csv
 #### CommentCounts
 
 `total`、`conversation`、`inline`、`review_summary`(integer)。`total` は3種類の合計です。
+
+#### DiffTotals
+
+数えた自分のコミットで追加・削除した行数です。[変更行数](./metrics.md#lines-changed)を参照してください。
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `commits` | integer | `commits` で数えたコミットのうち、マージコミットでないもの |
+| `excluded` | integer | そのうち、変更がほかのコミットとして数えられるために行数の合計から除いたもの |
+| `commits_with_stats` | integer | 残りの `commits - excluded` 件のうち、行数が分かっているもの |
+| `additions`, `deletions` | integer | `commits_with_stats` 件のコミットだけの合計 |
+| `coverage` | string | `no_commits`、`complete`、`partial`、`unavailable` |
+
+`coverage` が `unavailable` のとき、`additions` と `deletions` は `0` になります。この `0` は「不明」の意味で、0 行という意味ではありません。合計を使う前に `coverage` を確かめてください。
+
+```json
+"diff_stats": {
+  "commits": 42,
+  "excluded": 6,
+  "commits_with_stats": 30,
+  "additions": 1830,
+  "deletions": 612,
+  "coverage": "partial"
+}
+```
 
 ### Snapshot
 
@@ -133,8 +159,19 @@ ghusage prs --format csv > prs.csv
 | `threads` | 期間内にインラインコメントのあったレビュースレッド |
 | `last_activity` | 期間内で最も新しいイベントの時刻(コミットは選んだ `--commit-date` を使います) |
 | `latest_ci` | head コミットの現在の CI の状態: `success`、`failure`、`pending`、`neutral`、`skipped`、`cancelled`、`unknown`、または `null` |
+| `diff` | [PrDiff](#prdiff)。分からないときは `null` |
 
 `--sort` の順(大きい順・新しい順)、次にリポジトリと番号の順に並びます。
+
+#### PrDiff
+
+最後に同期した時点での、プルリクエストの base と head の差分です。プルリクエストのスナップショットで、期間中に行った変更ではありません。[プルリクエストの変更行数](./metrics.md#pull-request-changes)を参照してください。
+
+| フィールド | 説明 |
+|---|---|
+| `additions`, `deletions` | 追加した行数と削除した行数(integer) |
+| `changed_files` | 変更したファイルの数 |
+| `observed_at` | 差分を取得した時刻 |
 
 ### Intensity
 
@@ -210,6 +247,7 @@ ghusage prs --format csv > prs.csv
 | `discussion_participants` | 会話コメント、インラインコメント、レビューサマリーのコメントを書いた既知のアカウントのログイン名。並べ替え済み |
 | `commit_authors` | `{author, commits}` の配列。現在プルリクエストに含まれるコミットをコミットの作成者ごとに数えたもので、多い順に並びます |
 | `timing` | `time_to_first_review_secs`、`creation_to_merge_secs`、`review_to_next_author_activity_secs`、`first_to_last_activity_secs`(integer または `null`) |
+| `diff` | 最後に同期した時点の [PrDiff](#prdiff)。分からないときは `null` |
 | `timeline` | イベントの順に並べた [TimelineEntry](#timelineentry) の配列(`--event-type` で絞り込みます) |
 | `coverage` | このプルリクエストのデータのカバレッジの状態 |
 | `synced_at` | プルリクエストを最後に取得した時刻 |
@@ -264,7 +302,8 @@ ghusage prs --format csv > prs.csv
 | `issues_found`, `issues_fetched`, `issues_unchanged` | 検索で見つかった / 取得した / 変更がないため取得を省いた Issue の数 |
 | `failures` | 取得に失敗した、または一部しか取得できなかったプルリクエストや Issue の説明 |
 | `coverage` | 書き込んだカバレッジの記録: `kind`、`start`、`end`、`status`、`scope`、`reason`、`recorded_at` |
-| `api` | `requests`、`retries`、`rate_limit_waits`、`total_api_time_ms`、`bytes_received` |
+| `api` | `requests`、`retries`、`rate_limit_waits`、`total_api_time_ms`、`bytes_received`(`--diff-stats` の行数のリクエストも含む) |
+| `diff_stats` | `--diff-stats` を付けたときだけ入ります。`commits`(期間内の自分のマージでないコミットのうち、行数を合計に入れるもの)、`already_known`(キャッシュにすでにあり、取り直さなかったもの)、`fetched`(今回取得したもの)、`unavailable`(GitHub が返さず、不明のままのもの) |
 
 ### doctor
 
@@ -287,16 +326,28 @@ CSV の出力は、コマンドごとにヘッダー行付きの平らな表が1
 暦の区切りごとに1行です(`overview` は日ごとの行を出力します)。
 
 ```text
-period,start,end,commits,merge_commits,prs_created,prs_merged,merges_performed,prs_closed_without_merge,reviews_submitted,reviewed_prs,reviews_received,comments_written,comments_received,review_responses,pr_commits,issues_opened,issues_closed,active_prs,pr_internal_events,ci_passed,ci_failed,coverage
+period,start,end,commits,merge_commits,prs_created,prs_merged,merges_performed,prs_closed_without_merge,reviews_submitted,reviewed_prs,reviews_received,comments_written,comments_received,review_responses,pr_commits,issues_opened,issues_closed,active_prs,pr_internal_events,ci_passed,ci_failed,additions,deletions,line_count_commits,line_count_commits_known,line_count_commits_excluded,line_count_coverage,coverage
 ```
 
-`period` は区切りのラベルです。`reviews_submitted` / `reviews_received` は合計、`comments_written` / `comments_received` は3種類すべての合計、`coverage` はその区切りのカバレッジをまとめたものです。
+`period` は区切りのラベルです。`reviews_submitted` / `reviews_received` は合計、`comments_written` / `comments_received` は3種類すべての合計、`coverage` はその区切りのカバレッジをまとめたものです。行数の列は[下で](#line-count-columns)説明します。
 
 ### repos
 
 ```text
-repository,visibility,owned,accessible,commits,prs_created,prs_merged,reviews_submitted,comments_written,issues_opened,active_prs,pr_internal_events,last_activity,period_coverage
+repository,visibility,owned,accessible,commits,prs_created,prs_merged,reviews_submitted,comments_written,issues_opened,active_prs,pr_internal_events,additions,deletions,line_count_commits,line_count_commits_known,line_count_commits_excluded,line_count_coverage,last_activity,period_coverage
 ```
+
+#### 行数の列 {#line-count-columns}
+
+| 列 | 説明 |
+|---|---|
+| `additions`, `deletions` | `diff_stats.additions` と `diff_stats.deletions`。行数が分かっているコミットがないとき(`unavailable`)は空欄。`partial` のときは、行数が分かっているコミットだけの合計 |
+| `line_count_commits` | 行数を合計に入れるコミットの数:`diff_stats.commits - diff_stats.excluded` |
+| `line_count_commits_known` | そのうち、行数が分かっているもの(`diff_stats.commits_with_stats`) |
+| `line_count_commits_excluded` | ほかのコミットとして数えられるために除いたもの(`diff_stats.excluded`) |
+| `line_count_coverage` | `no_commits`、`complete`、`partial`、`unavailable` |
+
+`prs` の CSV には行数の列はありません。プルリクエストの差分は JSON で取得してください。
 
 ### prs
 

@@ -30,6 +30,37 @@ fn finish(w: csv::Writer<Vec<u8>>) -> String {
 }
 
 /// Renders a period report as CSV for the given report kind.
+/// Line count columns: additions, deletions, commits whose counts go into
+/// the sums, of those with known counts, commits left out as counted
+/// through other commits, coverage. The sums are empty when no commit has
+/// known counts (unknown, not zero).
+fn line_cols(d: &ghusage_core::metrics::DiffTotals) -> [String; 6] {
+    use ghusage_core::metrics::DiffCoverage;
+    let known = !matches!(d.coverage, DiffCoverage::Unavailable);
+    let coverage = match d.coverage {
+        DiffCoverage::NoCommits => "no_commits",
+        DiffCoverage::Complete => "complete",
+        DiffCoverage::Partial => "partial",
+        DiffCoverage::Unavailable => "unavailable",
+    };
+    [
+        if known {
+            d.additions.to_string()
+        } else {
+            String::new()
+        },
+        if known {
+            d.deletions.to_string()
+        } else {
+            String::new()
+        },
+        (d.commits - d.excluded).to_string(),
+        d.commits_with_stats.to_string(),
+        d.excluded.to_string(),
+        coverage.to_string(),
+    ]
+}
+
 pub fn report_csv(r: &Report, kind: ReportKind) -> String {
     let mut w = csv::Writer::from_writer(Vec::new());
     let overall = r.overall_coverage().as_str();
@@ -58,11 +89,18 @@ pub fn report_csv(r: &Report, kind: ReportKind) -> String {
                 "pr_internal_events",
                 "ci_passed",
                 "ci_failed",
+                "additions",
+                "deletions",
+                "line_count_commits",
+                "line_count_commits_known",
+                "line_count_commits_excluded",
+                "line_count_coverage",
                 "coverage",
             ])
             .ok();
             for b in &r.activity_breakdown {
                 let s = &b.summary;
+                let l = line_cols(&s.diff_stats);
                 let cov = bucket_coverage(r, b.bucket.start, b.bucket.end);
                 w.write_record([
                     b.bucket.label.clone(),
@@ -87,6 +125,12 @@ pub fn report_csv(r: &Report, kind: ReportKind) -> String {
                     s.pr_internal_events.to_string(),
                     s.ci.passed.to_string(),
                     s.ci.failed.to_string(),
+                    l[0].clone(),
+                    l[1].clone(),
+                    l[2].clone(),
+                    l[3].clone(),
+                    l[4].clone(),
+                    l[5].clone(),
                     cov.as_str().to_string(),
                 ])
                 .ok();
@@ -106,12 +150,19 @@ pub fn report_csv(r: &Report, kind: ReportKind) -> String {
                 "issues_opened",
                 "active_prs",
                 "pr_internal_events",
+                "additions",
+                "deletions",
+                "line_count_commits",
+                "line_count_commits_known",
+                "line_count_commits_excluded",
+                "line_count_coverage",
                 "last_activity",
                 "period_coverage",
             ])
             .ok();
             for x in &r.repositories {
                 let s = &x.summary;
+                let l = line_cols(&s.diff_stats);
                 w.write_record([
                     x.full_name.clone(),
                     x.visibility.as_str().to_string(),
@@ -125,6 +176,12 @@ pub fn report_csv(r: &Report, kind: ReportKind) -> String {
                     s.issues_opened.to_string(),
                     s.active_prs.to_string(),
                     s.pr_internal_events.to_string(),
+                    l[0].clone(),
+                    l[1].clone(),
+                    l[2].clone(),
+                    l[3].clone(),
+                    l[4].clone(),
+                    l[5].clone(),
                     ts(s.last_activity),
                     overall.to_string(),
                 ])

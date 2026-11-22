@@ -5,8 +5,8 @@
 //! Error values produced here never contain request headers or the token.
 
 use std::collections::HashSet;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, TimeZone, Utc};
@@ -16,6 +16,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::Semaphore;
 
+use crate::activity::{self, Activity};
 use crate::{ApiError, ApiStats, ClientConfig, Credentials, Secret};
 
 /// Longest backoff between attempts.
@@ -88,6 +89,7 @@ pub(crate) struct Transport {
     token: Option<Secret>,
     pub config: ClientConfig,
     semaphore: Semaphore,
+    pub activity: Arc<Activity>,
     stats: Mutex<ApiStats>,
     api_base: Url,
     graphql_url: Url,
@@ -119,6 +121,7 @@ impl Transport {
             http,
             token: credentials.map(|c| c.token),
             semaphore: Semaphore::new(config.concurrency),
+            activity: Arc::new(Activity::new(config.concurrency)),
             config,
             stats: Mutex::new(ApiStats::default()),
             api_base,
@@ -161,28 +164,63 @@ impl Transport {
     }
 
     /// Follows `Link: rel="next"` until absent, collecting the items each page
-    /// yields through `extract`. Any failing page fails the whole call.
+    /// yields through `extract`, in page order. Any failing page fails the
+    /// whole call. When the first page also links to the last page, the
+    /// pages in between are fetched at once (still limited by the
+    /// transport's concurrency) from the `next` link with only its page
+    /// number changed.
     pub async fn get_paginated(
         &self,
         first: Url,
         extract: impl Fn(&Value) -> Option<Vec<Value>>,
     ) -> Result<Vec<Value>, ApiError> {
         let mut items = Vec::new();
-        let mut next = Some(first);
         let mut seen = HashSet::new();
-        while let Some(url) = next.take() {
+        let take = |items: &mut Vec<Value>, url: &Url, value: &Value| {
+            let page = extract(value).ok_or_else(|| {
+                ApiError::InvalidResponse(format!("unexpected response shape from {}", url.path()))
+            })?;
+            items.extend(page);
+            Ok::<_, ApiError>(())
+        };
+        seen.insert(first.to_string());
+        let (value, mut headers) = self.get_json(&first).await?;
+        take(&mut items, &first, &value)?;
+        let mut fetched_up_to = 1;
+        if let (Some(next), Some(last)) = (self.next_link(&headers)?, self.link(&headers, "last")?)
+            && page_of(&next) == Some(2)
+            && let Some(last_page) = page_of(&last)
+            && last_page >= 2
+        {
+            if last_page as usize > MAX_PAGES {
+                return Err(ApiError::InvalidResponse(format!(
+                    "pagination of {} did not terminate",
+                    first.path()
+                )));
+            }
+            let urls: Vec<Url> = (2..=last_page).map(|n| with_page(&next, n)).collect();
+            let pages =
+                futures::future::try_join_all(urls.iter().map(|u| self.get_json(u))).await?;
+            for (url, (value, h)) in urls.iter().zip(pages) {
+                seen.insert(url.to_string());
+                take(&mut items, url, &value)?;
+                headers = h;
+            }
+            fetched_up_to = last_page;
+        }
+        while let Some(url) = self.next_link(&headers)? {
+            if page_of(&url).is_some_and(|n| n <= fetched_up_to) {
+                break;
+            }
             if !seen.insert(url.to_string()) || seen.len() > MAX_PAGES {
                 return Err(ApiError::InvalidResponse(format!(
                     "pagination of {} did not terminate",
                     url.path()
                 )));
             }
-            let (value, headers) = self.get_json(&url).await?;
-            let page = extract(&value).ok_or_else(|| {
-                ApiError::InvalidResponse(format!("unexpected response shape from {}", url.path()))
-            })?;
-            items.extend(page);
-            next = self.next_link(&headers)?;
+            let (value, h) = self.get_json(&url).await?;
+            take(&mut items, &url, &value)?;
+            headers = h;
         }
         Ok(items)
     }
@@ -191,10 +229,16 @@ impl Transport {
     /// origin than the API base are rejected so the token is never sent
     /// elsewhere.
     pub fn next_link(&self, headers: &HeaderMap) -> Result<Option<Url>, ApiError> {
+        self.link(headers, "next")
+    }
+
+    /// The URL of the `Link` header entry with relation `rel`, checked like
+    /// [`Self::next_link`].
+    pub fn link(&self, headers: &HeaderMap, rel: &str) -> Result<Option<Url>, ApiError> {
         let Some(link) = headers.get("link").and_then(|v| v.to_str().ok()) else {
             return Ok(None);
         };
-        let Some(raw) = parse_next_link(link) else {
+        let Some(raw) = parse_link(link, rel) else {
             return Ok(None);
         };
         let url = Url::parse(&raw)
@@ -299,6 +343,7 @@ impl Transport {
             .acquire()
             .await
             .map_err(|_| AttemptError::Network("client is shutting down".into()))?;
+        let _running = self.activity.start(activity::label(url, body));
         let started = Instant::now();
         let limit = self.config.max_response_bytes;
         let fut = async {
@@ -472,7 +517,7 @@ impl Transport {
     }
 
     /// Exponential backoff with jitter, capped at one minute.
-    fn backoff(&self, attempt: u32) -> Duration {
+    pub(crate) fn backoff(&self, attempt: u32) -> Duration {
         let exp = attempt.saturating_sub(1).min(20);
         let base = self
             .config
@@ -541,20 +586,47 @@ pub(crate) fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-/// Extracts the `rel="next"` target from a `Link` header.
-pub(crate) fn parse_next_link(header: &str) -> Option<String> {
+/// Extracts the target with relation `rel` from a `Link` header.
+pub(crate) fn parse_link(header: &str, rel: &str) -> Option<String> {
+    let quoted = format!("rel=\"{rel}\"");
+    let bare = format!("rel={rel}");
     for part in header.split(',') {
         let mut pieces = part.split(';');
         let target = pieces.next()?.trim();
-        let is_next = pieces.any(|p| {
+        let matches = pieces.any(|p| {
             let p = p.trim();
-            p == "rel=\"next\"" || p == "rel=next"
+            p == quoted || p == bare
         });
-        if is_next && target.starts_with('<') && target.ends_with('>') {
+        if matches && target.starts_with('<') && target.ends_with('>') {
             return Some(target[1..target.len() - 1].to_string());
         }
     }
     None
+}
+
+/// The `page` query parameter of a pagination link.
+pub(crate) fn page_of(url: &Url) -> Option<u64> {
+    url.query_pairs()
+        .find(|(k, _)| k == "page")
+        .and_then(|(_, v)| v.parse().ok())
+}
+
+/// `url` with its `page` query parameter set to `n`.
+pub(crate) fn with_page(url: &Url, n: u64) -> Url {
+    let pairs: Vec<(String, String)> = url
+        .query_pairs()
+        .map(|(k, v)| {
+            let v = if k == "page" {
+                n.to_string()
+            } else {
+                v.into_owned()
+            };
+            (k.into_owned(), v)
+        })
+        .collect();
+    let mut out = url.clone();
+    out.query_pairs_mut().clear().extend_pairs(pairs);
+    out
 }
 
 /// Parses a GitHub timestamp.
@@ -572,11 +644,28 @@ mod tests {
     fn next_link_is_found_among_others() {
         let h = r#"<https://api.github.com/x?page=2>; rel="next", <https://api.github.com/x?page=5>; rel="last""#;
         assert_eq!(
-            parse_next_link(h).as_deref(),
+            parse_link(h, "next").as_deref(),
             Some("https://api.github.com/x?page=2")
         );
         let h = r#"<https://api.github.com/x?page=1>; rel="prev", <https://api.github.com/x?page=1>; rel="first""#;
-        assert_eq!(parse_next_link(h), None);
+        assert_eq!(parse_link(h, "next"), None);
+    }
+
+    #[test]
+    fn last_link_and_page_numbers() {
+        let h = r#"<https://api.github.com/x?q=a%20b&page=2>; rel="next", <https://api.github.com/x?q=a%20b&page=5>; rel="last""#;
+        let last = Url::parse(&parse_link(h, "last").unwrap()).unwrap();
+        assert_eq!(page_of(&last), Some(5));
+        let next = Url::parse(&parse_link(h, "next").unwrap()).unwrap();
+        let third = with_page(&next, 3);
+        assert_eq!(page_of(&third), Some(3));
+        // Everything but the page number is kept.
+        let q: Vec<(String, String)> = third
+            .query_pairs()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect();
+        assert_eq!(q[0], ("q".to_string(), "a b".to_string()));
+        assert_eq!(third.host_str(), Some("api.github.com"));
     }
 
     #[test]

@@ -1,4 +1,22 @@
-import { defineConfig, type DefaultTheme } from 'vitepress'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { defineConfig, type DefaultTheme, type HeadConfig } from 'vitepress'
+
+const hostname = 'https://ghusage.under18.dev'
+const siteName = 'ghusage'
+const ogImage = `${hostname}/overview.webp`
+
+const enDescription =
+  'ghusage is a CLI and terminal UI that analyzes your GitHub activity: commits, pull requests, reviews, comments, issues, and everything that happens inside pull requests.'
+const jaDescription =
+  'ghusage は GitHub での活動を分析する CLI とターミナル UI です。コミット、プルリクエスト、レビュー、コメント、Issue、プルリクエストの中で起きたことまで集計します。'
+
+// Maps a source path such as `ja/guide/tui.md` to its public URL path.
+// The site uses clean URLs, so `.md` is dropped and `index` maps to the directory.
+function toUrlPath(relativePath: string): string {
+  const path = relativePath.replace(/\.md$/, '').replace(/(^|\/)index$/, '$1')
+  return `/${path}`
+}
 
 const enNav: DefaultTheme.NavItem[] = [
   { text: 'Guide', link: '/guide/getting-started' },
@@ -64,13 +82,64 @@ export default defineConfig({
   title: 'ghusage',
   base: '/',
   cleanUrls: true,
-  lastUpdated: false,
+  // Also provides `lastmod` for the sitemap; the docs workflow fetches full history.
+  lastUpdated: true,
   ignoreDeadLinks: false,
+  description: enDescription,
+  head: [
+    ['meta', { property: 'og:site_name', content: siteName }],
+    ['meta', { property: 'og:type', content: 'website' }],
+    ['meta', { property: 'og:image', content: ogImage }],
+    ['meta', { property: 'og:image:alt', content: 'ghusage overview output in a terminal' }],
+    ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
+    ['meta', { name: 'twitter:image', content: ogImage }],
+  ],
+  sitemap: {
+    hostname,
+  },
+  transformPageData(pageData, { siteConfig }) {
+    if (pageData.isNotFound) return
+
+    const isJa = pageData.relativePath.startsWith('ja/')
+    const enRelative = isJa ? pageData.relativePath.slice('ja/'.length) : pageData.relativePath
+    const jaRelative = `ja/${enRelative}`
+    const hasEn = existsSync(join(siteConfig.srcDir, enRelative))
+    const hasJa = existsSync(join(siteConfig.srcDir, jaRelative))
+
+    const url = `${hostname}${toUrlPath(pageData.relativePath)}`
+    const title = pageData.title ? `${pageData.title} | ${siteName}` : siteName
+    const description =
+      pageData.frontmatter.description || pageData.description || (isJa ? jaDescription : enDescription)
+
+    const head: HeadConfig[] = [
+      ['link', { rel: 'canonical', href: url }],
+      ['meta', { property: 'og:title', content: title }],
+      ['meta', { property: 'og:description', content: description }],
+      ['meta', { property: 'og:url', content: url }],
+      ['meta', { property: 'og:locale', content: isJa ? 'ja_JP' : 'en_US' }],
+      ['meta', { name: 'twitter:title', content: title }],
+      ['meta', { name: 'twitter:description', content: description }],
+    ]
+
+    if (hasEn && hasJa) {
+      head.push(['meta', { property: 'og:locale:alternate', content: isJa ? 'en_US' : 'ja_JP' }])
+      const enUrl = `${hostname}${toUrlPath(enRelative)}`
+      const jaUrl = `${hostname}${toUrlPath(jaRelative)}`
+      head.push(
+        ['link', { rel: 'alternate', hreflang: 'en', href: enUrl }],
+        ['link', { rel: 'alternate', hreflang: 'ja', href: jaUrl }],
+        ['link', { rel: 'alternate', hreflang: 'x-default', href: enUrl }],
+      )
+    }
+
+    pageData.frontmatter.head ??= []
+    pageData.frontmatter.head.push(...head)
+  },
   locales: {
     root: {
       label: 'English',
       lang: 'en-US',
-      description: 'Know what you actually did on GitHub.',
+      description: enDescription,
       themeConfig: {
         nav: enNav,
         sidebar: enSidebar,
@@ -80,7 +149,7 @@ export default defineConfig({
       label: '日本語',
       lang: 'ja-JP',
       link: '/ja/',
-      description: 'GitHub で実際に何をしたのかを把握する。',
+      description: jaDescription,
       themeConfig: {
         nav: jaNav,
         sidebar: jaSidebar,

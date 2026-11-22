@@ -48,8 +48,10 @@ jobs:
           echo "npm=$npm" >> "$GITHUB_OUTPUT"
           cat "$GITHUB_OUTPUT"
 
-  check:
-    name: fmt / clippy / test / build (${{ matrix.os }})
+  # Tests and the release build of each OS run as separate jobs, so the
+  # slowest runners (Windows, macOS Intel) do them at the same time.
+  test:
+    name: fmt / clippy / test (${{ matrix.os }})
     needs: inputs
     runs-on: ${{ matrix.os }}
     strategy:
@@ -57,7 +59,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-latest]
     env:
-      VERIFIED_KEY: ci-verified-check-${{ matrix.os }}-${{ needs.inputs.outputs.rust }}
+      VERIFIED_KEY: ci-verified-test-${{ matrix.os }}-${{ needs.inputs.outputs.rust }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -89,6 +91,51 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - if: steps.verified.outputs.cache-hit != 'true'
         run: cargo test --workspace --all-targets --no-fail-fast
+      # Reached only when every step above passed.
+      - name: Remember that these inputs passed
+        if: steps.verified.outputs.cache-hit != 'true'
+        shell: bash
+        run: echo "${{ needs.inputs.outputs.rust }}" > .ci-verified
+      - if: steps.verified.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .ci-verified
+          key: ${{ env.VERIFIED_KEY }}
+
+  build:
+    name: release build (${{ matrix.os }})
+    needs: inputs
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-latest]
+    env:
+      VERIFIED_KEY: ci-verified-build-${{ matrix.os }}-${{ needs.inputs.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The build must never depend on private submodules.
+          submodules: false
+      - id: verified
+        name: Look for an earlier successful run with the same inputs
+        uses: actions/cache/restore@v4
+        with:
+          path: .ci-verified
+          key: ${{ env.VERIFIED_KEY }}
+          lookup-only: true
+      - if: steps.verified.outputs.cache-hit == 'true'
+        run: echo "Inputs ${{ needs.inputs.outputs.rust }} already passed on ${{ matrix.os }}; skipping."
+      # The same pinned toolchain as the tests.
+      - if: steps.verified.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+      - if: steps.verified.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Keep compiled dependencies even when a later step fails.
+          cache-on-failure: true
       - if: steps.verified.outputs.cache-hit != 'true'
         run: cargo build --workspace --release
       - name: Smoke test release binary

@@ -33,6 +33,34 @@ pub struct Dataset {
     /// Events, deduplicated by event id and sorted by (time, rank, id).
     pub events: Vec<ActivityEvent>,
     pub coverage: Vec<CoverageRecord>,
+    /// Lines added and deleted per commit, keyed by the commit's event id
+    /// ([`EventId::commit`](crate::model::EventId::commit)). Commits without
+    /// an entry have no known statistics (not zero).
+    pub commit_stats: HashMap<String, LineCounts>,
+    /// Latest observed diff of each pull request (a snapshot, not history).
+    pub pr_diffs: BTreeMap<String, PrDiff>,
+    /// Commits (event ids) whose line counts stay out of the totals (see
+    /// [`Dataset::with_line_count_rule`]).
+    pub lines_excluded: HashSet<String>,
+}
+
+/// Lines added and deleted by one commit, as reported by GitHub (for a
+/// merge commit: against its first parent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LineCounts {
+    pub additions: u64,
+    pub deletions: u64,
+}
+
+/// A pull request's diff between its base and head when it was observed.
+/// It changes with pushes, force pushes and base updates, so it describes
+/// the pull request at `observed_at`, not activity in a period.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrDiff {
+    pub additions: u64,
+    pub deletions: u64,
+    pub changed_files: u64,
+    pub observed_at: DateTime<Utc>,
 }
 
 impl Dataset {
@@ -78,7 +106,67 @@ impl Dataset {
             threads: threads.into_iter().map(|t| (t.id.clone(), t)).collect(),
             events,
             coverage,
+            commit_stats: HashMap::new(),
+            pr_diffs: BTreeMap::new(),
+            lines_excluded: HashSet::new(),
         }
+        .with_line_count_rule(&HashSet::new())
+    }
+
+    /// Adds commit statistics and pull request diffs.
+    pub fn with_diff_stats(
+        mut self,
+        commit_stats: HashMap<String, LineCounts>,
+        pr_diffs: BTreeMap<String, PrDiff>,
+    ) -> Self {
+        self.commit_stats = commit_stats;
+        self.pr_diffs = pr_diffs;
+        self
+    }
+
+    /// Sets which commits' line counts stay out of the totals: commits that
+    /// appear in pull requests of the dataset (by anyone), where none of those
+    /// appearances is current in a pull request that is open, closed
+    /// without merging, or merged with a merge commit
+    /// (`merged_by_merge_commit`, pull request ids). Such commits only
+    /// exist in pull requests merged by squash or rebase (or by an unknown
+    /// method), or were removed from a pull request by a force push: their
+    /// changes reach the default branch as other commits, so counting them
+    /// would count the same change twice. Commits that never appear in a
+    /// pull request count. The rule depends only on pull requests, not on
+    /// how a commit was found, so fetching the same data again never
+    /// changes it.
+    pub fn with_line_count_rule(mut self, merged_by_merge_commit: &HashSet<String>) -> Self {
+        // Commit event id -> whether any appearance keeps it counted.
+        let mut appearances: HashMap<String, bool> = HashMap::new();
+        for e in &self.events {
+            if e.event_type != EventType::PrCommit {
+                continue;
+            }
+            let (Some(pr_id), Some(sha)) = (e.parent_pr_id.as_deref(), e.meta.sha.as_deref())
+            else {
+                continue;
+            };
+            let merged = self
+                .pull_requests
+                .get(pr_id)
+                .is_some_and(|pr| pr.state == PrState::Merged);
+            let keeps = !e.is_removed() && (!merged || merged_by_merge_commit.contains(pr_id));
+            *appearances
+                .entry(crate::model::EventId::commit(&e.repository_id, sha).0)
+                .or_insert(false) |= keeps;
+        }
+        self.lines_excluded = appearances
+            .into_iter()
+            .filter(|(_, keeps)| !keeps)
+            .map(|(id, _)| id)
+            .collect();
+        self
+    }
+
+    /// Whether a commit's line counts go into the totals.
+    pub fn counts_lines(&self, commit_event_id: &str) -> bool {
+        !self.lines_excluded.contains(commit_event_id)
     }
 
     pub fn repo_name(&self, repository_id: &str) -> String {
@@ -373,6 +461,58 @@ pub struct Summary {
     /// Distinct local dates with activity by the subject.
     pub active_days: u64,
     pub last_activity: Option<DateTime<Utc>>,
+    /// Lines added and deleted by the counted commits.
+    pub diff_stats: DiffTotals,
+}
+
+/// How much of a set of commits has known diff statistics.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffCoverage {
+    /// No commits to describe (none, or all excluded).
+    #[default]
+    NoCommits,
+    /// Every commit has statistics.
+    Complete,
+    /// Some commits have statistics; the totals cover only those.
+    Partial,
+    /// No commit has statistics; the totals are unknown, not zero.
+    Unavailable,
+}
+
+/// Lines added and deleted by the counted non-merge commits. Merge commits
+/// are left out: GitHub reports their diff against the first parent, which
+/// repeats the changes of the merged branch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffTotals {
+    /// Non-merge commits counted in `commits`.
+    pub commits: u64,
+    /// Of those, commits left out because their changes are counted through
+    /// other commits: they only exist in merged pull requests (squash or
+    /// rebase merges) or were removed from a pull request by a force push.
+    pub excluded: u64,
+    /// Of the rest (`commits - excluded`), the commits with known
+    /// statistics.
+    pub commits_with_stats: u64,
+    /// Sums over `commits_with_stats` commits only.
+    pub additions: u64,
+    pub deletions: u64,
+    pub coverage: DiffCoverage,
+}
+
+impl DiffTotals {
+    fn finish(&mut self) {
+        let counted = self.commits - self.excluded;
+        self.coverage = if counted == 0 {
+            DiffCoverage::NoCommits
+        } else if self.commits_with_stats == counted {
+            DiffCoverage::Complete
+        } else if self.commits_with_stats == 0 {
+            DiffCoverage::Unavailable
+        } else {
+            DiffCoverage::Partial
+        };
+    }
 }
 
 /// Computes a summary over `events` (already filtered to one scope).
@@ -412,8 +552,19 @@ fn summarize_events<'a>(
         let on_subject_pr = ds.pr_author_is_subject(e.parent_pr_id.as_deref());
         match t {
             EventType::CommitAuthored if by_subject => {
-                if commits.insert(e.event_id.as_str()) && e.meta.is_merge_commit == Some(true) {
-                    s.merge_commits += 1;
+                if commits.insert(e.event_id.as_str()) {
+                    if e.meta.is_merge_commit == Some(true) {
+                        s.merge_commits += 1;
+                    } else {
+                        s.diff_stats.commits += 1;
+                        if !ds.counts_lines(e.event_id.as_str()) {
+                            s.diff_stats.excluded += 1;
+                        } else if let Some(d) = ds.commit_stats.get(e.event_id.as_str()) {
+                            s.diff_stats.commits_with_stats += 1;
+                            s.diff_stats.additions += d.additions;
+                            s.diff_stats.deletions += d.deletions;
+                        }
+                    }
                 }
             }
             EventType::PrCommit if by_subject => {
@@ -495,6 +646,7 @@ fn summarize_events<'a>(
     s.active_prs = active_self.len() as u64;
     s.active_prs_all_participants = active_all.len() as u64;
     s.active_days = days.len() as u64;
+    s.diff_stats.finish();
     s
 }
 
@@ -700,6 +852,9 @@ pub struct PrRow {
     pub threads: u64,
     pub last_activity: Option<DateTime<Utc>>,
     pub latest_ci: Option<CheckOutcome>,
+    /// The pull request's base-to-head diff when last fetched: a snapshot of
+    /// the pull request, not changes made in the period.
+    pub diff: Option<PrDiff>,
 }
 
 /// Pull requests active in the period with per-PR counts.
@@ -811,6 +966,7 @@ fn pr_row(
         threads: threads.len() as u64,
         last_activity: last,
         latest_ci: pr.latest_ci,
+        diff: ds.pr_diffs.get(&pr.id).copied(),
     }
 }
 
@@ -1035,6 +1191,8 @@ pub struct PrDetail {
     pub commit_authors: Vec<AuthorCount>,
     pub timing: PrTiming,
     pub timeline: Vec<ActivityEvent>,
+    /// Base-to-head diff when last fetched (a snapshot).
+    pub diff: Option<PrDiff>,
 }
 
 /// Number of commits by one author.
@@ -1115,6 +1273,7 @@ pub fn pr_detail(ds: &Dataset, pr_id: &str, types: &[EventType]) -> Option<PrDet
         commit_authors,
         timing: pr_timing(ds, pr),
         timeline,
+        diff: ds.pr_diffs.get(&pr.id).copied(),
     })
 }
 
@@ -1133,6 +1292,8 @@ pub struct PrCommitRow {
     /// The commit was in the pull request earlier but no longer is (for
     /// example after a force push).
     pub removed: bool,
+    /// Lines added and deleted by the commit, when known.
+    pub lines: Option<LineCounts>,
 }
 
 /// The commits of a pull request, current and removed, one row per SHA,
@@ -1155,6 +1316,10 @@ pub fn pr_commit_rows(ds: &Dataset, pr_id: &str) -> Vec<PrCommitRow> {
             is_merge_commit: e.meta.is_merge_commit == Some(true),
             url: e.url.clone(),
             removed: e.is_removed(),
+            lines: ds
+                .commit_stats
+                .get(crate::model::EventId::commit(&e.repository_id, &sha).as_str())
+                .copied(),
         };
         match by_sha.get_mut(&sha.to_ascii_lowercase()) {
             // A commit still in the pull request wins over a removed copy.

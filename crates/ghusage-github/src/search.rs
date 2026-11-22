@@ -9,16 +9,20 @@ use ghusage_core::model::{
     ActivityEvent, Actor, EventId, EventMeta, EventType, Repository, Source, Visibility,
 };
 use ghusage_core::time::Period;
+use reqwest::header::HeaderMap;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::http::{Transport, parse_time};
+use crate::http::{Transport, page_of, parse_time, with_page};
 use crate::pull_request::RestUser;
 use crate::repos::RestRepo;
 use crate::{ApiError, CommitRecord, Fetched, IssueKind, IssueRef};
 
 /// GitHub returns at most this many results per search query.
 const SEARCH_CAP: u64 = 1000;
+
+/// Results per search page (the most GitHub allows).
+const PER_PAGE: u64 = 100;
 
 /// Whole seconds `[lo, hi)` searched as `lo..hi-1` (bounds are inclusive).
 #[derive(Debug, Clone, Copy)]
@@ -59,6 +63,25 @@ struct SearchOutcome {
     reasons: Vec<String>,
 }
 
+/// Extra attempts for a search page that GitHub reports as incomplete.
+const INCOMPLETE_RETRIES: u32 = 2;
+
+/// Fetches one search page. GitHub marks a page `incomplete_results` when
+/// the search timed out on its side, which happens more often while several
+/// pages are requested at once; such a page is fetched again after a short
+/// wait, and only a page that stays incomplete is reported as such.
+async fn get_page(t: &Transport, url: &reqwest::Url) -> Result<(Value, HeaderMap), ApiError> {
+    let mut page = t.get_json(url).await?;
+    for attempt in 1..=INCOMPLETE_RETRIES {
+        if page.0.get("incomplete_results").and_then(Value::as_bool) != Some(true) {
+            break;
+        }
+        tokio::time::sleep(t.backoff(attempt)).await;
+        page = t.get_json(url).await?;
+    }
+    Ok(page)
+}
+
 /// Runs a search over `period`, splitting ranges whose total exceeds the cap.
 async fn search(
     t: &Transport,
@@ -83,7 +106,7 @@ async fn search(
                 ("per_page", "100"),
             ],
         );
-        let (value, headers) = t.get_json(&first).await?;
+        let (value, headers) = get_page(t, &first).await?;
         let total = value
             .get("total_count")
             .and_then(Value::as_u64)
@@ -110,9 +133,8 @@ async fn search(
             ));
         }
         let mut incomplete = false;
-        let mut page = Some((value, headers));
         let mut seen_urls = HashSet::from([first.to_string()]);
-        while let Some((value, headers)) = page.take() {
+        let mut take = |value: &Value| -> Result<(), ApiError> {
             if value.get("incomplete_results").and_then(Value::as_bool) == Some(true) {
                 incomplete = true;
             }
@@ -121,14 +143,45 @@ async fn search(
                 .and_then(Value::as_array)
                 .ok_or_else(|| ApiError::InvalidResponse("search response without items".into()))?;
             out.items.extend(items.iter().cloned());
-            if let Some(next) = t.next_link(&headers)? {
-                if !seen_urls.insert(next.to_string()) {
-                    return Err(ApiError::InvalidResponse(
-                        "search pagination did not terminate".into(),
-                    ));
-                }
-                page = Some(t.get_json(&next).await?);
+            Ok(())
+        };
+        take(&value)?;
+        // The total says how many pages there are. The rest are fetched at
+        // once (the transport limits how many run at the same time) from
+        // the first page's `next` link with only its page number changed.
+        let pages = total.min(SEARCH_CAP).div_ceil(PER_PAGE);
+        let mut last_headers = headers;
+        let template = t.next_link(&last_headers)?;
+        let mut fetched_up_to = 1;
+        if let Some(next) = template.filter(|u| page_of(u) == Some(2))
+            && pages > 1
+        {
+            let urls: Vec<_> = (2..=pages).map(|n| with_page(&next, n)).collect();
+            let fetched =
+                futures::future::try_join_all(urls.iter().map(|u| get_page(t, u))).await?;
+            for (url, (value, headers)) in urls.iter().zip(fetched) {
+                seen_urls.insert(url.to_string());
+                take(&value)?;
+                last_headers = headers;
             }
+            fetched_up_to = pages;
+        }
+        // Results added while paging can leave more behind the last page.
+        // A `next` link to a page already fetched ends the paging.
+        while let Some(next) = t.next_link(&last_headers)? {
+            match page_of(&next) {
+                Some(n) if n <= fetched_up_to => break,
+                Some(n) => fetched_up_to = n,
+                None => {}
+            }
+            if !seen_urls.insert(next.to_string()) {
+                return Err(ApiError::InvalidResponse(
+                    "search pagination did not terminate".into(),
+                ));
+            }
+            let (value, headers) = get_page(t, &next).await?;
+            take(&value)?;
+            last_headers = headers;
         }
         if incomplete {
             out.reasons.push(format!(

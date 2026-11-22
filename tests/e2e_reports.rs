@@ -1314,18 +1314,36 @@ async fn table_numbers_match_json_metrics() {
     d.expect_code(0);
     let dj = env.offline_json(&["daily"]).await.json();
     let mut rows: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    let mut lines: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for l in d.stdout.lines() {
         let cells: Vec<&str> = l.split_whitespace().collect();
-        if cells.len() == 10
+        if cells.len() == 12
             && (cells[0].starts_with("2024-") || cells[0] == "Total")
-            && cells[1..].iter().all(|c| c.parse::<u64>().is_ok())
+            && cells[1..10].iter().all(|c| c.parse::<u64>().is_ok())
         {
             rows.insert(
                 cells[0].to_string(),
-                cells[1..].iter().map(|c| c.parse().unwrap()).collect(),
+                cells[1..10].iter().map(|c| c.parse().unwrap()).collect(),
+            );
+            lines.insert(
+                cells[0].to_string(),
+                cells[10..].iter().map(|c| c.to_string()).collect(),
             );
         }
     }
+    // +Lines / -Lines: a number, `~` and a number for a partial sum, or `?`
+    // when no commit has known line counts.
+    let line_cells = |s: &Value| -> Vec<String> {
+        let d = &s["diff_stats"];
+        ["additions", "deletions"]
+            .iter()
+            .map(|k| match d["coverage"].as_str().unwrap() {
+                "unavailable" => "?".to_string(),
+                "partial" => format!("~{}", n(&d[*k])),
+                _ => n(&d[*k]).to_string(),
+            })
+            .collect()
+    };
     assert_eq!(rows.len(), 8, "{}", d.stdout);
     let summary_cells = |s: &Value| -> Vec<u64> {
         vec![
@@ -1343,8 +1361,10 @@ async fn table_numbers_match_json_metrics() {
     for b in dj["activity_breakdown"].as_array().unwrap() {
         let label = b["bucket"]["label"].as_str().unwrap();
         assert_eq!(rows[label], summary_cells(&b["summary"]), "{label}");
+        assert_eq!(lines[label], line_cells(&b["summary"]), "{label}");
     }
     assert_eq!(rows["Total"], summary_cells(&dj["metrics"]));
+    assert_eq!(lines["Total"], line_cells(&dj["metrics"]));
 }
 
 // ---------------------------------------------------------------------------

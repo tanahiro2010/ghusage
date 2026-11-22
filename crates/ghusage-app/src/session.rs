@@ -193,6 +193,32 @@ impl Session {
         sync::run(client, &mut self.store, &self.subject, &opts, progress).await
     }
 
+    /// Fetches the line counts still missing for the subject's commits in
+    /// `period` (see [`sync::fetch_line_counts`]).
+    pub async fn fetch_line_counts(
+        &mut self,
+        period: Period,
+        progress: &dyn Fn(SyncProgress),
+    ) -> Result<sync::LineCountSync> {
+        let Some(client) = &self.client else {
+            return Err(AppError::Other("cannot sync in offline mode".into()));
+        };
+        let _lock = match &self.data_dir {
+            Some(dir) => Some(SyncLock::acquire(dir)?),
+            None => None,
+        };
+        sync::fetch_line_counts(
+            client,
+            &mut self.store,
+            &self.subject,
+            self.subject_is_viewer,
+            period,
+            self.config.public_only,
+            progress,
+        )
+        .await
+    }
+
     /// Loads the dataset for a period (or everything).
     pub fn dataset(&self, period: Option<Period>) -> Result<Dataset> {
         let mut ds = self

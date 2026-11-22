@@ -405,6 +405,9 @@ fn own_pull_request_commits_join_the_global_commit_set_once() {
         events: vec![pc("abc", me()), pc("def", me()), pc("fff", other())],
         threads: vec![],
         current_commit_shas: vec!["abc".into(), "def".into(), "fff".into()],
+        commit_stats: vec![],
+        diff: None,
+        merge_commit_parents: None,
         complete_collections: Collection::ALL.to_vec(),
         status: CoverageStatus::Complete,
         notes: vec![],
@@ -584,6 +587,10 @@ fn assert_all_counts_zero(v: &serde_json::Value, path: &str) {
             serde_json::Value::Object(_) => assert_all_counts_zero(x, &p),
             serde_json::Value::Number(n) => assert_eq!(n.as_u64(), Some(0), "{p}"),
             serde_json::Value::Null => {}
+            // Without commits there is nothing to describe.
+            serde_json::Value::String(c) if p.ends_with(".diff_stats.coverage") => {
+                assert_eq!(c, "no_commits", "{p}")
+            }
             other => panic!("{p}: unexpected {other}"),
         }
     }
@@ -814,6 +821,15 @@ fn json_output_matches_documented_schema() {
         "ci",
         "active_days",
         "last_activity",
+        "diff_stats",
+    ];
+    let diff_stats = [
+        "commits",
+        "excluded",
+        "commits_with_stats",
+        "additions",
+        "deletions",
+        "coverage",
     ];
     let review_counts = [
         "total",
@@ -839,6 +855,7 @@ fn json_output_matches_documented_schema() {
     ];
     let check_summary = |s: &serde_json::Value| {
         assert_keys(s, &summary);
+        assert_keys(&s["diff_stats"], &diff_stats);
         assert_keys(&s["reviews_submitted"], &review_counts);
         assert_keys(&s["reviews_received"], &review_counts);
         assert_keys(&s["comments_written"], &comment_counts);
@@ -949,6 +966,7 @@ fn json_output_matches_documented_schema() {
                 "threads",
                 "last_activity",
                 "latest_ci",
+                "diff",
             ],
         );
     }
@@ -1063,6 +1081,7 @@ fn json_output_matches_documented_schema() {
             "discussion_participants",
             "commit_authors",
             "timing",
+            "diff",
             "timeline",
             "coverage",
             "synced_at",

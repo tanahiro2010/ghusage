@@ -54,6 +54,34 @@ before relying on the numbers.
   commits removed this way still count in "Commits"; they no longer count in
   "PR commits".
 
+## Line counts
+
+See [Lines changed](./metrics.md#lines-changed) for the definitions.
+
+- **The rule for commits counted through other commits is provisional.** It
+  decides from the synced pull requests only, and can be wrong:
+  - a commit pushed directly to the default branch that is also part of a
+    pull request merged by squash or rebase is left out, although it reached
+    the default branch itself;
+  - a pull request merged into a branch other than the default branch is
+    treated like any other merged pull request, whether or not its changes
+    ever reached the default branch;
+  - pull requests synced before `ghusage` recorded the merge method have an
+    unknown merge method, so their commits are left out. Run
+    `ghusage sync --full` for the period to record it.
+
+  The rule may be refined in a future version.
+- **GitHub's numbers are used as they are.** The line counts of a commit are
+  what GitHub reports. For a merge commit, they are against its first
+  parent, which is why merge commits are left out of the totals. Binary
+  files, renames and generated files are counted as GitHub counts them.
+- **Line counts of commits outside pull requests are fetched only on
+  request** (`ghusage sync --diff-stats`). Until then the totals are
+  `partial` or `unavailable`, never zero.
+- **Pull request changes are a snapshot.** A pull request's diff is the one
+  seen at the last sync and changes with pushes, force pushes and updates of
+  the base branch. Its history is not kept.
+
 ## Search
 
 - **`updated:` matches the current update time.** GitHub's issue and pull
@@ -189,8 +217,8 @@ the API does not keep cannot be recovered later:
   period or filter is computed in the background and can take a noticeable
   moment.
 - In narrow terminals the Repositories tab hides its less important
-  columns (PR events, active PRs, issues, merged, reviews, then visibility)
-  to keep repository names readable. Very long names can still be shortened;
+  columns (PR events, active PRs, issues, -Lines, +Lines, merged, reviews,
+  then visibility) to keep repository names readable. Very long names can still be shortened;
   widen the terminal or open the repository detail with Enter to see the
   full name.
 - On macOS and Linux, `SIGTERM` and `SIGHUP` end the terminal UI like `q`

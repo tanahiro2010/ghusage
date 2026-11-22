@@ -28,13 +28,13 @@ shows private repository names, like table output.
 | Key | Screen | Contents |
 |---|---|---|
 | `1` | Dashboard | Everything at a glance: commits, PRs created and merged, reviews submitted and received, comments written, issues opened and active days; an activity-per-day chart; the top repositories; the pull requests you were most recently active in; and the coverage of the period |
-| `2` | Overview | Key numbers (commits, PRs created and merged, reviews submitted and received, comments written, active PRs, open PRs now, issues opened, active days), an activity-per-day chart, and the top repositories |
-| `3` | Daily | One row per day (newest first) with commits, PRs, merged, reviews, received, comments, PR commits, issues and active PRs |
+| `2` | Overview | Key numbers (commits, PRs created and merged, reviews submitted and received, comments written, active PRs, open PRs now, issues opened, active days, lines added and lines deleted), an activity-per-day chart, and the top repositories |
+| `3` | Daily | One row per day (newest first) with commits, PRs, merged, reviews, received, comments, PR commits, issues, active PRs, and lines added and deleted (+Lines, -Lines) |
 | | Day Detail | Opened with `Enter` on a day: that day's numbers and what happened, in sections: activity, commits, pull requests, reviews (given and received), comments (written and received), issues |
-| `4` | Repositories | Activity per repository, with visibility and owned/external |
+| `4` | Repositories | Activity per repository, with visibility and owned/external, including lines added and deleted (+Lines, -Lines) |
 | | Repository Detail | Opened with `Enter` on a repository: its numbers for the period and, in sections, its pull requests, commits, issues, reviews, comments and activity |
 | `5` | Pull Requests | Pull requests you were active in during the period: state, title, events, your events, commits, reviews, comments, people, last activity |
-| | PR Detail | Opened with `Enter` on a pull request: state, author, merge, commits, reviews, comments, review threads, latest CI, participants, timings, coverage, URL, and the list of the pull request's commits |
+| | PR Detail | Opened with `Enter` on a pull request: state, author, merge, commits, current changes, reviews, comments, review threads, latest CI, participants, timings, coverage, URL, and the list of the pull request's commits |
 | | PR Timeline | Opened with `Enter` on PR Detail: every event of the pull request in order, filterable by event category |
 | | Commit | Opened with `Enter` on a commit (PR Detail commit list, or the Commits section of a day or repository detail): the commit's facts, message, changed files and diff |
 | `6` | Reviews | Reviews you submitted and reviews on your pull requests. `Enter` opens the reviewed pull request |
@@ -54,6 +54,27 @@ main keys of the current screen.
 
 Activity in the Dashboard and Overview charts is the number of your commits,
 your events inside pull requests, and your issue events per day.
+
+### Line counts
+
+Lines added and deleted use the same
+[definition](../reference/metrics.md#lines-changed) as the CLI:
+
+- Overview shows **Lines added** and **Lines deleted** for the period.
+- Daily and Repositories have **+Lines** and **-Lines** columns. As in table
+  output, `~N` is a sum over only some of the commits and `?` means that no
+  commit has known line counts; run `ghusage sync --diff-stats` to fetch the
+  missing ones. On narrow terminals, Repositories hides these columns early
+  (see [Known limitations](../reference/limitations.md#terminal-ui)).
+- PR Detail shows **Changes (now)**: the pull request's base-to-head diff as
+  of the last sync (`+A -D in F files (base to head as of <time>)`), a
+  snapshot rather than changes in the period.
+- The commit list of PR Detail has a **Lines** column (`+A -D`, `?` when not
+  known) on terminals at least 70 columns wide.
+
+Line counts are easily dominated by generated files, formatting changes,
+dependency updates and moved files, and are not a measure of how much or
+how well someone worked.
 
 ### Dashboard
 
@@ -97,7 +118,8 @@ The Issue Detail lists the issue's events within the selected period only.
 ### PR Detail commits
 
 Below the pull request's facts, PR Detail lists its commits, oldest first:
-short SHA, the first line of the message, author and commit time. Commits
+short SHA, the first line of the message, author, commit time and lines
+added and deleted. Commits
 that were part of the pull request earlier but no longer are (for example
 after a force push) are still listed, dimmed and marked `removed`; merge
 commits are marked `merge`. The title shows how many commits there are and

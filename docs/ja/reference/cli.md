@@ -59,13 +59,15 @@ ghusage prs [--details] [--sort <SORT>] [--state <STATE>] [--all-participants]
 
 既定では、期間内に自分のイベントが1つ以上あるプルリクエストだけを表示します。列の意味は[指標の定義](./metrics.md#pull-request-list)にあります。
 
+`Changes` 列には、各プルリクエストの base と head の差分を `+A -D` の形で表示します(分からないときは `?`)。これは最後に同期した時点のスナップショットで、期間中に行った変更ではありません。表の下にもその旨の注記を出します。[プルリクエストの変更行数](./metrics.md#pull-request-changes)を参照してください。
+
 ### `pr`
 
 ```text
 ghusage pr <URL> [--timeline] [--event-type <TYPES>]...
 ```
 
-1つのプルリクエストについて、状態、作成者、マージ、コミット(プルリクエストにもう含まれていないコミットも含む)、状態ごとのレビュー、種類ごとのコメント、レビュースレッド(現在の状態)、最新の CI の結果、参加者、所要時間、カバレッジを表示します。
+1つのプルリクエストについて、状態、作成者、マージ、コミット(プルリクエストにもう含まれていないコミットも含む)、状態ごとのレビュー、種類ごとのコメント、レビュースレッド(現在の状態)、最新の CI の結果、参加者、所要時間、カバレッジを表示します。`Changes (current snapshot)` の行には、プルリクエストの差分を `+A -D in F files (base to head as of <時刻>)` の形で表示します。まだ分からないときは、その旨を表示します。
 
 | オプション | 説明 |
 |---|---|
@@ -107,10 +109,17 @@ ghusage commit https://github.com/OWNER/REPO/commit/1a2b3c4d5e6f --format json
 ### `sync`
 
 ```text
-ghusage sync [--full]
+ghusage sync [--full] [--diff-stats]
 ```
 
 期間のデータを取得してキャッシュに入れます。`--full` を付けないと、まだ取得し終えていない範囲だけを取得します。`--full` を付けると、期間全体を取得し直します。`--offline` とは併用できません。[同期とキャッシュ](../guide/syncing.md)も参照してください。
+
+| オプション | 説明 |
+|---|---|
+| `--full` | まだ取得していない範囲だけでなく、期間全体を取得し直します |
+| `--diff-stats` | 期間内の自分のコミットのうち、まだ行数が分からないものについて、追加・削除した行数も取得します(100 コミットごとに GraphQL のリクエスト 1 回)。[行数の取得](../guide/syncing.md#line-counts)を参照してください |
+
+`--diff-stats` を付けると、出力に `line counts: N commits (already known K, fetched F, unavailable U)` の行が加わり、JSON の出力には `diff_stats` オブジェクトが入ります([JSON の出力](./json.md#sync)を参照)。
 
 フィルター(`--repo`、`--owner`、`--visibility`、`--ownership`)を指定しても、`sync` が取得する範囲は絞られません。
 

@@ -192,6 +192,7 @@ fn base_batch() -> WriteBatch {
             recorded_at: t(10, 0),
         }],
         cursors: vec![("commits".into(), "cursor-1".into())],
+        ..Default::default()
     }
 }
 
@@ -1422,4 +1423,71 @@ fn cache_files_are_private_to_the_user() {
     }
     let lock = SyncLock::acquire(&dir).unwrap();
     assert_eq!(mode(lock.path()), 0o600);
+}
+
+#[test]
+fn commit_statistics_are_stored_and_unknown_ones_stay_absent() {
+    use ghusage_core::metrics::LineCounts;
+    use ghusage_storage::CommitStats;
+    let mut s = store_with_base();
+    let mut b = WriteBatch {
+        account: "alice".into(),
+        events: vec![commit_event("R1", "bbb222", t(1, 11))],
+        ..Default::default()
+    };
+    b.commit_stats.push(CommitStats {
+        repository_id: "R1".into(),
+        // Upper case: matched like every other SHA.
+        sha: "AAA111".into(),
+        counts: LineCounts {
+            additions: 12,
+            deletions: 3,
+        },
+        observed_at: t(2, 0),
+    });
+    s.apply(&b).unwrap();
+    let ds = alice_dataset(&s);
+    assert_eq!(
+        ds.commit_stats
+            .get(EventId::commit("R1", "aaa111").as_str()),
+        Some(&LineCounts {
+            additions: 12,
+            deletions: 3
+        })
+    );
+    // Never fetched: no entry, rather than zero.
+    assert!(
+        !ds.commit_stats
+            .contains_key(EventId::commit("R1", "bbb222").as_str())
+    );
+    // Applying the same statistics again changes nothing.
+    s.apply(&b).unwrap();
+    assert_eq!(alice_dataset(&s).commit_stats.len(), 1);
+}
+
+#[test]
+fn pull_request_diff_keeps_the_latest_observation() {
+    use ghusage_core::metrics::PrDiff;
+    let mut s = store_with_base();
+    let diff = |additions: u64, at: DateTime<Utc>| PrDiff {
+        additions,
+        deletions: 1,
+        changed_files: 2,
+        observed_at: at,
+    };
+    let batch = |d: PrDiff| WriteBatch {
+        account: "alice".into(),
+        pr_diffs: vec![("PR1".into(), d)],
+        ..Default::default()
+    };
+    s.apply(&batch(diff(40, t(3, 0)))).unwrap();
+    // An older observation arriving later does not replace it.
+    s.apply(&batch(diff(10, t(2, 0)))).unwrap();
+    let ds = alice_dataset(&s);
+    assert_eq!(ds.pr_diffs["PR1"], diff(40, t(3, 0)));
+    // The pull request's own dataset carries it too.
+    let one = s.load_pr_dataset(&subject("alice"), true, "PR1").unwrap();
+    assert_eq!(one.pr_diffs["PR1"].additions, 40);
+    s.apply(&batch(diff(55, t(4, 0)))).unwrap();
+    assert_eq!(alice_dataset(&s).pr_diffs["PR1"].additions, 55);
 }

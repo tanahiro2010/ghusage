@@ -54,6 +54,8 @@
 
 **Merge commits**(`merge_commits`):上のコミットのうち、親が 2 つ以上あるものの数です。`(N merge)` と表示します。
 
+これらのコミットで追加・削除した行数については、[変更行数](#lines-changed)で説明します。
+
 ### プルリクエスト {#pull-requests}
 
 **PRs created**(`prs_created`):期間内に自分が作成したプルリクエストです(作成時刻で数えます)。
@@ -162,6 +164,60 @@ Issue のコメントは収集しません。コメントの指標はプルリ�
 
 `snapshot.threads` は、期間内に誰かの CI 以外の活動があったプルリクエストについて、そのレビュースレッドを現在の状態ごとに数えたものです。`total`、`open`(未解決)、`resolved`(解決済み)、`outdated`(参照しているコードが変わったもの。open や resolved と重なる)があります。スレッドがいつ解決されたかは分かりません。
 
+## 変更行数 {#lines-changed}
+
+`ghusage` は、自分のコミットで追加・削除した行数(JSON の `diff_stats`)を出します。また、それとは別に、各プルリクエストの現在の差分も出します。どちらも GitHub が返す行数を使います。行数がいつ分かるかは、[行数の取得](../guide/syncing.md#line-counts)を参照してください。
+
+::: warning 行数の読み方に注意してください
+行数は、生成されたファイル、整形だけの変更、依存関係の更新(ロックファイルや同梱したコード)、ファイルの移動や名前の変更で大きく変わります。小さく丁寧な修正と、大きな機械的な変更とでは、桁が違うこともあります。行数は仕事の量や質を測るものではありません。点数やランキングにしたり、人と人を比べたりするために使わないでください。追加した行数と削除した行数は、足し合わせずに分けて見てください。
+:::
+
+### 自分のコミットの変更行数 {#lines-changed-by-your-commits}
+
+**Lines changed (your commits)**(`diff_stats`):[Commits](#commits) で数えたコミットから、マージコミットと、[下で説明する除外](#commits-counted-through-other-commits)の対象を除いたものについて、追加した行数と削除した行数を合計したものです。
+
+- 対象のコミットは `commits` と同じです。取得元、期間の区切り(コミッター日時、`--commit-date author` なら作成者の日時)、フィルター、重複の除き方はすべて同じです。デフォルトブランチとプルリクエストの両方で見つかったコミットは 1 回だけ数えます。
+- **マージコミットは除きます。** GitHub はマージコミットの行数を first parent との差分で返すので、マージしたブランチの変更と重なります。その変更は、マージされた側のコミットですでに数えています。
+- 行数が分からないコミットを 0 行として扱うことはありません。合計は行数が分かっているコミットだけを対象にし、それが何件かを `coverage` で示します。
+- 日・週・月・年ごと、リポジトリごとの値も同じ定義なので、足すと期間全体の値と一致します。
+
+| フィールド | 意味 |
+|---|---|
+| `commits` | `commits` で数えたコミットのうち、マージコミットでないもの |
+| `excluded` | そのうち、変更がほかのコミットとして数えられるために除いたもの(下を参照) |
+| `commits_with_stats` | 残りの `commits - excluded` 件のうち、行数が分かっているもの |
+| `additions`, `deletions` | 追加した行数と削除した行数。`commits_with_stats` 件のコミットだけの合計 |
+| `coverage` | `no_commits`:数える対象がない(コミットがない、またはすべて除外)。`complete`:残りのコミットすべての行数が分かっている。`partial`:一部だけ分かっているので、合計は下限。`unavailable`:どのコミットの行数も分からないので、合計は不明(0 ではない) |
+
+コミット数(`commits`)の定義は、これによって変わりません。
+
+### ほかのコミットとして数えられるコミット {#commits-counted-through-other-commits}
+
+コミットの変更が、別のコミットとしてデフォルトブランチに届くことがあります。
+
+- **squash** でマージしたプルリクエストからは、全コミットの変更をまとめた新しいコミットが 1 つ作られます。
+- **rebase** でマージしたプルリクエストからは、各コミットの新しいコピーが作られます。
+- **フォースプッシュ**でプルリクエストから外れたコミットは、たいてい書き直したコミットに置き換わっています。
+
+元のコミットとデフォルトブランチに届いたコミットの両方を数えると、同じ変更を 2 回数えることになります。そこで、同期したプルリクエストに現れるコミットは、行数の合計から除きます(`excluded`)。ただし、現れ方のうち少なくとも 1 つが、今もそのプルリクエストに含まれていて、かつそのプルリクエストが次のどちらかに当たる場合は除きません。
+
+- オープン中、またはマージせずにクローズされた
+- マージコミット(親が 2 つのコミット)でマージされた
+
+つまり、squash や rebase(またはマージ方法が分からない方法)でマージされたプルリクエストにしかないコミットと、フォースプッシュでプルリクエストから外れたコミットを除きます。同期したプルリクエストに一度も現れないコミットは、常に数えます。
+
+マージ方法は、プルリクエストのマージコミットの親の数から判断します。同期のときに、プルリクエストと一緒に記録します。`ghusage` がマージ方法を記録するようになる前に同期したマージ済みのプルリクエストは、マージ方法が分からないので、そのコミットは除外されます。その期間について `ghusage sync --full` を実行すると、マージ方法を記録し直せます。
+
+このルールは暫定のもので、今後のバージョンで見直すことがあります。うまく扱えない場合については、[既知の制約](./limitations.md#line-counts)を参照してください。
+
+### プルリクエストの変更行数 {#pull-request-changes}
+
+**Changes**([`prs`](#pull-request-list) と [`pr`](#pull-request-detail) の `diff`):最後に同期した時点での、プルリクエストの base と head の差分です。追加した行数(`additions`)、削除した行数(`deletions`)、変更したファイルの数(`changed_files`)、観測した時刻(`observed_at`)からなります。
+
+- プルリクエストの**スナップショット**で、期間中に行った変更ではありません。プッシュ、フォースプッシュ、base ブランチの更新のたびに変わります。
+- 自分のコミットの変更行数の合計には足しません。両者は別のものを表していて、足すと同じ変更を 2 回数えることになります。
+- 分からないとき(古いバージョンで同期したプルリクエストなど)は `null` で、表では `?` や「unknown」と表示します。
+
 ## 表のラベル {#table-labels}
 
 | `overview` のラベル | JSON のフィールド |
@@ -184,10 +240,15 @@ Issue のコメントは収集しません。コメントの指標はプルリ�
 | PR internal events | `pr_internal_events` |
 | CI results (not counted as activity) | `ci` |
 | Active days | `active_days` |
+| Lines changed (your commits) | `diff_stats` |
 
-`daily`、`weekly`、`monthly`、`yearly` の列は次のとおりです。Commits(`commits`)、PRs(`prs_created`)、Merged(`prs_merged`)、Reviews(`reviews_submitted.total`)、Received(`reviews_received.total`)、Comments(書いたコメント、全種別)、PR commits(`pr_commits`)、Issues(`issues_opened`)、Active PRs(`active_prs`)。
+「Lines changed (your commits)」の表示は、`diff_stats.coverage` によって次のように変わります。complete なら `+A -D in N commits`、partial なら ``+A -D in K of N commits; the rest are unknown (run `ghusage sync --diff-stats`)``、unavailable なら ``unknown for N commits (run `ghusage sync --diff-stats`)`` です。N は `commits - excluded` です。除外したコミットがあるときは、`; E commits left out as counted through other commits (squash or rebase merges, force pushes)` が後ろに付きます。
 
-`repos` の列は次のとおりで、どれもそのリポジトリでの値です。Commits、PRs(作成)、Merged(自分のもの)、Reviews(提出)、Comments(書いたもの)、Issues(作成)、Active PRs、PR events(`pr_internal_events`)、Last activity。リポジトリは、そこでの自分の活動量(コミット + PR 内のイベント + Issue のイベント)の順に並べ、同じなら名前の順に並べます。
+`daily`、`weekly`、`monthly`、`yearly` の列は次のとおりです。Commits(`commits`)、PRs(`prs_created`)、Merged(`prs_merged`)、Reviews(`reviews_submitted.total`)、Received(`reviews_received.total`)、Comments(書いたコメント、全種別)、PR commits(`pr_commits`)、Issues(`issues_opened`)、Active PRs(`active_prs`)、+Lines(`diff_stats.additions`)、-Lines(`diff_stats.deletions`)。
+
+`repos` の列は次のとおりで、どれもそのリポジトリでの値です。Commits、PRs(作成)、Merged(自分のもの)、Reviews(提出)、Comments(書いたもの)、Issues(作成)、Active PRs、PR events(`pr_internal_events`)、+Lines、-Lines、Last activity。リポジトリは、そこでの自分の活動量(コミット + PR 内のイベント + Issue のイベント)の順に並べ、同じなら名前の順に並べます。
+
++Lines と -Lines の列(表形式と Markdown の出力)では、`~N` は一部のコミットだけの合計(`partial`)、`?` は行数が分かっているコミットがないこと(`unavailable`)を表します。これらの印が出たときは、表の下に注記を出します。
 
 ## プルリクエストの一覧 {#pull-request-list}
 
@@ -207,6 +268,7 @@ Issue のコメントは収集しません。コメントの指標はプルリ�
 | Threads | `threads` | 期間内にインラインコメントがあったレビュースレッド |
 | Last activity | `last_activity` | 上のイベントのうち最も新しいものの時刻 |
 | CI | `latest_ci` | ヘッドコミットの現在の CI の総合状態(スナップショット) |
+| Changes | `diff` | `+A -D`:最後に同期した時点での、プルリクエストの base と head の差分(スナップショットで、期間内の変更ではない。分からないときは `?`)。[プルリクエストの変更行数](#pull-request-changes)を参照 |
 
 ### `--details`:プルリクエストごとの活動 {#details-activity-per-pull-request}
 
@@ -240,6 +302,7 @@ Issue のコメントは収集しません。コメントの指標はプルリ�
 | Comments | コメントを種別ごとに数えたもの。誰のものでも数える |
 | Review threads | 現在の状態:合計、未解決、解決済み、outdated |
 | Latest CI | ヘッドコミットの現在の CI の総合状態 |
+| Changes (current snapshot) | `+A -D in F files (base to head as of <時刻>)`:最後に同期した時点でのプルリクエストの差分。[プルリクエストの変更行数](#pull-request-changes)を参照 |
 | Participants | 数える対象になる CI 以外のイベントが 1 つ以上ある既知のアカウント |
 | Time to first review, Creation to merge | 上の定義のとおり |
 

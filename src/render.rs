@@ -6,7 +6,7 @@ use ghusage_app::commit::{CommitReport, CommitSource, PersonReport};
 use ghusage_app::report::{PrReport, Report, ReportKind};
 use ghusage_core::commit::DiffLineKind;
 use ghusage_core::coverage::{CoverageStatus, CoverageSummary};
-use ghusage_core::metrics::{Stats, Summary};
+use ghusage_core::metrics::{DiffCoverage, DiffTotals, Stats, Summary};
 use ghusage_core::sanitize::{display_width, sanitize_code_line, sanitize_line, truncate_width};
 use ghusage_core::time::Zone;
 
@@ -153,6 +153,15 @@ impl Table {
             ));
         }
         out
+    }
+}
+
+/// A table note as its own Markdown paragraph (nothing when empty).
+fn md_note(note: &str) -> String {
+    if note.is_empty() {
+        String::new()
+    } else {
+        format!("\n{}\n", md_text(note.trim_end()))
     }
 }
 
@@ -346,7 +355,76 @@ fn summary_lines(s: &Summary, open_prs: u64) -> Vec<(&'static str, String)> {
             ),
         ),
         ("Active days", s.active_days.to_string()),
+        ("Lines changed (your commits)", lines_changed(&s.diff_stats)),
     ]
+}
+
+/// Lines added and deleted by the counted commits, saying how many commits
+/// the sums cover.
+fn lines_changed(d: &DiffTotals) -> String {
+    let counted = d.commits - d.excluded;
+    let commits = |n: u64| if n == 1 { "commit" } else { "commits" };
+    let mut out = match d.coverage {
+        DiffCoverage::NoCommits => "no commits".to_string(),
+        DiffCoverage::Unavailable => format!(
+            "unknown for {counted} {} (run `ghusage sync --diff-stats`)",
+            commits(counted)
+        ),
+        DiffCoverage::Complete => format!(
+            "+{} -{} in {counted} {}",
+            d.additions,
+            d.deletions,
+            commits(counted)
+        ),
+        DiffCoverage::Partial => format!(
+            "+{} -{} in {} of {counted} commits; the rest are unknown (run `ghusage sync --diff-stats`)",
+            d.additions, d.deletions, d.commits_with_stats
+        ),
+    };
+    if d.excluded > 0 {
+        out.push_str(&format!(
+            "; {} {} left out as counted through other commits (squash or rebase merges, force pushes)",
+            d.excluded,
+            commits(d.excluded)
+        ));
+    }
+    out
+}
+
+/// Table cells for added and deleted lines: `~` marks sums over only some
+/// of the commits, `?` that none has known counts. (`*` already marks
+/// owned repositories.)
+fn line_cells(d: &DiffTotals) -> [String; 2] {
+    let mark = |n: u64| match d.coverage {
+        DiffCoverage::NoCommits | DiffCoverage::Complete => n.to_string(),
+        DiffCoverage::Partial => format!("~{n}"),
+        DiffCoverage::Unavailable => "?".into(),
+    };
+    [mark(d.additions), mark(d.deletions)]
+}
+
+/// The note under a table with line counts, when one of its cells needs it.
+fn line_note<'a>(rows: impl IntoIterator<Item = &'a DiffTotals>) -> String {
+    let (mut partial, mut unknown) = (false, false);
+    for d in rows {
+        partial |= d.coverage == DiffCoverage::Partial;
+        unknown |= d.coverage == DiffCoverage::Unavailable;
+    }
+    let mut notes = Vec::new();
+    if partial {
+        notes.push("~ sum over only the commits with known line counts");
+    }
+    if unknown {
+        notes.push("? no commit has known line counts");
+    }
+    if notes.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "{}; run `ghusage sync --diff-stats` to fetch them\n",
+            notes.join(", ")
+        )
+    }
 }
 
 fn kv(lines: &[(&str, String)]) -> String {
@@ -373,9 +451,12 @@ fn breakdown_table(r: &Report, total: bool) -> Table {
         "PR commits",
         "Issues",
         "Active PRs",
+        "+Lines",
+        "-Lines",
     ])
-    .numeric(&[1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    .numeric(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     let row = |label: String, s: &Summary| {
+        let [added, deleted] = line_cells(&s.diff_stats);
         vec![
             label,
             s.commits.to_string(),
@@ -387,6 +468,8 @@ fn breakdown_table(r: &Report, total: bool) -> Table {
             s.pr_commits.to_string(),
             s.issues_opened.to_string(),
             s.active_prs.to_string(),
+            added,
+            deleted,
         ]
     };
     for b in &r.activity_breakdown {
@@ -410,9 +493,11 @@ fn repo_table(r: &Report, limit: Option<usize>) -> Table {
         "Issues",
         "Active PRs",
         "PR events",
+        "+Lines",
+        "-Lines",
         "Last activity",
     ])
-    .numeric(&[2, 3, 4, 5, 6, 7, 8, 9])
+    .numeric(&[2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
     .limit(0, 48);
     let zone = Zone::parse(&r.timezone).unwrap_or(Zone::utc());
     for x in r.repositories.iter().take(limit.unwrap_or(usize::MAX)) {
@@ -436,6 +521,8 @@ fn repo_table(r: &Report, limit: Option<usize>) -> Table {
             s.issues_opened.to_string(),
             s.active_prs.to_string(),
             s.pr_internal_events.to_string(),
+            line_cells(&s.diff_stats)[0].clone(),
+            line_cells(&s.diff_stats)[1].clone(),
             self::t(zone, s.last_activity),
         ]);
     }
@@ -469,6 +556,9 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
                 out.push('\n');
                 out.push_str(&style.bold("Top repositories\n"));
                 out.push_str(&repo_table(r, Some(5)).render(style));
+                out.push_str(&style.dim(&line_note(
+                    r.repositories.iter().take(5).map(|x| &x.summary.diff_stats),
+                )));
             }
         }
         ReportKind::Breakdown(g) => {
@@ -480,6 +570,14 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
             };
             out.push_str(&header(r, zone, title, style));
             out.push_str(&breakdown_table(r, true).render(style));
+            out.push_str(
+                &style.dim(&line_note(
+                    r.activity_breakdown
+                        .iter()
+                        .map(|b| &b.summary.diff_stats)
+                        .chain([&r.metrics.diff_stats]),
+                )),
+            );
         }
         ReportKind::Repositories => {
             out.push_str(&header(r, zone, "Repositories", style));
@@ -489,6 +587,9 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
             } else {
                 out.push_str(&t.render(style));
                 out.push_str(&style.dim("* owned by you\n"));
+                out.push_str(&style.dim(&line_note(
+                    r.repositories.iter().map(|x| &x.summary.diff_stats),
+                )));
             }
         }
         ReportKind::PullRequests { .. } => {
@@ -506,8 +607,9 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
                 "Comments",
                 "People",
                 "CI",
+                "Changes",
             ])
-            .numeric(&[1, 5, 6, 7, 8, 9, 10])
+            .numeric(&[1, 5, 6, 7, 8, 9, 10, 12])
             .limit(0, 32)
             .limit(2, 40)
             .limit(4, 16);
@@ -530,12 +632,18 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
                     p.comments.to_string(),
                     p.participants.to_string(),
                     p.latest_ci.map(|c| c.as_str()).unwrap_or("-").to_string(),
+                    p.diff
+                        .map(|d| format!("+{} -{}", d.additions, d.deletions))
+                        .unwrap_or_else(|| "?".into()),
                 ]);
             }
             if t.is_empty() {
                 out.push_str("No pull request activity in this period.\n");
             } else {
                 out.push_str(&t.render(style));
+                out.push_str(&style.dim(
+                    "Changes: each pull request's base-to-head diff when last synced, not changes made in the period (? not known)\n",
+                ));
             }
             if details {
                 out.push('\n');
@@ -780,6 +888,24 @@ pub fn pr(r: &PrReport, timeline: bool, style: Style) -> String {
                     String::new()
                 }
             ),
+        ),
+        (
+            "Changes (current snapshot)",
+            match &r.diff {
+                Some(d) => format!(
+                    "+{} -{} in {} {} (base to head as of {})",
+                    d.additions,
+                    d.deletions,
+                    d.changed_files,
+                    if d.changed_files == 1 {
+                        "file"
+                    } else {
+                        "files"
+                    },
+                    t(zone, Some(d.observed_at))
+                ),
+                None => "unknown (sync the pull request again to fetch it)".into(),
+            },
         ),
         (
             "Reviews",
@@ -1053,6 +1179,9 @@ pub fn report_markdown(r: &Report, kind: ReportKind) -> Option<String> {
             if !r.repositories.is_empty() {
                 out.push_str("\n#### Top repositories\n\n");
                 out.push_str(&repo_table(r, Some(5)).markdown());
+                out.push_str(&md_note(&line_note(
+                    r.repositories.iter().take(5).map(|x| &x.summary.diff_stats),
+                )));
             }
         }
         ReportKind::Repositories => {
@@ -1061,9 +1190,20 @@ pub fn report_markdown(r: &Report, kind: ReportKind) -> Option<String> {
                 out.push_str("No repository activity in this period.\n");
             } else {
                 out.push_str(&t.markdown());
+                out.push_str(&md_note(&line_note(
+                    r.repositories.iter().map(|x| &x.summary.diff_stats),
+                )));
             }
         }
-        _ => out.push_str(&breakdown_table(r, true).markdown()),
+        _ => {
+            out.push_str(&breakdown_table(r, true).markdown());
+            out.push_str(&md_note(&line_note(
+                r.activity_breakdown
+                    .iter()
+                    .map(|b| &b.summary.diff_stats)
+                    .chain([&r.metrics.diff_stats]),
+            )));
+        }
     }
     let mut notes = vec![format!(
         "Coverage: {}",

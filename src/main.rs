@@ -371,7 +371,7 @@ async fn run(cli: Cli) -> Result<i32> {
         }
         Command::Pr(ref a) => pr_cmd(&g, a, zone).await,
         Command::Commit(ref a) => commit_cmd(&g, a, zone).await,
-        Command::Sync(ref a) => sync_cmd(&g, &cmd, zone, a.full).await,
+        Command::Sync(ref a) => sync_cmd(&g, &cmd, zone, a.full, a.diff_stats).await,
         Command::Tui => tui_cmd(&g, &cmd, zone).await,
         Command::Doctor => doctor_cmd(&g, zone).await,
         Command::Auth {
@@ -411,7 +411,7 @@ async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<
             );
             return Ok((s, Period::new(period.start, until)?));
         }
-        let progress = progress::Progress::start();
+        let progress = progress::Progress::start(s.client.as_ref().map(|c| c.activity()));
         let synced = s
             .sync(period, false, g.concurrency as usize, &|p| {
                 progress.update(p)
@@ -598,7 +598,13 @@ async fn commit_cmd(g: &GlobalArgs, a: &cli::CommitArgs, zone: Zone) -> Result<i
     Ok(exit::SUCCESS)
 }
 
-async fn sync_cmd(g: &GlobalArgs, cmd: &Command, zone: Zone, full: bool) -> Result<i32> {
+async fn sync_cmd(
+    g: &GlobalArgs,
+    cmd: &Command,
+    zone: Zone,
+    full: bool,
+    diff_stats: bool,
+) -> Result<i32> {
     if g.offline {
         return Err(AppError::InvalidArgs(
             "sync cannot run with --offline".into(),
@@ -611,12 +617,25 @@ async fn sync_cmd(g: &GlobalArgs, cmd: &Command, zone: Zone, full: bool) -> Resu
             reason.clone(),
         )));
     }
-    let progress = progress::Progress::start();
+    let progress = progress::Progress::start(s.client.as_ref().map(|c| c.activity()));
     let synced = s
         .sync(period, full, g.concurrency as usize, &|p| {
             progress.update(p)
         })
         .await;
+    let synced = match synced {
+        Ok(mut r) if diff_stats => {
+            let counts = s.fetch_line_counts(period, &|p| progress.update(p)).await;
+            counts.map(|c| {
+                r.diff_stats = Some(c);
+                if let Some(client) = &s.client {
+                    r.api = client.stats();
+                }
+                r
+            })
+        }
+        other => other,
+    };
     drop(progress);
     let mut r = synced?;
     let out = match g.format {
@@ -652,6 +671,12 @@ async fn sync_cmd(g: &GlobalArgs, cmd: &Command, zone: Zone, full: bool) -> Resu
                 r.api.total_api_time_ms,
             );
             o.push_str(&format!("  status: {}\n", r.status));
+            if let Some(d) = &r.diff_stats {
+                o.push_str(&format!(
+                    "  line counts: {} commits (already known {}, fetched {}, unavailable {})\n",
+                    d.commits, d.already_known, d.fetched, d.unavailable
+                ));
+            }
             for f in &r.failures {
                 o.push_str(&format!(
                     "  incomplete: {}\n",

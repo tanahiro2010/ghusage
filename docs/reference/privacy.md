@@ -19,8 +19,8 @@
 Fetched data is stored in a SQLite database, `ghusage.db`, in the data
 directory (see [Syncing and the cache](../guide/syncing.md#data-directory)):
 repositories, pull requests, issues, commits, reviews, comments, review
-threads, timeline events, CI results, coverage and sync history, for the
-accounts you analyzed. It may contain private repository names, titles and
+threads, timeline events, CI results, line counts of commits and pull
+requests, coverage and sync history, for the accounts you analyzed. It may contain private repository names, titles and
 metadata that your token can read. Commits you open with `ghusage commit` or
 in the terminal UI are stored with their message, changed file names and
 diffs (the file contents that changed), so they can be shown again offline.
