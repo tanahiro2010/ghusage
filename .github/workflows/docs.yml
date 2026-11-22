@@ -28,6 +28,8 @@ jobs:
         with:
           # The documentation must never depend on private submodules.
           submodules: false
+          # Full history so page timestamps (lastUpdated, sitemap lastmod) are accurate.
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
