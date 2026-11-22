@@ -151,9 +151,10 @@ the API does not keep cannot be recovered later:
   continues.
 - Secondary rate limits are honored with waits of up to 60 seconds.
   `Retry-After` is honored when given in seconds.
-- This rate-limit handling is covered by automated tests that simulate
-  GitHub's rate-limit responses. It has not been exercised by actually
-  exhausting a real account's limits.
+- Waiting for an exhausted primary rate limit has been checked against the
+  real API by using up the search limit. Secondary rate limits and resets
+  more than 15 minutes away are covered only by automated tests that
+  simulate GitHub's responses.
 - When GitHub cannot be reached, report commands fall back to cached data
   with a warning, but nothing new is fetched; `ghusage sync` needs a working
   connection.
