@@ -188,13 +188,14 @@ the API does not keep cannot be recovered later:
 - With very large caches, the first view of a screen after changing the
   period or filter is computed in the background and can take a noticeable
   moment.
-- In narrow terminals (around 110 columns), the Repositories tab shortens
-  long repository names; widen the terminal or open the repository detail
-  with Enter to see the full name.
-- If the terminal UI is ended by a signal such as `SIGTERM` (for example
-  `kill`), the terminal may stay in the alternate screen with input echo
-  turned off. Run `reset` to restore it. Quitting with `q` or `Ctrl+C`
-  restores the terminal.
+- In narrow terminals the Repositories tab hides its less important
+  columns (PR events, active PRs, issues, merged, reviews, then visibility)
+  to keep repository names readable. Very long names can still be shortened;
+  widen the terminal or open the repository detail with Enter to see the
+  full name.
+- On macOS and Linux, `SIGTERM` and `SIGHUP` end the terminal UI like `q`
+  and restore the terminal. A process killed with `SIGKILL` (`kill -9`)
+  cannot restore it; run `reset` in that case.
 
 ## Cache files
 
