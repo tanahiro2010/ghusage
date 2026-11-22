@@ -12,7 +12,7 @@ const ACTOR: &str = "fragment ActorFields on Actor { __typename login ... on Nod
 
 const REPOSITORY: &str = "fragment RepositoryFields on Repository { id name url visibility isFork viewerPermission owner { __typename login ... on Node { id } } }";
 
-const PR_COMMIT: &str = "fragment PrCommitFields on PullRequestCommit { url commit { oid messageHeadline committedDate authoredDate url parents { totalCount } author { user { id login } } committer { user { id login } } } }";
+const PR_COMMIT: &str = "fragment PrCommitFields on PullRequestCommit { url commit { oid messageHeadline committedDate authoredDate url additions deletions parents { totalCount } author { user { id login } } committer { user { id login } } } }";
 
 /// The head commit's latest CI rollup, whether it has any commit statuses,
 /// and its check runs: up to 100 suites with up to 100 runs each (a head
@@ -75,6 +75,7 @@ pub(crate) fn pull_request() -> String {
     ...RepositoryFields
     pullRequest(number: $number) {{
       id number title url state isDraft createdAt updatedAt closedAt mergedAt headRefOid
+      additions deletions changedFiles
       author {{ ...ActorFields }}
       mergedBy {{ ...ActorFields }}
       headCommit: commits(last: 1) {{ nodes {{ commit {{ ...HeadCommitFields }} }} }}

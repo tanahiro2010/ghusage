@@ -8,6 +8,7 @@ mod commit;
 mod gql;
 mod http;
 mod issue;
+mod line_counts;
 mod pull_request;
 mod queries;
 mod repos;
@@ -18,6 +19,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, TimeZone, Utc};
 use ghusage_core::coverage::CoverageStatus;
+use ghusage_core::metrics::{LineCounts, PrDiff};
 use ghusage_core::model::{
     ActivityEvent, Collection, Issue, PullRequest, Repository, ReviewThread,
 };
@@ -27,6 +29,7 @@ use serde_json::json;
 
 pub use activity::{Activity, ActivitySnapshot, InFlight};
 pub use auth::{AuthError, Credentials, Secret, TokenSource, gh_cli_token, resolve_credentials};
+pub use line_counts::CommitRef;
 pub use url::{parse_commit_ref, parse_pr_url};
 
 // ---------------------------------------------------------------------------
@@ -186,6 +189,10 @@ pub struct PrBundle {
     pub threads: Vec<ReviewThread>,
     /// SHAs currently in the pull request.
     pub current_commit_shas: Vec<String>,
+    /// Lines added and deleted by the pull request's commits, by SHA.
+    pub commit_stats: Vec<(String, LineCounts)>,
+    /// The pull request's base-to-head diff when fetched (a snapshot).
+    pub diff: Option<PrDiff>,
     /// Collections fetched completely (all pages).
     pub complete_collections: Vec<Collection>,
     /// Overall coverage of this pull request's internal activity.
@@ -403,6 +410,16 @@ impl GitHubClient {
         sha: &str,
     ) -> Result<ghusage_core::commit::CommitDetail, ApiError> {
         commit::fetch(&self.transport, owner, name, sha).await
+    }
+
+    /// Lines added and deleted by each commit, fetched in batches of up to
+    /// 100 commits per GraphQL query. `None` for a commit GitHub did not
+    /// return.
+    pub async fn commit_line_counts(
+        &self,
+        commits: &[CommitRef],
+    ) -> Result<Vec<(CommitRef, Option<LineCounts>)>, ApiError> {
+        line_counts::fetch(&self.transport, commits).await
     }
 
     /// Repository metadata by owner and name.

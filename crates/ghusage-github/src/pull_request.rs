@@ -6,6 +6,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use ghusage_core::coverage::CoverageStatus;
+use ghusage_core::metrics::{LineCounts, PrDiff};
 use ghusage_core::model::{
     ActivityEvent, Actor, CheckOutcome, Collection, EventId, EventMeta, EventType, PrState,
     PullRequest, ReviewState, ReviewThread, Source,
@@ -46,6 +47,9 @@ struct GqlPullRequest {
     closed_at: Option<String>,
     merged_at: Option<String>,
     head_ref_oid: Option<String>,
+    additions: Option<u64>,
+    deletions: Option<u64>,
+    changed_files: Option<u64>,
     author: Option<GqlActor>,
     merged_by: Option<GqlActor>,
     head_commit: Option<Connection>,
@@ -120,6 +124,8 @@ struct GitCommit {
     committed_date: Option<String>,
     authored_date: Option<String>,
     url: Option<String>,
+    additions: Option<u64>,
+    deletions: Option<u64>,
     parents: Option<Count>,
     author: Option<GitActor>,
     committer: Option<GitActor>,
@@ -840,6 +846,7 @@ pub(crate) async fn fetch(
     let (commit_nodes, bad) = parse_values::<CommitNode>(commits);
     tracker.skipped(Collection::Commits, "commits", bad);
     let mut current_commit_shas = Vec::new();
+    let mut commit_stats = Vec::new();
     let mut bad = 0;
     for node in commit_nodes {
         let Some(c) = node.commit else {
@@ -851,6 +858,15 @@ pub(crate) async fn fetch(
             continue;
         };
         current_commit_shas.push(oid.clone());
+        if let (Some(additions), Some(deletions)) = (c.additions, c.deletions) {
+            commit_stats.push((
+                oid.clone(),
+                LineCounts {
+                    additions,
+                    deletions,
+                },
+            ));
+        }
         let meta = EventMeta {
             sha: Some(oid.clone()),
             author_date: time(&c.authored_date),
@@ -1313,12 +1329,24 @@ pub(crate) async fn fetch(
         coverage: status,
         synced_at: Some(now),
     };
+    // Base-to-head diff now: a snapshot of the pull request.
+    let diff = match (pr.additions, pr.deletions) {
+        (Some(additions), Some(deletions)) => Some(PrDiff {
+            additions,
+            deletions,
+            changed_files: pr.changed_files.unwrap_or(0),
+            observed_at: now,
+        }),
+        _ => None,
+    };
     Ok(PrBundle {
         repository,
         pull_request,
         events,
         threads: out_threads,
         current_commit_shas,
+        commit_stats,
+        diff,
         complete_collections,
         status,
         notes: tracker.notes,

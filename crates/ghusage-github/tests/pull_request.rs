@@ -2141,3 +2141,89 @@ async fn threads_with_only_pending_comments_are_not_counted() {
     assert_eq!(t1.comment_count, 2);
     assert_eq!(b.status, CoverageStatus::Complete);
 }
+
+#[tokio::test]
+async fn pull_request_diff_and_commit_line_counts_are_kept() {
+    let mut pr = rich_pr();
+    pr["additions"] = json!(120);
+    pr["deletions"] = json!(30);
+    pr["changedFiles"] = json!(4);
+    pr["commits"]["nodes"][0]["commit"]["additions"] = json!(9);
+    pr["commits"]["nodes"][0]["commit"]["deletions"] = json!(2);
+    let first = pr["commits"]["nodes"][0]["commit"]["oid"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let server = MockServer::start().await;
+    mount_main(&server, pr_response(pr)).await;
+    mount_checks(&server, &oid(3)).await;
+    let b = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    let d = b.diff.expect("pull request diff");
+    assert_eq!((d.additions, d.deletions, d.changed_files), (120, 30, 4));
+    // Only the commit GitHub gave counts for has them.
+    assert_eq!(b.commit_stats.len(), 1);
+    assert_eq!(b.commit_stats[0].0, first);
+    assert_eq!(
+        (b.commit_stats[0].1.additions, b.commit_stats[0].1.deletions),
+        (9, 2)
+    );
+}
+
+#[tokio::test]
+async fn without_counts_from_github_nothing_is_assumed() {
+    let b = fetch_rich().await;
+    assert_eq!(b.diff, None);
+    assert!(b.commit_stats.is_empty());
+}
+
+#[tokio::test]
+async fn commit_line_counts_are_fetched_in_one_query_per_batch() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query CommitLineCounts"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "r0": {
+                    "c0": { "additions": 5, "deletions": 1 },
+                    "c1": null
+                }
+            }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let refs: Vec<ghusage_github::CommitRef> = [1, 2]
+        .iter()
+        .map(|n| ghusage_github::CommitRef {
+            owner: "acme".into(),
+            name: "widget".into(),
+            sha: sha(*n),
+        })
+        .chain(std::iter::once(ghusage_github::CommitRef {
+            owner: "acme".into(),
+            name: "bad\"name".into(),
+            sha: sha(3),
+        }))
+        .collect();
+    let out = client(&server).commit_line_counts(&refs).await.unwrap();
+    let get = |s: &str| {
+        out.iter()
+            .find(|(c, _)| c.sha == s && c.name == "widget")
+            .map(|(_, l)| *l)
+    };
+    assert_eq!(
+        get(&sha(1)).flatten().map(|l| (l.additions, l.deletions)),
+        Some((5, 1))
+    );
+    // Not returned: unknown, not zero.
+    assert_eq!(get(&sha(2)), Some(None));
+    // An invalid name is never sent and is unknown.
+    assert!(
+        out.iter()
+            .any(|(c, l)| c.name == "bad\"name" && l.is_none())
+    );
+}
