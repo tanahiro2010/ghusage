@@ -266,3 +266,23 @@ fn repository_names_stay_readable_on_a_narrow_terminal() {
         assert!(wide.contains(col), "{col} missing:\n{wide}");
     }
 }
+
+#[test]
+fn line_counts_are_shown_and_unknown_ones_say_so() {
+    let mut app = app();
+    app.handle_key(key('2'));
+    let overview = screen_text(&app, 160, 40);
+    assert!(overview.contains("Lines added"), "{overview}");
+    // The fixture has no line counts: unknown, never 0.
+    let line = overview
+        .lines()
+        .find(|l| l.contains("Lines added"))
+        .unwrap();
+    assert!(line.contains('?'), "{line}");
+    app.handle_key(key('3'));
+    let daily = screen_text(&app, 160, 40);
+    assert!(
+        daily.contains("+Lines") && daily.contains("-Lines"),
+        "{daily}"
+    );
+}
