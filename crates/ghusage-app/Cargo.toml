@@ -12,9 +12,9 @@ chrono-tz = "0.10.4"
 csv = "1.4.0"
 directories = "6.0.0"
 futures = "0.3.34"
-ghusage-core = { version = "0.1.2", path = "../ghusage-core" }
-ghusage-github = { version = "0.1.2", path = "../ghusage-github" }
-ghusage-storage = { version = "0.1.2", path = "../ghusage-storage" }
+ghusage-core = { version = "0.1.3", path = "../ghusage-core" }
+ghusage-github = { version = "0.1.3", path = "../ghusage-github" }
+ghusage-storage = { version = "0.1.3", path = "../ghusage-storage" }
 hex = "0.4.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

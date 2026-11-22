@@ -962,9 +962,13 @@ async fn request_timeout_makes_sync_partial_and_a_rerun_completes_it() {
     assert!(failures.contains("acme/widget#20"), "{failures}");
     assert!(failures.contains("timed out"), "{failures}");
     // The client tries one request at most 5 times (its default attempt
-    // limit); the other pull requests need a single request each.
+    // limit): 4 retries, all for #20. The server may not see the last
+    // attempt, because a request can time out before it arrives on a slow
+    // machine, but it never sees more. The other pull requests need a single
+    // request each.
+    assert_eq!(s["api"]["retries"], 4, "{s}");
     let reqs = requests(&server).await;
-    assert_eq!(pr_detail_requests(&reqs, 20), 5);
+    assert!((1..=5).contains(&pr_detail_requests(&reqs, 20)));
     assert_eq!(pr_detail_requests(&reqs, 10), 1);
     assert_eq!(pr_detail_requests(&reqs, 3), 1);
 

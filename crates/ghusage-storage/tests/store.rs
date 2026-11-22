@@ -1375,6 +1375,34 @@ fn a_period_brings_every_event_of_its_active_pull_requests() {
     assert_eq!(ghusage_core::metrics::summary(&ds, &opts).prs_created, 0);
 }
 
+#[test]
+fn a_period_brings_earlier_events_only_of_the_subjects_own_pull_requests() {
+    // Lifetime timings cover only the subject's pull requests, so history
+    // before the period is not loaded for other people's pull requests.
+    let mut s = Store::open_in_memory().unwrap();
+    s.apply(&base_batch()).unwrap();
+    let mut bobs = pr("PR2", "R2", 2);
+    bobs.author = user("bob");
+    s.apply(&WriteBatch {
+        account: "alice".into(),
+        pull_requests: vec![bobs],
+        events: vec![
+            comment_event("PR2", "C20", t(1, 11)),
+            comment_event("PR2", "C21", t(2, 14)),
+        ],
+        ..Default::default()
+    })
+    .unwrap();
+    let period = Period::new(t(2, 0), t(3, 0)).unwrap();
+    let ds = s
+        .load_dataset(&subject("alice"), true, Some(period))
+        .unwrap();
+    let ids: HashSet<String> = ds.events.iter().map(|e| e.event_id.0.clone()).collect();
+    assert!(ids.contains(&EventId::comment("C21").0));
+    assert!(!ids.contains(&EventId::comment("C20").0));
+    assert!(ids.contains(&EventId::pr_created("PR1").0));
+}
+
 #[cfg(unix)]
 #[test]
 fn cache_files_are_private_to_the_user() {
