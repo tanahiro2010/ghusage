@@ -5,8 +5,8 @@
 //! Error values produced here never contain request headers or the token.
 
 use std::collections::HashSet;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, TimeZone, Utc};
@@ -16,6 +16,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::Semaphore;
 
+use crate::activity::{self, Activity};
 use crate::{ApiError, ApiStats, ClientConfig, Credentials, Secret};
 
 /// Longest backoff between attempts.
@@ -88,6 +89,7 @@ pub(crate) struct Transport {
     token: Option<Secret>,
     pub config: ClientConfig,
     semaphore: Semaphore,
+    pub activity: Arc<Activity>,
     stats: Mutex<ApiStats>,
     api_base: Url,
     graphql_url: Url,
@@ -119,6 +121,7 @@ impl Transport {
             http,
             token: credentials.map(|c| c.token),
             semaphore: Semaphore::new(config.concurrency),
+            activity: Arc::new(Activity::new(config.concurrency)),
             config,
             stats: Mutex::new(ApiStats::default()),
             api_base,
@@ -340,6 +343,7 @@ impl Transport {
             .acquire()
             .await
             .map_err(|_| AttemptError::Network("client is shutting down".into()))?;
+        let _running = self.activity.start(activity::label(url, body));
         let started = Instant::now();
         let limit = self.config.max_response_bytes;
         let fut = async {

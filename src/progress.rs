@@ -1,6 +1,7 @@
 //! Live sync progress on stderr: a spinner line with the state of each data
-//! kind, and below it the latest thing the sync did. Shown only when stderr
-//! is a terminal, and erased when the sync ends.
+//! kind and how many requests run in parallel, the requests in flight, and
+//! the latest thing the sync did. Shown only when stderr is a terminal, and
+//! erased when the sync ends.
 
 use std::io::{IsTerminal, Write};
 use std::sync::{Arc, Condvar, Mutex};
@@ -9,9 +10,12 @@ use std::time::{Duration, Instant};
 
 use ghusage_app::sync::SyncProgress;
 use ghusage_core::coverage::DataKind;
+use ghusage_github::{Activity, ActivitySnapshot};
 
 const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const TICK: Duration = Duration::from_millis(100);
+/// Requests in flight listed one per line; the rest are counted.
+const SHOWN_REQUESTS: usize = 4;
 
 /// What is known about one data kind.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -55,8 +59,14 @@ impl State {
     }
 }
 
-/// Status line and detail line for one frame.
-fn frame(state: &State, tick: usize, elapsed: Duration, width: usize) -> (String, String) {
+/// The lines of one frame: status, requests in flight, latest step.
+fn frame(
+    state: &State,
+    activity: Option<&ActivitySnapshot>,
+    tick: usize,
+    elapsed: Duration,
+    width: usize,
+) -> Vec<String> {
     let kind = |label: &str, s: &KindState| match s {
         KindState::Waiting => None,
         KindState::Searching => Some(format!("{label} searching")),
@@ -77,16 +87,36 @@ fn frame(state: &State, tick: usize, elapsed: Duration, width: usize) -> (String
         secs / 60,
         secs % 60
     );
+    if let Some(a) = activity {
+        status.push_str(&format!(
+            " · {}/{} in parallel · {} requests done",
+            a.running.len(),
+            a.limit,
+            a.done
+        ));
+    }
     if !parts.is_empty() {
         status.push_str(" · ");
         status.push_str(&parts.join(" · "));
     }
-    let detail = if state.detail.is_empty() {
-        String::new()
-    } else {
-        format!("  ↳ {}", state.detail)
-    };
-    (truncate(&status, width), truncate(&detail, width))
+    let mut lines = vec![truncate(&status, width)];
+    if let Some(a) = activity {
+        for r in a.running.iter().take(SHOWN_REQUESTS) {
+            let line = format!(
+                "  ▸ {} {:.1}s",
+                ghusage_core::sanitize::sanitize_line(&r.label),
+                r.elapsed.as_secs_f64()
+            );
+            lines.push(truncate(&line, width));
+        }
+        if a.running.len() > SHOWN_REQUESTS {
+            lines.push(format!("  … {} more", a.running.len() - SHOWN_REQUESTS));
+        }
+    }
+    if !state.detail.is_empty() {
+        lines.push(truncate(&format!("  ↳ {}", state.detail), width));
+    }
+    lines
 }
 
 /// Cuts `s` to at most `width` characters, marking the cut with `…`.
@@ -108,20 +138,24 @@ fn terminal_width() -> usize {
 
 /// Draws the progress until it is dropped or the sync finishes.
 pub struct Progress {
-    shared: Option<Arc<(Mutex<State>, Condvar)>>,
+    shared: Option<Arc<Shared>>,
     painter: Option<JoinHandle<()>>,
 }
 
+/// Sync progress plus, when known, the client's requests in flight.
+type Shared = (Mutex<State>, Condvar, Option<Arc<Activity>>);
+
 impl Progress {
     /// Starts drawing on stderr if it is a terminal; otherwise does nothing.
-    pub fn start() -> Self {
+    /// `activity` adds the requests in flight.
+    pub fn start(activity: Option<Arc<Activity>>) -> Self {
         if !std::io::stderr().is_terminal() {
             return Self {
                 shared: None,
                 painter: None,
             };
         }
-        let shared = Arc::new((Mutex::new(State::default()), Condvar::new()));
+        let shared = Arc::new((Mutex::new(State::default()), Condvar::new(), activity));
         let s = Arc::clone(&shared);
         let painter = std::thread::spawn(move || paint(&s));
         Self {
@@ -132,7 +166,7 @@ impl Progress {
 
     pub fn update(&self, p: SyncProgress) {
         if let Some(shared) = &self.shared {
-            let (lock, cv) = &**shared;
+            let (lock, cv, _) = &**shared;
             if let Ok(mut st) = lock.lock() {
                 st.apply(p);
             }
@@ -150,11 +184,11 @@ impl Drop for Progress {
     }
 }
 
-fn paint(shared: &(Mutex<State>, Condvar)) {
-    let (lock, cv) = shared;
+fn paint(shared: &Shared) {
+    let (lock, cv, activity) = shared;
     let started = Instant::now();
     let mut tick = 0;
-    let mut drawn = false;
+    let mut drawn = 0usize;
     let mut err = std::io::stderr();
     loop {
         let Ok(st) = lock.lock() else { return };
@@ -162,9 +196,8 @@ fn paint(shared: &(Mutex<State>, Condvar)) {
             return;
         };
         if st.finished {
-            if drawn {
-                // Erase both lines and leave the cursor where it started.
-                let _ = write!(err, "\r\x1b[2K\n\x1b[2K\x1b[1A\r");
+            if drawn > 0 {
+                let _ = write!(err, "{}", redraw(&[], drawn));
                 let _ = err.flush();
             }
             return;
@@ -173,16 +206,44 @@ fn paint(shared: &(Mutex<State>, Condvar)) {
         if started.elapsed() < Duration::from_millis(300) {
             continue;
         }
-        let (status, detail) = frame(&st, tick, started.elapsed(), terminal_width() - 1);
-        drop(st);
-        let _ = write!(
-            err,
-            "\r\x1b[2K{status}\n\x1b[2K\x1b[2m{detail}\x1b[0m\x1b[1A\r"
+        let snapshot = activity.as_ref().map(|a| a.snapshot());
+        let lines = frame(
+            &st,
+            snapshot.as_ref(),
+            tick,
+            started.elapsed(),
+            terminal_width() - 1,
         );
+        drop(st);
+        let _ = write!(err, "{}", redraw(&lines, drawn));
         let _ = err.flush();
-        drawn = true;
+        drawn = lines.len();
         tick += 1;
     }
+}
+
+/// Escape sequences that replace the `previous` lines drawn last time with
+/// `lines` (the first in normal text, the rest dimmed) and put the cursor
+/// back at the start of the first line.
+fn redraw(lines: &[String], previous: usize) -> String {
+    let total = lines.len().max(previous).max(1);
+    let mut out = String::from("\r");
+    for i in 0..total {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str("\x1b[2K");
+        match lines.get(i) {
+            Some(line) if i == 0 => out.push_str(line),
+            Some(line) => out.push_str(&format!("\x1b[2m{line}\x1b[0m")),
+            None => {}
+        }
+    }
+    if total > 1 {
+        out.push_str(&format!("\x1b[{}A", total - 1));
+    }
+    out.push('\r');
+    out
 }
 
 #[cfg(test)]
@@ -199,22 +260,57 @@ mod tests {
             total: 40,
         });
         st.apply(SyncProgress::Detail("octo/app#12".into()));
-        let (status, detail) = frame(&st, 1, Duration::from_secs(75), 200);
+        let lines = frame(&st, None, 1, Duration::from_secs(75), 200);
         assert_eq!(
-            status,
-            "⠙ Syncing with GitHub 1:15 · pull requests searching · commits 3/40"
+            lines,
+            vec![
+                "⠙ Syncing with GitHub 1:15 · pull requests searching · commits 3/40".to_string(),
+                "  ↳ octo/app#12".to_string(),
+            ]
         );
-        assert_eq!(detail, "  ↳ octo/app#12");
     }
 
     #[test]
     fn frame_fits_the_terminal_width() {
         let mut st = State::default();
         st.apply(SyncProgress::Detail("x".repeat(100)));
-        let (status, detail) = frame(&st, 0, Duration::ZERO, 20);
-        assert_eq!(status.chars().count(), 20);
-        assert!(status.ends_with('…'));
-        assert_eq!(detail.chars().count(), 20);
+        let lines = frame(&st, None, 0, Duration::ZERO, 20);
+        assert_eq!(lines[0].chars().count(), 20);
+        assert!(lines[0].ends_with('…'));
+        assert_eq!(lines[1].chars().count(), 20);
+    }
+
+    #[test]
+    fn frame_lists_requests_in_flight_and_counts_the_rest() {
+        let st = State::default();
+        let running = (0..6)
+            .map(|i| ghusage_github::InFlight {
+                label: format!("search commits p{}", i + 2),
+                elapsed: Duration::from_millis(1200),
+            })
+            .collect();
+        let a = ActivitySnapshot {
+            running,
+            limit: 8,
+            done: 41,
+        };
+        let lines = frame(&st, Some(&a), 0, Duration::from_secs(3), 200);
+        assert_eq!(
+            lines[0],
+            "⠋ Syncing with GitHub 0:03 · 6/8 in parallel · 41 requests done"
+        );
+        assert_eq!(lines[1], "  ▸ search commits p2 1.2s");
+        assert_eq!(lines.len(), 1 + 4 + 1);
+        assert_eq!(lines[5], "  … 2 more");
+    }
+
+    #[test]
+    fn redraw_clears_lines_left_from_a_taller_frame() {
+        let out = redraw(&["a".to_string()], 3);
+        // Three lines cleared, only the first written, cursor back up two.
+        assert_eq!(out.matches("\x1b[2K").count(), 3);
+        assert!(out.ends_with("\x1b[2A\r"));
+        assert_eq!(redraw(&[], 1), "\r\x1b[2K\r");
     }
 
     #[test]

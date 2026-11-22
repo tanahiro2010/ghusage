@@ -2,6 +2,7 @@
 //! rate limits and retries, discovery via search, and normalization of
 //! pull requests, issues, commits and checks into the core event model.
 
+mod activity;
 mod auth;
 mod commit;
 mod gql;
@@ -24,6 +25,7 @@ use ghusage_core::time::Period;
 use serde::Deserialize;
 use serde_json::json;
 
+pub use activity::{Activity, ActivitySnapshot, InFlight};
 pub use auth::{AuthError, Credentials, Secret, TokenSource, gh_cli_token, resolve_credentials};
 pub use url::{parse_commit_ref, parse_pr_url};
 
@@ -234,6 +236,11 @@ impl GitHubClient {
 
     pub fn stats(&self) -> ApiStats {
         self.transport.stats()
+    }
+
+    /// The requests in flight, shared so a progress display can watch them.
+    pub fn activity(&self) -> std::sync::Arc<Activity> {
+        std::sync::Arc::clone(&self.transport.activity)
     }
 
     /// The authenticated user (`GET /user`).

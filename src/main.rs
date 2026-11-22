@@ -411,7 +411,7 @@ async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<
             );
             return Ok((s, Period::new(period.start, until)?));
         }
-        let progress = progress::Progress::start();
+        let progress = progress::Progress::start(s.client.as_ref().map(|c| c.activity()));
         let synced = s
             .sync(period, false, g.concurrency as usize, &|p| {
                 progress.update(p)
@@ -611,7 +611,7 @@ async fn sync_cmd(g: &GlobalArgs, cmd: &Command, zone: Zone, full: bool) -> Resu
             reason.clone(),
         )));
     }
-    let progress = progress::Progress::start();
+    let progress = progress::Progress::start(s.client.as_ref().map(|c| c.activity()));
     let synced = s
         .sync(period, full, g.concurrency as usize, &|p| {
             progress.update(p)
