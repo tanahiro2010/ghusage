@@ -1446,3 +1446,72 @@ async fn pr_timeline_names_actors_and_keeps_occurrence_and_observation_apart() {
         assert!(occurred.to_utc() < started, "{e}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Markdown
+// ---------------------------------------------------------------------------
+
+/// Cells of the Markdown table row whose first cell is `first`.
+fn md_row(md: &str, first: &str) -> Vec<String> {
+    md.lines()
+        .find(|l| l.starts_with(&format!("| {first} |")))
+        .unwrap_or_else(|| panic!("no row {first:?} in:\n{md}"))
+        .trim_matches('|')
+        .split(" | ")
+        .map(|c| c.trim().to_string())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn markdown_output_matches_json_and_hides_private_names() {
+    let server = serve(&World::base()).await;
+    let env = Env::new(&server);
+    env.sync(&[]).await.expect_code(0);
+
+    let json = env
+        .run(&period_args(&["overview"], &["--format", "json"]))
+        .await;
+    json.expect_code(0).assert_clean();
+    let j = json.json();
+    let md = env
+        .run(&period_args(&["overview"], &["--format", "markdown"]))
+        .await;
+    md.expect_code(0).assert_clean();
+    let md = md.stdout;
+    assert!(md.starts_with("### GitHub activity of "), "{md}");
+    assert!(md.contains("| --- | --- |"), "{md}");
+    let commits = md_row(&md, "Commits");
+    assert!(
+        commits[1].starts_with(&format!("{} (", j["metrics"]["commits"])),
+        "{commits:?}"
+    );
+    let prs = md_row(&md, "PRs created");
+    assert_eq!(prs[1], j["metrics"]["prs_created"].to_string());
+    assert!(md.contains("#### Top repositories"), "{md}");
+    assert!(md.contains("Coverage: complete"), "{md}");
+    // Like JSON and CSV, Markdown is meant to be shared, so the same
+    // redaction of private repositories applies unless asked otherwise.
+    // The base world's only private repository has no activity of mine, so
+    // no hidden name is shown and no note is needed.
+    assert_eq!(j["private_repositories_redacted"], true);
+    assert!(!md.contains("private repository names are hidden"), "{md}");
+
+    // Breakdowns are Markdown tables with a total row.
+    let weekly = env
+        .run(&period_args(&["weekly"], &["--format", "markdown"]))
+        .await;
+    weekly.expect_code(0).assert_clean();
+    let total = md_row(&weekly.stdout, "Total");
+    assert_eq!(total[1], j["metrics"]["commits"].to_string());
+
+    // Reports without a Markdown form are refused with a usage error.
+    let prs = env
+        .run(&period_args(&["prs"], &["--format", "markdown"]))
+        .await;
+    prs.expect_code(2);
+    assert!(
+        prs.stderr.contains("--format markdown is available"),
+        "{}",
+        prs.stderr
+    );
+}

@@ -284,6 +284,22 @@ async fn run(cli: Cli) -> Result<i32> {
             "--format csv is not available for this command; use table or json".into(),
         ));
     }
+    if g.format == Format::Markdown
+        && !matches!(
+            cmd,
+            Command::Overview
+                | Command::Daily
+                | Command::Weekly
+                | Command::Monthly
+                | Command::Yearly
+                | Command::Repos
+        )
+    {
+        return Err(AppError::InvalidArgs(
+            "--format markdown is available for overview, daily, weekly, monthly, yearly and repos"
+                .into(),
+        ));
+    }
     let zone = Zone::resolve(g.timezone.as_deref())?;
     match cmd {
         Command::Overview => report_cmd(&g, &cmd, zone, ReportKind::Overview, false).await,
@@ -453,6 +469,11 @@ async fn report_cmd(
         }
         Format::Json => to_json(&r)?,
         Format::Csv => csv_out::report_csv(&r, kind),
+        Format::Markdown => render::report_markdown(&r, kind).ok_or_else(|| {
+            AppError::InvalidArgs(
+                "--format markdown is available for overview, daily, weekly, monthly, yearly and repos".into(),
+            )
+        })?,
     };
     print_stdout(&out)?;
     if s.is_offline() && !r.overall_coverage().is_complete() && g.format == Format::Table {
@@ -546,6 +567,7 @@ async fn pr_cmd(g: &GlobalArgs, a: &cli::PrArgs, zone: Zone) -> Result<i32> {
         Format::Table => render::pr(&r, a.timeline, style(g, std::io::stdout().is_terminal())),
         Format::Json => to_json(&r)?,
         Format::Csv => csv_out::pr_csv(&r),
+        Format::Markdown => unreachable!("rejected before the command runs"),
     };
     print_stdout(&out)?;
     Ok(require_complete(g, r.coverage))

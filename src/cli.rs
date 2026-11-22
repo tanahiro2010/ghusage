@@ -92,6 +92,9 @@ pub enum Format {
     Table,
     Json,
     Csv,
+    /// GitHub-flavored Markdown (overview, daily, weekly, monthly, yearly and
+    /// repos only), e.g. for a profile README.
+    Markdown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
