@@ -503,7 +503,7 @@ impl Store {
             thread_from_row,
         )?;
         let events = match range {
-            None => query_list(
+            None => query_events(
                 &self.conn,
                 &format!(
                     "SELECT {EVENT_COLS} FROM activity_events e \
@@ -511,14 +511,13 @@ impl Store {
                      WHERE ae.account_id = ?1"
                 ),
                 params![account_id],
-                event_from_row,
             )?,
             Some(period) => {
                 // Coarse filter on whole seconds (uses the indexes), then an
                 // exact half-open check including sub-second precision.
                 let lo = secs(period.start);
                 let hi = secs(period.end);
-                let mut events = query_list(
+                let mut events = query_events(
                     &self.conn,
                     &format!(
                         "SELECT {EVENT_COLS} FROM activity_events e \
@@ -528,7 +527,6 @@ impl Store {
                               OR (e.author_date BETWEEN ?2 AND ?3))"
                     ),
                     params![account_id, lo, hi],
-                    event_from_row,
                 )?;
                 events.retain(|e| {
                     period.contains(e.occurred_at)
@@ -552,13 +550,13 @@ impl Store {
                     .map(str::to_owned)
                     .collect();
                 let mut stmt = self.conn.prepare_cached(&pr_events_sql())?;
+                let cols = EventCols::of(&stmt)?;
                 let mut active: Vec<String> = active.into_iter().collect();
                 active.sort();
                 for pr in active {
-                    let rows =
-                        stmt.query_map(params![account_id, pr], |r| Ok(event_from_row(r)))?;
-                    for row in rows {
-                        let e = row??;
+                    let mut rows = stmt.query(params![account_id, pr])?;
+                    while let Some(row) = rows.next()? {
+                        let e = cols.event(row)?;
                         if seen.insert(e.event_id.0.clone()) {
                             events.push(e);
                         }
@@ -603,11 +601,10 @@ impl Store {
             params![pr_id],
             pr_from_row,
         )?;
-        let events = query_list(
+        let events = query_events(
             &self.conn,
             &format!("SELECT {EVENT_COLS} FROM activity_events e WHERE e.parent_pr_id = ?1"),
             params![pr_id],
-            event_from_row,
         )?;
         let threads = query_list(
             &self.conn,
@@ -1648,35 +1645,103 @@ fn thread_from_row(r: &Row<'_>) -> Result<ReviewThread> {
     })
 }
 
-fn event_from_row(r: &Row<'_>) -> Result<ActivityEvent> {
-    let ty: String = r.get("event_type")?;
-    let source: String = r.get("source")?;
-    let mut meta: EventMeta = from_json("event metadata", &r.get::<_, String>("meta")?)?;
-    meta.author_date = opt_time(r.get("author_date")?, r.get("author_date_ns")?)?;
-    meta.removed_observed_at = opt_time(
-        r.get("removed_observed_at")?,
-        r.get("removed_observed_at_ns")?,
-    )?;
-    Ok(ActivityEvent {
-        event_id: EventId(r.get("event_id")?),
-        event_type: EventType::parse(&ty)
-            .ok_or_else(|| StorageError::Data(format!("unknown stored event type {ty:?}")))?,
-        actor: actor(
-            r.get("actor_id")?,
-            r.get("actor_login")?,
-            &r.get::<_, String>("actor_kind")?,
-        )?,
-        repository_id: r.get("repository_id")?,
-        entity_id: r.get("entity_id")?,
-        parent_pr_id: r.get("parent_pr_id")?,
-        occurred_at: time(r.get("occurred_at")?, r.get("occurred_at_ns")?)?,
-        observed_at: time(r.get("observed_at")?, r.get("observed_at_ns")?)?,
-        source: Source::parse(&source)
-            .ok_or_else(|| StorageError::Data(format!("unknown stored source {source:?}")))?,
-        url: r.get("url")?,
-        meta,
-        coverage: CoverageStatus::parse(&r.get::<_, String>("coverage")?),
-    })
+/// Column positions of an event query, looked up once per statement instead
+/// of by name on every row (the name lookup dominated large loads).
+struct EventCols {
+    event_id: usize,
+    event_type: usize,
+    actor_id: usize,
+    actor_login: usize,
+    actor_kind: usize,
+    repository_id: usize,
+    entity_id: usize,
+    parent_pr_id: usize,
+    occurred_at: usize,
+    occurred_at_ns: usize,
+    observed_at: usize,
+    observed_at_ns: usize,
+    source: usize,
+    url: usize,
+    meta: usize,
+    author_date: usize,
+    author_date_ns: usize,
+    removed_observed_at: usize,
+    removed_observed_at_ns: usize,
+    coverage: usize,
+}
+
+impl EventCols {
+    fn of(stmt: &rusqlite::Statement<'_>) -> Result<Self> {
+        let i = |name: &str| stmt.column_index(name);
+        Ok(Self {
+            event_id: i("event_id")?,
+            event_type: i("event_type")?,
+            actor_id: i("actor_id")?,
+            actor_login: i("actor_login")?,
+            actor_kind: i("actor_kind")?,
+            repository_id: i("repository_id")?,
+            entity_id: i("entity_id")?,
+            parent_pr_id: i("parent_pr_id")?,
+            occurred_at: i("occurred_at")?,
+            occurred_at_ns: i("occurred_at_ns")?,
+            observed_at: i("observed_at")?,
+            observed_at_ns: i("observed_at_ns")?,
+            source: i("source")?,
+            url: i("url")?,
+            meta: i("meta")?,
+            author_date: i("author_date")?,
+            author_date_ns: i("author_date_ns")?,
+            removed_observed_at: i("removed_observed_at")?,
+            removed_observed_at_ns: i("removed_observed_at_ns")?,
+            coverage: i("coverage")?,
+        })
+    }
+
+    fn event(&self, r: &Row<'_>) -> Result<ActivityEvent> {
+        let ty: String = r.get(self.event_type)?;
+        let source: String = r.get(self.source)?;
+        let mut meta: EventMeta = from_json("event metadata", &r.get::<_, String>(self.meta)?)?;
+        meta.author_date = opt_time(r.get(self.author_date)?, r.get(self.author_date_ns)?)?;
+        meta.removed_observed_at = opt_time(
+            r.get(self.removed_observed_at)?,
+            r.get(self.removed_observed_at_ns)?,
+        )?;
+        Ok(ActivityEvent {
+            event_id: EventId(r.get(self.event_id)?),
+            event_type: EventType::parse(&ty)
+                .ok_or_else(|| StorageError::Data(format!("unknown stored event type {ty:?}")))?,
+            actor: actor(
+                r.get(self.actor_id)?,
+                r.get(self.actor_login)?,
+                &r.get::<_, String>(self.actor_kind)?,
+            )?,
+            repository_id: r.get(self.repository_id)?,
+            entity_id: r.get(self.entity_id)?,
+            parent_pr_id: r.get(self.parent_pr_id)?,
+            occurred_at: time(r.get(self.occurred_at)?, r.get(self.occurred_at_ns)?)?,
+            observed_at: time(r.get(self.observed_at)?, r.get(self.observed_at_ns)?)?,
+            source: Source::parse(&source)
+                .ok_or_else(|| StorageError::Data(format!("unknown stored source {source:?}")))?,
+            url: r.get(self.url)?,
+            meta,
+            coverage: CoverageStatus::parse(&r.get::<_, String>(self.coverage)?),
+        })
+    }
+}
+
+fn query_events<P: rusqlite::Params>(
+    conn: &Connection,
+    sql: &str,
+    params: P,
+) -> Result<Vec<ActivityEvent>> {
+    let mut stmt = conn.prepare(sql)?;
+    let cols = EventCols::of(&stmt)?;
+    let mut rows = stmt.query(params)?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(cols.event(row)?);
+    }
+    Ok(out)
 }
 
 fn sync_run_from_row(r: &Row<'_>) -> Result<SyncRun> {
