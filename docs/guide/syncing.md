@@ -10,7 +10,7 @@ For the requested period, a sync fetches three kinds of data:
 
 | Data kind | How it is found | What is stored |
 |---|---|---|
-| `commits` | Commits whose author is your account, by committer date: GitHub commit search, plus the default-branch commit list of each of your repositories pushed to in the period and each repository with your commits or pull requests | Commits, plus your commits found inside synced pull requests |
+| `commits` | Commits whose author is your account, by committer date, in repositories you are related to: GitHub commit search, plus the default-branch commit list of each of your repositories pushed to in the period and each repository with your commits or pull requests | Commits, plus your commits found inside synced pull requests |
 | `pull_requests` | Issue search: pull requests that `involves:` you or are `reviewed-by:` you, updated in the period | Each pull request with all of its commits (including their line counts), reviews, review threads and their comments, conversation comments, timeline events, the CI results of its head commit, its current diff and how it was merged |
 | `issues` | Issue search: issues that `involves:` you, updated in the period | Each issue with its open/close/reopen history |
 
@@ -28,7 +28,14 @@ it has indexed. `ghusage` therefore also lists commits directly:
    repository). With `--user`, only the other user's own repositories are
    visible (`GET /users/{login}/repos`).
 2. It adds repositories in which commit search found your commits and
-   repositories of the pull requests found by the sync.
+   repositories of the pull requests found by the sync. Commit search
+   results count only in repositories you are related to: repositories you
+   own, repositories in the list of step 1, and repositories with your pull
+   requests or issues. Search also finds your commits in repositories that
+   only contain a copy of them, such as someone else's project uploaded
+   again as a new repository rather than forked (GitHub does not mark those
+   as forks). Those are skipped: they are not listed, stored or counted.
+   GitHub's contribution graph applies a similar rule.
 3. For each of these repositories (forks excluded, and private ones
    excluded with `--public-only`) it lists your commits on the default
    branch in the range (`GET /repos/{owner}/{repo}/commits?author=...`).
@@ -38,8 +45,9 @@ once. This costs at least one request per repository, so the number of API
 requests grows with the number of repositories you were active in.
 Commits coverage is `complete` only when commit search and every listing
 succeeded. Commits coverage recorded by older versions, which relied on
-commit search alone, is not reused: the next sync fetches those ranges
-again.
+commit search alone or also took search results from unrelated
+repositories, is not reused: the next sync fetches those ranges again and
+drops the commits of unrelated repositories that it finds again in them.
 
 ### Line counts
 
@@ -224,8 +232,8 @@ times, the most recent sync decides its status.
 
 "Complete" always refers to a stated scope. For commits, for example, the
 scope is "commits authored by you on the default branches of repositories you
-pushed to or contributed to (repository listing + commit search), plus
-commits of synced pull requests". The
+pushed to or contributed to (repository listing + commit search in related
+repositories), plus commits of synced pull requests". The
 scope strings are included in JSON output. See
 [Known limitations](../reference/limitations.md) for what lies outside these
 scopes.

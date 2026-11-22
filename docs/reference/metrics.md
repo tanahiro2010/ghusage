@@ -82,7 +82,8 @@ period, identified by repository and SHA.
 
 - Sources: commits whose author is your account on the default branches of
   repositories you pushed to or contributed to (found by listing each
-  repository's commits and by GitHub commit search), plus your commits found
+  repository's commits and by GitHub commit search; search results count
+  only in repositories you are related to), plus your commits found
   inside pull requests `ghusage` has synced. A commit found in several ways
   counts once. See [how commits are found](../guide/syncing.md#how-commits-are-found).
 - A commit is yours when GitHub links its author to your account (usually by
