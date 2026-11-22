@@ -584,6 +584,10 @@ fn assert_all_counts_zero(v: &serde_json::Value, path: &str) {
             serde_json::Value::Object(_) => assert_all_counts_zero(x, &p),
             serde_json::Value::Number(n) => assert_eq!(n.as_u64(), Some(0), "{p}"),
             serde_json::Value::Null => {}
+            // Without commits there is nothing to describe.
+            serde_json::Value::String(c) if p.ends_with(".diff_stats.coverage") => {
+                assert_eq!(c, "no_commits", "{p}")
+            }
             other => panic!("{p}: unexpected {other}"),
         }
     }
@@ -814,6 +818,14 @@ fn json_output_matches_documented_schema() {
         "ci",
         "active_days",
         "last_activity",
+        "diff_stats",
+    ];
+    let diff_stats = [
+        "commits",
+        "commits_with_stats",
+        "additions",
+        "deletions",
+        "coverage",
     ];
     let review_counts = [
         "total",
@@ -839,6 +851,7 @@ fn json_output_matches_documented_schema() {
     ];
     let check_summary = |s: &serde_json::Value| {
         assert_keys(s, &summary);
+        assert_keys(&s["diff_stats"], &diff_stats);
         assert_keys(&s["reviews_submitted"], &review_counts);
         assert_keys(&s["reviews_received"], &review_counts);
         assert_keys(&s["comments_written"], &comment_counts);

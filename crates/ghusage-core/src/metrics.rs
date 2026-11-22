@@ -33,6 +33,31 @@ pub struct Dataset {
     /// Events, deduplicated by event id and sorted by (time, rank, id).
     pub events: Vec<ActivityEvent>,
     pub coverage: Vec<CoverageRecord>,
+    /// Lines added and deleted per commit, keyed by the commit's event id
+    /// ([`EventId::commit`](crate::model::EventId::commit)). Commits without
+    /// an entry have no known statistics (not zero).
+    pub commit_stats: HashMap<String, LineCounts>,
+    /// Latest observed diff of each pull request (a snapshot, not history).
+    pub pr_diffs: BTreeMap<String, PrDiff>,
+}
+
+/// Lines added and deleted by one commit, as reported by GitHub (for a
+/// merge commit: against its first parent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LineCounts {
+    pub additions: u64,
+    pub deletions: u64,
+}
+
+/// A pull request's diff between its base and head when it was observed.
+/// It changes with pushes, force pushes and base updates, so it describes
+/// the pull request at `observed_at`, not activity in a period.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrDiff {
+    pub additions: u64,
+    pub deletions: u64,
+    pub changed_files: u64,
+    pub observed_at: DateTime<Utc>,
 }
 
 impl Dataset {
@@ -78,7 +103,20 @@ impl Dataset {
             threads: threads.into_iter().map(|t| (t.id.clone(), t)).collect(),
             events,
             coverage,
+            commit_stats: HashMap::new(),
+            pr_diffs: BTreeMap::new(),
         }
+    }
+
+    /// Adds commit statistics and pull request diffs.
+    pub fn with_diff_stats(
+        mut self,
+        commit_stats: HashMap<String, LineCounts>,
+        pr_diffs: BTreeMap<String, PrDiff>,
+    ) -> Self {
+        self.commit_stats = commit_stats;
+        self.pr_diffs = pr_diffs;
+        self
     }
 
     pub fn repo_name(&self, repository_id: &str) -> String {
@@ -373,6 +411,52 @@ pub struct Summary {
     /// Distinct local dates with activity by the subject.
     pub active_days: u64,
     pub last_activity: Option<DateTime<Utc>>,
+    /// Lines added and deleted by the counted commits.
+    pub diff_stats: DiffTotals,
+}
+
+/// How much of a set of commits has known diff statistics.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffCoverage {
+    /// No commits to describe.
+    #[default]
+    NoCommits,
+    /// Every commit has statistics.
+    Complete,
+    /// Some commits have statistics; the totals cover only those.
+    Partial,
+    /// No commit has statistics; the totals are unknown, not zero.
+    Unavailable,
+}
+
+/// Lines added and deleted by the counted non-merge commits. Merge commits
+/// are left out: GitHub reports their diff against the first parent, which
+/// repeats the changes of the merged branch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffTotals {
+    /// Non-merge commits counted in `commits`.
+    pub commits: u64,
+    /// Of those, the commits with known statistics.
+    pub commits_with_stats: u64,
+    /// Sums over `commits_with_stats` commits only.
+    pub additions: u64,
+    pub deletions: u64,
+    pub coverage: DiffCoverage,
+}
+
+impl DiffTotals {
+    fn finish(&mut self) {
+        self.coverage = if self.commits == 0 {
+            DiffCoverage::NoCommits
+        } else if self.commits_with_stats == self.commits {
+            DiffCoverage::Complete
+        } else if self.commits_with_stats == 0 {
+            DiffCoverage::Unavailable
+        } else {
+            DiffCoverage::Partial
+        };
+    }
 }
 
 /// Computes a summary over `events` (already filtered to one scope).
@@ -412,8 +496,17 @@ fn summarize_events<'a>(
         let on_subject_pr = ds.pr_author_is_subject(e.parent_pr_id.as_deref());
         match t {
             EventType::CommitAuthored if by_subject => {
-                if commits.insert(e.event_id.as_str()) && e.meta.is_merge_commit == Some(true) {
-                    s.merge_commits += 1;
+                if commits.insert(e.event_id.as_str()) {
+                    if e.meta.is_merge_commit == Some(true) {
+                        s.merge_commits += 1;
+                    } else {
+                        s.diff_stats.commits += 1;
+                        if let Some(d) = ds.commit_stats.get(e.event_id.as_str()) {
+                            s.diff_stats.commits_with_stats += 1;
+                            s.diff_stats.additions += d.additions;
+                            s.diff_stats.deletions += d.deletions;
+                        }
+                    }
                 }
             }
             EventType::PrCommit if by_subject => {
@@ -495,6 +588,7 @@ fn summarize_events<'a>(
     s.active_prs = active_self.len() as u64;
     s.active_prs_all_participants = active_all.len() as u64;
     s.active_days = days.len() as u64;
+    s.diff_stats.finish();
     s
 }
 
