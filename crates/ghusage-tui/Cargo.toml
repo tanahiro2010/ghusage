@@ -9,14 +9,14 @@ license.workspace = true
 [dependencies]
 chrono = "0.4.45"
 chrono-tz = "0.10.4"
-ghusage-app = { version = "0.1.1", path = "../ghusage-app" }
-ghusage-core = { version = "0.1.1", path = "../ghusage-core" }
-ghusage-github = { version = "0.1.1", path = "../ghusage-github" }
+ghusage-app = { version = "0.1.2", path = "../ghusage-app" }
+ghusage-core = { version = "0.1.2", path = "../ghusage-core" }
+ghusage-github = { version = "0.1.2", path = "../ghusage-github" }
 ratatui = "0.30"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync"] }
 unicode-width = "0.2.3"
 
 [dev-dependencies]
-ghusage-storage = { version = "0.1.1", path = "../ghusage-storage" }
+ghusage-storage = { version = "0.1.2", path = "../ghusage-storage" }
 tempfile = "3.27.0"
