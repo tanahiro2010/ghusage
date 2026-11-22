@@ -757,3 +757,43 @@ async fn issue_search_over_1000_splits_and_deduplicates() {
     assert_eq!(r.items.len(), 1);
     assert_eq!(r.status, CoverageStatus::Complete);
 }
+
+#[tokio::test]
+async fn results_added_while_paging_are_still_fetched() {
+    // The first page says 150 results (two pages), but by the time page 2 is
+    // read a third page exists and page 2 links to it.
+    let server = MockServer::start().await;
+    let all = commits_on_jan1(&widget(), 0, 250);
+    first_page(
+        &server,
+        "commits",
+        &commit_q(JAN1, JAN1_END),
+        search_page(150, false, all[0..100].to_vec()),
+        Some(link_to(&server, "commits", "g", 2)),
+    )
+    .await;
+    later_page(
+        &server,
+        "commits",
+        "g",
+        2,
+        search_page(250, false, all[100..200].to_vec()),
+        Some(link_to(&server, "commits", "g", 3)),
+    )
+    .await;
+    later_page(
+        &server,
+        "commits",
+        "g",
+        3,
+        search_page(250, false, all[200..250].to_vec()),
+        None,
+    )
+    .await;
+    let r = client(&server)
+        .search_commits(LOGIN, jan1(), false)
+        .await
+        .unwrap();
+    assert_eq!(r.status, CoverageStatus::Complete);
+    assert_eq!(r.items.len(), 250);
+}

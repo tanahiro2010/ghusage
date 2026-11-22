@@ -1245,6 +1245,7 @@ name = "ghusage-github"
 version = "0.1.4"
 dependencies = [
  "chrono",
+ "futures",
  "ghusage-core",
  "proptest",
  "reqwest",
