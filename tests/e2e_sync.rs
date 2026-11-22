@@ -1424,3 +1424,78 @@ async fn two_hundred_fifty_commits_over_three_search_pages_are_all_counted() {
     let again = env.offline_json(&["overview"]).await.json();
     assert_eq!(again["metrics"]["commits"], 250);
 }
+
+/// Answers a `CommitLineCounts` query: every requested commit gets
+/// additions = 10 and deletions = 1, except SHAs in `missing`, which GitHub
+/// does not return.
+fn line_count_answer(req: &wiremock::Request, missing: &[String]) -> ResponseTemplate {
+    let body: Value = serde_json::from_slice(&req.body).unwrap();
+    let q = body["query"].as_str().unwrap();
+    let mut data = serde_json::Map::new();
+    let mut repo = String::new();
+    for line in q.lines().map(str::trim) {
+        if let Some((alias, _)) = line.split_once(": repository(") {
+            repo = alias.to_string();
+            data.insert(repo.clone(), json!({}));
+        } else if let Some((alias, rest)) = line.split_once(": object(oid: \"") {
+            let sha = &rest[..40];
+            let v = if missing.iter().any(|m| m == sha) {
+                Value::Null
+            } else {
+                json!({ "additions": 10, "deletions": 1 })
+            };
+            data[&repo][alias] = v;
+        }
+    }
+    ResponseTemplate::new(200).set_body_json(json!({ "data": data }))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn diff_stats_are_fetched_once_and_unknown_ones_stay_unknown() {
+    let world = World::base();
+    let server = serve(&world).await;
+    // sha 3 is an ordinary commit of mine (sha 2 is a merge commit, whose
+    // counts are never asked for).
+    let missing = vec![sha(3)];
+    let m = missing.clone();
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query CommitLineCounts"))
+        .respond_with(move |req: &wiremock::Request| line_count_answer(req, &m))
+        .mount(&server)
+        .await;
+    let env = Env::new(&server);
+
+    // A plain sync asks for no line counts.
+    env.sync(&[]).await.expect_code(0).assert_clean();
+    let asked = |reqs: &[wiremock::Request]| {
+        reqs.iter()
+            .filter(|r| String::from_utf8_lossy(&r.body).contains("query CommitLineCounts"))
+            .count()
+    };
+    assert_eq!(asked(&requests(&server).await), 0);
+    let o = env.offline_json(&["overview"]).await.json();
+    let d = &o["metrics"]["diff_stats"];
+    assert_eq!(d["coverage"], "unavailable", "{d}");
+    let commits = d["commits"].as_u64().unwrap();
+    assert!(commits > 1, "{d}");
+
+    // --diff-stats fetches them; one commit is not returned by GitHub.
+    let r = env.sync(&["--diff-stats"]).await;
+    r.expect_code(0).assert_clean();
+    let s = r.json();
+    assert_eq!(s["diff_stats"]["commits"], commits);
+    assert_eq!(s["diff_stats"]["unavailable"], 1, "{s}");
+    let o = env.offline_json(&["overview"]).await.json();
+    let d = &o["metrics"]["diff_stats"];
+    assert_eq!(d["coverage"], "partial", "{d}");
+    assert_eq!(d["commits_with_stats"], commits - 1);
+    assert_eq!(d["additions"], 10 * (commits - 1));
+    assert_eq!(d["deletions"], commits - 1);
+
+    // Running it again only asks for the one still missing.
+    let before = asked(&requests(&server).await);
+    let s = env.sync(&["--diff-stats"]).await.json();
+    assert_eq!(s["diff_stats"]["already_known"], commits - 1);
+    assert_eq!(asked(&requests(&server).await), before + 1);
+}

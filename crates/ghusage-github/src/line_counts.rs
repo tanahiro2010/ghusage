@@ -15,7 +15,7 @@ use crate::http::Transport;
 pub(crate) const BATCH: usize = 100;
 
 /// A commit to look up.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CommitRef {
     pub owner: String,
     pub name: String,
@@ -71,36 +71,50 @@ pub(crate) async fn fetch(
             ok
         })
         .collect();
-    for batch in valid.chunks(BATCH) {
-        let mut groups: BTreeMap<(String, String), Vec<&CommitRef>> = BTreeMap::new();
-        for c in batch {
-            groups
-                .entry((c.owner.to_ascii_lowercase(), c.name.to_ascii_lowercase()))
-                .or_default()
-                .push(c);
-        }
-        let groups: Vec<(&str, &str, Vec<&CommitRef>)> = groups
-            .values()
-            .map(|cs| (cs[0].owner.as_str(), cs[0].name.as_str(), cs.clone()))
-            .collect();
-        let shaped: Vec<(&str, &str, Vec<&str>)> = groups
-            .iter()
-            .map(|(o, n, cs)| (*o, *n, cs.iter().map(|c| c.sha.as_str()).collect()))
-            .collect();
-        let resp = t.graphql(&query(&shaped), serde_json::json!({})).await?;
-        let data = resp.data.unwrap_or(Value::Null);
-        for (i, (_, _, cs)) in groups.iter().enumerate() {
-            for (j, c) in cs.iter().enumerate() {
-                let node = &data[format!("r{i}")][format!("c{j}")];
-                let counts = match (node["additions"].as_u64(), node["deletions"].as_u64()) {
-                    (Some(additions), Some(deletions)) => Some(LineCounts {
-                        additions,
-                        deletions,
-                    }),
-                    _ => None,
-                };
-                out.push(((*c).clone(), counts));
-            }
+    // Batches run at once; the transport limits how many are in flight.
+    let batches =
+        futures::future::try_join_all(valid.chunks(BATCH).map(|b| fetch_batch(t, b))).await?;
+    out.extend(batches.into_iter().flatten());
+    Ok(out)
+}
+
+/// One query for up to [`BATCH`] commits.
+async fn fetch_batch(
+    t: &Transport,
+    batch: &[&CommitRef],
+) -> Result<Vec<(CommitRef, Option<LineCounts>)>, ApiError> {
+    let mut groups: BTreeMap<(String, String), Vec<&CommitRef>> = BTreeMap::new();
+    for c in batch {
+        groups
+            .entry((c.owner.to_ascii_lowercase(), c.name.to_ascii_lowercase()))
+            .or_default()
+            .push(c);
+    }
+    let groups: Vec<Vec<&CommitRef>> = groups.into_values().collect();
+    let shaped: Vec<(&str, &str, Vec<&str>)> = groups
+        .iter()
+        .map(|cs| {
+            (
+                cs[0].owner.as_str(),
+                cs[0].name.as_str(),
+                cs.iter().map(|c| c.sha.as_str()).collect(),
+            )
+        })
+        .collect();
+    let resp = t.graphql(&query(&shaped), serde_json::json!({})).await?;
+    let data = resp.data.unwrap_or(Value::Null);
+    let mut out = Vec::new();
+    for (i, cs) in groups.iter().enumerate() {
+        for (j, c) in cs.iter().enumerate() {
+            let node = &data[format!("r{i}")][format!("c{j}")];
+            let counts = match (node["additions"].as_u64(), node["deletions"].as_u64()) {
+                (Some(additions), Some(deletions)) => Some(LineCounts {
+                    additions,
+                    deletions,
+                }),
+                _ => None,
+            };
+            out.push(((*c).clone(), counts));
         }
     }
     Ok(out)
