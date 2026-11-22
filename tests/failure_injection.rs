@@ -921,8 +921,10 @@ async fn failing_issue_history_page_is_not_reported_complete() {
 async fn request_timeout_makes_sync_partial_and_a_rerun_completes_it() {
     let world = World::base();
     let server = serve(&world).await;
-    // PR #20's detail answers only after 3 s; the client gives up on a
-    // request after 300 ms.
+    // PR #20's detail answers only after 5 s; the client gives up on a
+    // request after 1 s. The limit is far above how long the mock server
+    // takes for every other request, even on a slow runner, so only #20
+    // times out.
     let slow = world.pr_body(world.prs.iter().find(|p| p.number == 20).unwrap());
     pr_detail_mock(
         "acme",
@@ -930,7 +932,7 @@ async fn request_timeout_makes_sync_partial_and_a_rerun_completes_it() {
         20,
         ResponseTemplate::new(200)
             .set_body_json(slow)
-            .set_delay(Duration::from_secs(3)),
+            .set_delay(Duration::from_secs(5)),
         1,
     )
     .mount(&server)
@@ -940,13 +942,13 @@ async fn request_timeout_makes_sync_partial_and_a_rerun_completes_it() {
         let mut c = env.command(&[
             "sync", "--since", SINCE, "--until", UNTIL, "--format", "json",
         ]);
-        c.env("GHUSAGE_TIMEOUT_MS", "300");
+        c.env("GHUSAGE_TIMEOUT_MS", "1000");
         c
     };
 
     let start = Instant::now();
     let r = env.run_command(timed_sync()).await;
-    // 5 attempts x 300 ms plus tiny backoffs: far below a single default
+    // 5 attempts x 1 s plus small backoffs: far below a single default
     // 30 s timeout, so the setting took effect.
     assert!(
         start.elapsed() < Duration::from_secs(20),
