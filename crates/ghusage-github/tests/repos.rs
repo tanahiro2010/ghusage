@@ -387,3 +387,59 @@ async fn inaccessible_repositories_are_errors_without_the_token() {
     assert!(matches!(err, ApiError::NotFound(_)), "{err:?}");
     assert_no_token(&err, &err.to_string());
 }
+
+#[tokio::test]
+async fn commit_pages_up_to_the_last_link_are_all_fetched_in_order() {
+    // GitHub's first page links to the next and the last page; pages 2..4
+    // are fetched together and their commits kept in page order.
+    let server = MockServer::start().await;
+    let w = widget();
+    let day = |d: u32| format!("2024-01-{d:02}T10:00:00Z");
+    let page = |n: u32| {
+        vec![list_commit(
+            &w,
+            &sha(n as u64),
+            Some(LOGIN),
+            &day(10 + n),
+            &day(10 + n),
+            1,
+        )]
+    };
+    let base = "/repos/acme/widget/commits?author=alice&per_page=100";
+    let links = format!(
+        "{}, <{}{base}&page=4>; rel=\"last\"",
+        next_link(&server, &format!("{base}&page=2")),
+        server.uri()
+    );
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widget/commits"))
+        .and(query_param_is_missing("page"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(Value::Array(page(1)))
+                .insert_header("link", links.as_str()),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    for n in 2..=4u32 {
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/widget/commits"))
+            .and(query_param("page", n.to_string()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(Value::Array(page(n))))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    let r = client(&server)
+        .default_branch_commits(&widget_repo(), LOGIN, jan())
+        .await
+        .unwrap();
+    assert_eq!(r.status, CoverageStatus::Complete);
+    let shas: Vec<String> = r
+        .items
+        .iter()
+        .map(|c| c.event.meta.sha.clone().unwrap())
+        .collect();
+    assert_eq!(shas, (1..=4).map(sha).collect::<Vec<_>>());
+}

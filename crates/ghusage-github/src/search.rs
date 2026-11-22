@@ -12,7 +12,7 @@ use ghusage_core::time::Period;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::http::{Transport, parse_time};
+use crate::http::{Transport, page_of, parse_time, with_page};
 use crate::pull_request::RestUser;
 use crate::repos::RestRepo;
 use crate::{ApiError, CommitRecord, Fetched, IssueKind, IssueRef};
@@ -170,31 +170,6 @@ async fn search(
         }
     }
     Ok(out)
-}
-
-/// The `page` query parameter of a pagination link.
-fn page_of(url: &reqwest::Url) -> Option<u64> {
-    url.query_pairs()
-        .find(|(k, _)| k == "page")
-        .and_then(|(_, v)| v.parse().ok())
-}
-
-/// `url` with its `page` query parameter set to `n`.
-fn with_page(url: &reqwest::Url, n: u64) -> reqwest::Url {
-    let pairs: Vec<(String, String)> = url
-        .query_pairs()
-        .map(|(k, v)| {
-            let v = if k == "page" {
-                n.to_string()
-            } else {
-                v.into_owned()
-            };
-            (k.into_owned(), v)
-        })
-        .collect();
-    let mut out = url.clone();
-    out.query_pairs_mut().clear().extend_pairs(pairs);
-    out
 }
 
 /// A commit as returned by commit search and by the commits list endpoint
