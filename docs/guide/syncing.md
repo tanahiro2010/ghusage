@@ -11,7 +11,7 @@ For the requested period, a sync fetches three kinds of data:
 | Data kind | How it is found | What is stored |
 |---|---|---|
 | `commits` | Commits whose author is your account, by committer date: GitHub commit search, plus the default-branch commit list of each of your repositories pushed to in the period and each repository with your commits or pull requests | Commits, plus your commits found inside synced pull requests |
-| `pull_requests` | Issue search: pull requests that `involves:` you or are `reviewed-by:` you, updated in the period | Each pull request with all of its commits, reviews, review threads and their comments, conversation comments, timeline events, and the CI results of its head commit |
+| `pull_requests` | Issue search: pull requests that `involves:` you or are `reviewed-by:` you, updated in the period | Each pull request with all of its commits (including their line counts), reviews, review threads and their comments, conversation comments, timeline events, the CI results of its head commit, its current diff and how it was merged |
 | `issues` | Issue search: issues that `involves:` you, updated in the period | Each issue with its open/close/reopen history |
 
 Each pull request and issue is written in its own transaction, so an
@@ -40,6 +40,42 @@ Commits coverage is `complete` only when commit search and every listing
 succeeded. Commits coverage recorded by older versions, which relied on
 commit search alone, is not reused: the next sync fetches those ranges
 again.
+
+### Line counts
+
+[Lines changed](../reference/metrics.md#lines-changed) needs the number of
+lines each of your commits added and deleted.
+
+- **Commits inside pull requests** and each **pull request's diff** come
+  with the pull request query of every sync. They cost no extra requests.
+- **Other commits** (found only on default branches) need
+  `ghusage sync --diff-stats`. After the normal sync, it looks for your
+  non-merge commits in the period (by committer or author date) whose line
+  counts are not in the cache yet, and fetches them through GraphQL, 100
+  commits per query, with several queries in parallel (up to
+  `--concurrency`). Commits whose changes are
+  [counted through other commits](../reference/metrics.md#commits-counted-through-other-commits)
+  are skipped, because they do not go into the totals; so are commits of
+  non-public repositories with `--public-only`.
+- Line counts already in the cache are reused and never fetched again, so
+  running `--diff-stats` again only asks for what is still missing. As a
+  rough guide, about 1,100 commits took about 12 requests.
+- Commits that GitHub does not return (for example because the repository
+  is no longer accessible) stay unknown (`unavailable` in the output); the
+  next `--diff-stats` run asks for them again.
+
+```text
+$ ghusage sync --since 1y --diff-stats
+...
+  status: complete
+  line counts: 1084 commits (already known 212, fetched 872, unavailable 0)
+```
+
+Line counts that are not known are never shown as zero; reports say how
+many commits the sums cover. Pull requests synced by a version that did not
+record line counts, diffs or merge methods get them when they are fetched
+again; pull requests that have not changed are skipped by a normal sync, so
+use `ghusage sync --full` for the period.
 
 ## Running a sync
 
@@ -287,7 +323,7 @@ it is stored separately and never becomes part of your reports or activity.
 
 ## Network behavior
 
-- Up to `--concurrency` requests run in parallel (default 4, maximum 16).
+- Up to `--concurrency` requests run in parallel (default 8, maximum 16).
 - Each request times out after 30 seconds and is retried up to 5 attempts in
   total with exponential backoff for timeouts, network errors and HTTP
   500/502/503/504.

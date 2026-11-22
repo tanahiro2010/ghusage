@@ -125,7 +125,7 @@ impl Dataset {
     }
 
     /// Sets which commits' line counts stay out of the totals: commits that
-    /// appear in the subject's pull requests, where none of those
+    /// appear in pull requests of the dataset (by anyone), where none of those
     /// appearances is current in a pull request that is open, closed
     /// without merging, or merged with a merge commit
     /// (`merged_by_merge_commit`, pull request ids). Such commits only

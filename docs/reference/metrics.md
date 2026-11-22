@@ -98,6 +98,9 @@ period, identified by repository and SHA.
 **Merge commits** (`merge_commits`): how many of those commits have more than
 one parent. Shown as `(N merge)`.
 
+Lines added and deleted by these commits are described in
+[Lines changed](#lines-changed).
+
 ### Pull requests
 
 **PRs created** (`prs_created`): pull requests you opened in the period
@@ -279,6 +282,102 @@ anyone's non-CI activity in the period, by their current state: `total`,
 changed; overlaps with open and resolved). When a thread was resolved is not
 known.
 
+## Lines changed
+
+`ghusage` reports how many lines your commits added and deleted
+(`diff_stats` in JSON), and, separately, each pull request's current diff.
+Both come from the line counts GitHub reports. See
+[how line counts are fetched](../guide/syncing.md#line-counts) for when they
+are known.
+
+::: warning Read line counts with care
+Line counts are easily dominated by generated files, formatting changes,
+dependency updates (lock files, vendored code) and moved or renamed files.
+A small careful fix and a large mechanical change can differ by orders of
+magnitude. Line counts are not a measure of how much or how well someone
+worked: do not turn them into scores or rankings, and do not use them to
+compare people. Look at lines added and lines deleted separately rather than
+adding them up.
+:::
+
+### Lines changed by your commits
+
+**Lines changed (your commits)** (`diff_stats`): lines added and deleted by
+the commits counted in [Commits](#commits), minus merge commits and the
+commits [left out below](#commits-counted-through-other-commits).
+
+- The commits are the same as for `commits`: the same sources, the same
+  period boundaries (by committer date, or author date with
+  `--commit-date author`), the same filters and the same deduplication. A
+  commit found both on a default branch and inside a pull request counts
+  once.
+- **Merge commits are left out.** GitHub reports a merge commit's lines
+  against its first parent, which repeats the changes of the branch that was
+  merged. Those changes are already counted in the merged commits.
+- Unknown line counts are never treated as zero. The sums cover only the
+  commits whose line counts are known, and `coverage` says how many that is.
+- Daily, weekly, monthly, yearly and per-repository values use the same
+  definition, so they add up to the total of the period.
+
+| Field | Meaning |
+|---|---|
+| `commits` | Non-merge commits counted in `commits` |
+| `excluded` | Of those, commits left out because their changes are counted through other commits (see below) |
+| `commits_with_stats` | Of the remaining `commits - excluded`, commits with known line counts |
+| `additions`, `deletions` | Lines added and deleted, summed over the `commits_with_stats` commits only |
+| `coverage` | `no_commits`: nothing to count (no commits, or all left out); `complete`: every remaining commit has known line counts; `partial`: only some do, so the sums are lower bounds; `unavailable`: none does, so the sums are unknown (not zero) |
+
+The number of commits (`commits`) is not affected by any of this.
+
+### Commits counted through other commits
+
+A commit's changes can reach the default branch as a different commit:
+
+- a pull request merged by **squash** creates one new commit containing the
+  changes of all its commits;
+- a pull request merged by **rebase** creates new copies of its commits;
+- a commit removed from a pull request by a **force push** is usually
+  replaced by a rewritten one.
+
+Counting both the original commit and the commit that reached the default
+branch would count the same change twice. So a commit that appears in a
+synced pull request is left out of the line totals (`excluded`) unless at
+least one of its appearances is still part of the pull request and that
+pull request is
+
+- open, or closed without being merged, or
+- merged with a merge commit (a merge commit with two parents).
+
+In other words, commits that exist only in pull requests merged by squash or
+rebase, or whose merge method is not known, and commits that a force push
+removed from the pull request, are left out. Commits that never appear in a
+synced pull request always count.
+
+The merge method is taken from the number of parents of the pull request's
+merge commit, which a sync records together with the pull request. Pull
+requests that were synced before `ghusage` recorded the merge method have an
+unknown merge method, so their commits are left out. Run
+`ghusage sync --full` for the period to record it.
+
+This rule is provisional and may be refined in a future version. See
+[Known limitations](./limitations.md#line-counts) for the cases it gets
+wrong.
+
+### Pull request changes
+
+**Changes** (`diff` in [`prs`](#pull-request-list) and
+[`pr`](#pull-request-detail)): a pull request's diff between its base and
+head as of the last sync: lines added (`additions`), lines deleted
+(`deletions`), changed files (`changed_files`) and when it was observed
+(`observed_at`).
+
+- It is a **snapshot** of the pull request, not changes made in the period.
+  It changes with every push, force push and update of the base branch.
+- It is not added to the line totals of your commits: the two describe
+  different things and would count the same changes twice.
+- It is `null` (shown as `?` or "unknown") when it is not known, for
+  example for a pull request synced by an older version.
+
 ## Table labels
 
 | `overview` label | JSON field |
@@ -301,16 +400,32 @@ known.
 | PR internal events | `pr_internal_events` |
 | CI results (not counted as activity) | `ci` |
 | Active days | `active_days` |
+| Lines changed (your commits) | `diff_stats` |
+
+"Lines changed (your commits)" reads, depending on `diff_stats.coverage`:
+`+A -D in N commits` (complete);
+``+A -D in K of N commits; the rest are unknown (run `ghusage sync --diff-stats`)``
+(partial); or ``unknown for N commits (run `ghusage sync --diff-stats`)``
+(unavailable). N is `commits - excluded`. When commits were left out,
+`; E commits left out as counted through other commits (squash or rebase merges, force pushes)`
+is appended.
 
 In `daily` / `weekly` / `monthly` / `yearly`, the columns are: Commits (`commits`), PRs
 (`prs_created`), Merged (`prs_merged`), Reviews (`reviews_submitted.total`),
 Received (`reviews_received.total`), Comments (comments written, all types),
 PR commits (`pr_commits`), Issues (`issues_opened`), Active PRs
-(`active_prs`).
+(`active_prs`), +Lines (`diff_stats.additions`) and -Lines
+(`diff_stats.deletions`).
 
 In `repos`, the columns are: Commits, PRs (created), Merged (yours), Reviews
 (submitted), Comments (written), Issues (opened), Active PRs, PR events
-(`pr_internal_events`) and Last activity, all for that repository.
+(`pr_internal_events`), +Lines, -Lines and Last activity, all for that
+repository.
+
+In the +Lines and -Lines columns (table and Markdown output), `~N` is a sum
+over only some of the commits (`partial`) and `?` means that no commit has
+known line counts (`unavailable`). A note below the table explains the marks
+when they appear.
 Repositories are ordered by your activity there (commits + PR internal
 events + issue events), then by name.
 
@@ -335,6 +450,7 @@ count events in the period only.
 | Threads | `threads` | Review threads with an inline comment in the period |
 | Last activity | `last_activity` | Time of the latest of those events |
 | CI | `latest_ci` | Current combined CI state of the head commit (snapshot) |
+| Changes | `diff` | `+A -D`: the pull request's base-to-head diff as of the last sync (snapshot, not changes in the period; `?` when not known). See [Pull request changes](#pull-request-changes) |
 
 ### `--details`: activity per pull request
 
@@ -377,6 +493,7 @@ should not be used to compare people.
 | Comments | Comments by anyone, by type |
 | Review threads | Current state: total, open, resolved, outdated |
 | Latest CI | Current combined CI state of the head commit |
+| Changes (current snapshot) | `+A -D in F files (base to head as of <time>)`: the pull request's diff as of the last sync. See [Pull request changes](#pull-request-changes) |
 | Participants | Known accounts with at least one counted non-CI event |
 | Time to first review, Creation to merge | As defined above |
 
