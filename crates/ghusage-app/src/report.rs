@@ -532,6 +532,8 @@ pub struct PrReport {
     #[serde(skip)]
     pub commit_list: Vec<metrics::PrCommitRow>,
     pub timing: PrTiming,
+    /// Base-to-head diff when last fetched (a snapshot of the pull request).
+    pub diff: Option<metrics::PrDiff>,
     pub timeline: Vec<TimelineEntry>,
     pub coverage: CoverageStatus,
     pub synced_at: Option<DateTime<Utc>>,
@@ -596,6 +598,7 @@ pub fn pr_report(
         commit_authors: d.commit_authors,
         commit_list: metrics::pr_commit_rows(&ds, pr_id),
         timing: d.timing,
+        diff: d.diff,
         timeline,
         coverage: pr.coverage,
         synced_at: pr.synced_at,

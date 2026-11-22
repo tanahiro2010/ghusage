@@ -607,8 +607,9 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
                 "Comments",
                 "People",
                 "CI",
+                "Changes",
             ])
-            .numeric(&[1, 5, 6, 7, 8, 9, 10])
+            .numeric(&[1, 5, 6, 7, 8, 9, 10, 12])
             .limit(0, 32)
             .limit(2, 40)
             .limit(4, 16);
@@ -631,12 +632,18 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
                     p.comments.to_string(),
                     p.participants.to_string(),
                     p.latest_ci.map(|c| c.as_str()).unwrap_or("-").to_string(),
+                    p.diff
+                        .map(|d| format!("+{} -{}", d.additions, d.deletions))
+                        .unwrap_or_else(|| "?".into()),
                 ]);
             }
             if t.is_empty() {
                 out.push_str("No pull request activity in this period.\n");
             } else {
                 out.push_str(&t.render(style));
+                out.push_str(&style.dim(
+                    "Changes: each pull request's base-to-head diff when last synced, not changes made in the period (? not known)\n",
+                ));
             }
             if details {
                 out.push('\n');
@@ -881,6 +888,24 @@ pub fn pr(r: &PrReport, timeline: bool, style: Style) -> String {
                     String::new()
                 }
             ),
+        ),
+        (
+            "Changes (current snapshot)",
+            match &r.diff {
+                Some(d) => format!(
+                    "+{} -{} in {} {} (base to head as of {})",
+                    d.additions,
+                    d.deletions,
+                    d.changed_files,
+                    if d.changed_files == 1 {
+                        "file"
+                    } else {
+                        "files"
+                    },
+                    t(zone, Some(d.observed_at))
+                ),
+                None => "unknown (sync the pull request again to fetch it)".into(),
+            },
         ),
         (
             "Reviews",

@@ -966,6 +966,7 @@ fn json_output_matches_documented_schema() {
                 "threads",
                 "last_activity",
                 "latest_ci",
+                "diff",
             ],
         );
     }
@@ -1080,6 +1081,7 @@ fn json_output_matches_documented_schema() {
             "discussion_participants",
             "commit_authors",
             "timing",
+            "diff",
             "timeline",
             "coverage",
             "synced_at",

@@ -852,6 +852,9 @@ pub struct PrRow {
     pub threads: u64,
     pub last_activity: Option<DateTime<Utc>>,
     pub latest_ci: Option<CheckOutcome>,
+    /// The pull request's base-to-head diff when last fetched: a snapshot of
+    /// the pull request, not changes made in the period.
+    pub diff: Option<PrDiff>,
 }
 
 /// Pull requests active in the period with per-PR counts.
@@ -963,6 +966,7 @@ fn pr_row(
         threads: threads.len() as u64,
         last_activity: last,
         latest_ci: pr.latest_ci,
+        diff: ds.pr_diffs.get(&pr.id).copied(),
     }
 }
 
@@ -1187,6 +1191,8 @@ pub struct PrDetail {
     pub commit_authors: Vec<AuthorCount>,
     pub timing: PrTiming,
     pub timeline: Vec<ActivityEvent>,
+    /// Base-to-head diff when last fetched (a snapshot).
+    pub diff: Option<PrDiff>,
 }
 
 /// Number of commits by one author.
@@ -1267,6 +1273,7 @@ pub fn pr_detail(ds: &Dataset, pr_id: &str, types: &[EventType]) -> Option<PrDet
         commit_authors,
         timing: pr_timing(ds, pr),
         timeline,
+        diff: ds.pr_diffs.get(&pr.id).copied(),
     })
 }
 
@@ -1285,6 +1292,8 @@ pub struct PrCommitRow {
     /// The commit was in the pull request earlier but no longer is (for
     /// example after a force push).
     pub removed: bool,
+    /// Lines added and deleted by the commit, when known.
+    pub lines: Option<LineCounts>,
 }
 
 /// The commits of a pull request, current and removed, one row per SHA,
@@ -1307,6 +1316,10 @@ pub fn pr_commit_rows(ds: &Dataset, pr_id: &str) -> Vec<PrCommitRow> {
             is_merge_commit: e.meta.is_merge_commit == Some(true),
             url: e.url.clone(),
             removed: e.is_removed(),
+            lines: ds
+                .commit_stats
+                .get(crate::model::EventId::commit(&e.repository_id, &sha).as_str())
+                .copied(),
         };
         match by_sha.get_mut(&sha.to_ascii_lowercase()) {
             // A commit still in the pull request wins over a removed copy.
