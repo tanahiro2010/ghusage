@@ -114,9 +114,16 @@ jobs:
           path: .ci-verified
           key: ${{ env.VERIFIED_KEY }}
 
+  # The release build of every platform is checked where it matters: pull
+  # requests into `release` (required checks there) and pushes to it. Pushes
+  # to `dev` run the tests only; the release workflow builds every target
+  # again from the tag.
   build:
     name: release build (${{ matrix.os }})
     needs: inputs
+    if: >-
+      (github.event_name == 'pull_request' && github.base_ref == 'release')
+      || github.ref == 'refs/heads/release'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
