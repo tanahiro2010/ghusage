@@ -543,11 +543,7 @@ impl Store {
                     .iter()
                     .filter_map(|e| e.parent_pr_id.clone())
                     .collect();
-                let mut stmt = self.conn.prepare_cached(&format!(
-                    "SELECT {EVENT_COLS} FROM activity_events e \
-                     JOIN account_events ae ON ae.event_id = e.event_id \
-                     WHERE ae.account_id = ?1 AND e.parent_pr_id = ?2"
-                ))?;
+                let mut stmt = self.conn.prepare_cached(&pr_events_sql())?;
                 let mut active: Vec<String> = active.into_iter().collect();
                 active.sort();
                 for pr in active {
@@ -1533,6 +1529,17 @@ fn query_list<T, P: rusqlite::Params>(
     Ok(out)
 }
 
+/// Events of one pull request seen by an account. `CROSS JOIN` keeps
+/// SQLite from driving the join from `account_events`, which would scan every
+/// event of the account once per pull request.
+fn pr_events_sql() -> String {
+    format!(
+        "SELECT {EVENT_COLS} FROM activity_events e \
+         CROSS JOIN account_events ae ON ae.event_id = e.event_id \
+         WHERE e.parent_pr_id = ?2 AND ae.account_id = ?1"
+    )
+}
+
 fn coverage_for(conn: &Connection, account_id: i64) -> Result<Vec<CoverageRecord>> {
     query_list(
         conn,
@@ -1719,5 +1726,27 @@ impl SyncLock {
 impl Drop for SyncLock {
     fn drop(&mut self) {
         let _ = fs4::FileExt::unlock(&self.file);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pull_request_events_are_found_through_the_parent_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("t.db")).unwrap();
+        let plan: Vec<String> = query_list(
+            &store.conn,
+            &format!("EXPLAIN QUERY PLAN {}", pr_events_sql()),
+            params![1, "PR_x"],
+            |r| Ok(r.get::<_, String>(3)?),
+        )
+        .unwrap();
+        assert!(
+            plan[0].contains("activity_events_parent_pr"),
+            "unexpected plan: {plan:?}"
+        );
     }
 }
