@@ -405,6 +405,8 @@ fn own_pull_request_commits_join_the_global_commit_set_once() {
         events: vec![pc("abc", me()), pc("def", me()), pc("fff", other())],
         threads: vec![],
         current_commit_shas: vec!["abc".into(), "def".into(), "fff".into()],
+        commit_stats: vec![],
+        diff: None,
         complete_collections: Collection::ALL.to_vec(),
         status: CoverageStatus::Complete,
         notes: vec![],
