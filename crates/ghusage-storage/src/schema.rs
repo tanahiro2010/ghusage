@@ -132,8 +132,9 @@ CREATE TABLE commit_details (
     )
 }
 
-/// Lines added and deleted per commit, and the latest observed diff of each
-/// pull request. `NULL` means not known (never zero by default).
+/// Lines added and deleted per commit, how merged pull requests were merged,
+/// and the latest observed diff of each pull request. `NULL` means not known
+/// (never zero by default).
 fn v3_diff_stats(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
     tx.execute_batch(
         r#"
@@ -146,6 +147,7 @@ ALTER TABLE pull_requests ADD COLUMN deletions INTEGER;
 ALTER TABLE pull_requests ADD COLUMN changed_files INTEGER;
 ALTER TABLE pull_requests ADD COLUMN diff_observed_at INTEGER;
 ALTER TABLE pull_requests ADD COLUMN diff_observed_at_ns INTEGER;
+ALTER TABLE pull_requests ADD COLUMN merge_commit_parents INTEGER;
 "#,
     )
 }

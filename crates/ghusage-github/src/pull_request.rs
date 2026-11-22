@@ -50,6 +50,7 @@ struct GqlPullRequest {
     additions: Option<u64>,
     deletions: Option<u64>,
     changed_files: Option<u64>,
+    merge_commit: Option<MergeCommit>,
     author: Option<GqlActor>,
     merged_by: Option<GqlActor>,
     head_commit: Option<Connection>,
@@ -58,6 +59,12 @@ struct GqlPullRequest {
     review_threads: Option<Connection>,
     comments: Option<Connection>,
     timeline_items: Option<Connection>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct MergeCommit {
+    parents: Option<Count>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1347,6 +1354,11 @@ pub(crate) async fn fetch(
         current_commit_shas,
         commit_stats,
         diff,
+        merge_commit_parents: pr
+            .merge_commit
+            .as_ref()
+            .and_then(|m| m.parents.as_ref())
+            .and_then(|p| p.total_count),
         complete_collections,
         status,
         notes: tracker.notes,

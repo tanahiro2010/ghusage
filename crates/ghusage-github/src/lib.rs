@@ -193,6 +193,10 @@ pub struct PrBundle {
     pub commit_stats: Vec<(String, LineCounts)>,
     /// The pull request's base-to-head diff when fetched (a snapshot).
     pub diff: Option<PrDiff>,
+    /// Parents of the commit a merged pull request was merged with: 2 for a
+    /// merge commit (its commits reach the base branch unchanged), 1 for a
+    /// squash or rebase merge (its changes reach it as new commits).
+    pub merge_commit_parents: Option<u64>,
     /// Collections fetched completely (all pages).
     pub complete_collections: Vec<Collection>,
     /// Overall coverage of this pull request's internal activity.

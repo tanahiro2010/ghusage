@@ -75,7 +75,7 @@ pub(crate) fn pull_request() -> String {
     ...RepositoryFields
     pullRequest(number: $number) {{
       id number title url state isDraft createdAt updatedAt closedAt mergedAt headRefOid
-      additions deletions changedFiles
+      additions deletions changedFiles mergeCommit {{ parents {{ totalCount }} }}
       author {{ ...ActorFields }}
       mergedBy {{ ...ActorFields }}
       headCommit: commits(last: 1) {{ nodes {{ commit {{ ...HeadCommitFields }} }} }}

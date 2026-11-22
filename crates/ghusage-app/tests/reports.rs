@@ -407,6 +407,7 @@ fn own_pull_request_commits_join_the_global_commit_set_once() {
         current_commit_shas: vec!["abc".into(), "def".into(), "fff".into()],
         commit_stats: vec![],
         diff: None,
+        merge_commit_parents: None,
         complete_collections: Collection::ALL.to_vec(),
         status: CoverageStatus::Complete,
         notes: vec![],
@@ -824,6 +825,7 @@ fn json_output_matches_documented_schema() {
     ];
     let diff_stats = [
         "commits",
+        "excluded",
         "commits_with_stats",
         "additions",
         "deletions",

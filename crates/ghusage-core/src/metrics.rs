@@ -39,6 +39,9 @@ pub struct Dataset {
     pub commit_stats: HashMap<String, LineCounts>,
     /// Latest observed diff of each pull request (a snapshot, not history).
     pub pr_diffs: BTreeMap<String, PrDiff>,
+    /// Commits (event ids) whose line counts stay out of the totals (see
+    /// [`Dataset::with_line_count_rule`]).
+    pub lines_excluded: HashSet<String>,
 }
 
 /// Lines added and deleted by one commit, as reported by GitHub (for a
@@ -105,7 +108,9 @@ impl Dataset {
             coverage,
             commit_stats: HashMap::new(),
             pr_diffs: BTreeMap::new(),
+            lines_excluded: HashSet::new(),
         }
+        .with_line_count_rule(&HashSet::new())
     }
 
     /// Adds commit statistics and pull request diffs.
@@ -117,6 +122,51 @@ impl Dataset {
         self.commit_stats = commit_stats;
         self.pr_diffs = pr_diffs;
         self
+    }
+
+    /// Sets which commits' line counts stay out of the totals: commits that
+    /// appear in the subject's pull requests, where none of those
+    /// appearances is current in a pull request that is open, closed
+    /// without merging, or merged with a merge commit
+    /// (`merged_by_merge_commit`, pull request ids). Such commits only
+    /// exist in pull requests merged by squash or rebase (or by an unknown
+    /// method), or were removed from a pull request by a force push: their
+    /// changes reach the default branch as other commits, so counting them
+    /// would count the same change twice. Commits that never appear in a
+    /// pull request count. The rule depends only on pull requests, not on
+    /// how a commit was found, so fetching the same data again never
+    /// changes it.
+    pub fn with_line_count_rule(mut self, merged_by_merge_commit: &HashSet<String>) -> Self {
+        // Commit event id -> whether any appearance keeps it counted.
+        let mut appearances: HashMap<String, bool> = HashMap::new();
+        for e in &self.events {
+            if e.event_type != EventType::PrCommit {
+                continue;
+            }
+            let (Some(pr_id), Some(sha)) = (e.parent_pr_id.as_deref(), e.meta.sha.as_deref())
+            else {
+                continue;
+            };
+            let merged = self
+                .pull_requests
+                .get(pr_id)
+                .is_some_and(|pr| pr.state == PrState::Merged);
+            let keeps = !e.is_removed() && (!merged || merged_by_merge_commit.contains(pr_id));
+            *appearances
+                .entry(crate::model::EventId::commit(&e.repository_id, sha).0)
+                .or_insert(false) |= keeps;
+        }
+        self.lines_excluded = appearances
+            .into_iter()
+            .filter(|(_, keeps)| !keeps)
+            .map(|(id, _)| id)
+            .collect();
+        self
+    }
+
+    /// Whether a commit's line counts go into the totals.
+    pub fn counts_lines(&self, commit_event_id: &str) -> bool {
+        !self.lines_excluded.contains(commit_event_id)
     }
 
     pub fn repo_name(&self, repository_id: &str) -> String {
@@ -419,7 +469,7 @@ pub struct Summary {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiffCoverage {
-    /// No commits to describe.
+    /// No commits to describe (none, or all excluded).
     #[default]
     NoCommits,
     /// Every commit has statistics.
@@ -437,7 +487,12 @@ pub enum DiffCoverage {
 pub struct DiffTotals {
     /// Non-merge commits counted in `commits`.
     pub commits: u64,
-    /// Of those, the commits with known statistics.
+    /// Of those, commits left out because their changes are counted through
+    /// other commits: they only exist in merged pull requests (squash or
+    /// rebase merges) or were removed from a pull request by a force push.
+    pub excluded: u64,
+    /// Of the rest (`commits - excluded`), the commits with known
+    /// statistics.
     pub commits_with_stats: u64,
     /// Sums over `commits_with_stats` commits only.
     pub additions: u64,
@@ -447,9 +502,10 @@ pub struct DiffTotals {
 
 impl DiffTotals {
     fn finish(&mut self) {
-        self.coverage = if self.commits == 0 {
+        let counted = self.commits - self.excluded;
+        self.coverage = if counted == 0 {
             DiffCoverage::NoCommits
-        } else if self.commits_with_stats == self.commits {
+        } else if self.commits_with_stats == counted {
             DiffCoverage::Complete
         } else if self.commits_with_stats == 0 {
             DiffCoverage::Unavailable
@@ -501,7 +557,9 @@ fn summarize_events<'a>(
                         s.merge_commits += 1;
                     } else {
                         s.diff_stats.commits += 1;
-                        if let Some(d) = ds.commit_stats.get(e.event_id.as_str()) {
+                        if !ds.counts_lines(e.event_id.as_str()) {
+                            s.diff_stats.excluded += 1;
+                        } else if let Some(d) = ds.commit_stats.get(e.event_id.as_str()) {
                             s.diff_stats.commits_with_stats += 1;
                             s.diff_stats.additions += d.additions;
                             s.diff_stats.deletions += d.deletions;

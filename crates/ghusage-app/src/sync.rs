@@ -99,7 +99,8 @@ pub struct SyncReport {
 /// What fetching commit line counts did.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct LineCountSync {
-    /// The subject's non-merge commits in the period.
+    /// The subject's non-merge commits in the period whose line counts go
+    /// into the totals.
     pub commits: u64,
     /// Of those, already known before this run (not fetched again).
     pub already_known: u64,
@@ -426,6 +427,11 @@ pub async fn fetch_line_counts(
             continue;
         };
         if public_only && !repo.visibility.is_public() {
+            continue;
+        }
+        // Commits whose changes are counted through other commits are not
+        // part of the totals, so their counts are not needed.
+        if !ds.counts_lines(e.event_id.as_str()) {
             continue;
         }
         report.commits += 1;
@@ -1149,6 +1155,10 @@ pub fn pr_batch(subject: &Subject, bundle: PrBundle) -> WriteBatch {
         .diff
         .map(|d| vec![(pr_id.clone(), d)])
         .unwrap_or_default();
+    let pr_merge_commit_parents = bundle
+        .merge_commit_parents
+        .map(|n| vec![(pr_id.clone(), n)])
+        .unwrap_or_default();
     WriteBatch {
         account: subject.login.clone(),
         repositories: vec![bundle.repository],
@@ -1165,6 +1175,7 @@ pub fn pr_batch(subject: &Subject, bundle: PrBundle) -> WriteBatch {
         }],
         commit_stats,
         pr_diffs,
+        pr_merge_commit_parents,
         ..Default::default()
     }
 }

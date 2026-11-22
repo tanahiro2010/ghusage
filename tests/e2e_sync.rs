@@ -297,6 +297,8 @@ fn world_after_merge() -> World {
     g["mergedAt"] = json!("2024-03-09T10:00:00Z");
     g["closedAt"] = json!("2024-03-09T10:00:00Z");
     g["mergedBy"] = user("bob");
+    // Merged with a merge commit (two parents), as GitHub reports it.
+    g["mergeCommit"] = json!({ "parents": { "totalCount": 2 } });
     g["headRefOid"] = json!(sha(15));
     g["headCommit"]["nodes"][0]["commit"]["oid"] = json!(sha(15));
     // The merge puts my sha 11 on the default branch of acme/widget.
@@ -1477,7 +1479,9 @@ async fn diff_stats_are_fetched_once_and_unknown_ones_stay_unknown() {
     let o = env.offline_json(&["overview"]).await.json();
     let d = &o["metrics"]["diff_stats"];
     assert_eq!(d["coverage"], "unavailable", "{d}");
-    let commits = d["commits"].as_u64().unwrap();
+    // Commits whose line counts go into the totals (others are excluded as
+    // counted through other commits).
+    let commits = d["commits"].as_u64().unwrap() - d["excluded"].as_u64().unwrap();
     assert!(commits > 1, "{d}");
 
     // --diff-stats fetches them; one commit is not returned by GitHub.

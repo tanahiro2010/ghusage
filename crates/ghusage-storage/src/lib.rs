@@ -124,6 +124,9 @@ pub struct WriteBatch {
     pub commit_stats: Vec<CommitStats>,
     /// Latest observed diffs of pull requests, by pull request id.
     pub pr_diffs: Vec<(String, PrDiff)>,
+    /// Parents of the commit each merged pull request was merged with, by
+    /// pull request id (2: merge commit, 1: squash or rebase).
+    pub pr_merge_commit_parents: Vec<(String, u64)>,
     pub coverage: Vec<CoverageRecord>,
     /// `(key, value)` sync cursors for `account`.
     pub cursors: Vec<(String, String)>,
@@ -581,6 +584,11 @@ impl Store {
         };
         let coverage = coverage_for(&self.conn, account_id)?;
         let (commit_stats, pr_diffs) = diff_stats_for(&self.conn, account_id)?;
+        let merged_by_merge_commit = merged_by_merge_commit_where(
+            &self.conn,
+            "p.id IN (SELECT pr_id FROM account_pull_requests WHERE account_id = ?1)",
+            params![account_id],
+        )?;
         Ok(Dataset::new(
             subject.clone(),
             subject_is_viewer,
@@ -591,7 +599,8 @@ impl Store {
             events,
             coverage,
         )
-        .with_diff_stats(commit_stats, pr_diffs))
+        .with_diff_stats(commit_stats, pr_diffs)
+        .with_line_count_rule(&merged_by_merge_commit))
     }
 
     /// Loads every event of one pull request (any time) plus entities.
@@ -649,6 +658,8 @@ impl Store {
             params![pr_id],
         )?;
         let pr_diffs = pr_diffs_where(&self.conn, "p.id = ?1", params![pr_id])?;
+        let merged_by_merge_commit =
+            merged_by_merge_commit_where(&self.conn, "p.id = ?1", params![pr_id])?;
         Ok(Dataset::new(
             subject.clone(),
             subject_is_viewer,
@@ -659,7 +670,8 @@ impl Store {
             events,
             coverage,
         )
-        .with_diff_stats(commit_stats, pr_diffs))
+        .with_diff_stats(commit_stats, pr_diffs)
+        .with_line_count_rule(&merged_by_merge_commit))
     }
 
     /// Finds a stored pull request by repository full name and number.
@@ -1104,6 +1116,13 @@ fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
                 secs(c.observed_at),
                 nanos(c.observed_at)
             ],
+        )?;
+    }
+    for (pr_id, parents) in &b.pr_merge_commit_parents {
+        require_pull_request(tx, pr_id, &format!("pull request merge {pr_id:?}"))?;
+        tx.execute(
+            "UPDATE pull_requests SET merge_commit_parents = ?2 WHERE id = ?1",
+            params![pr_id, *parents as i64],
         )?;
     }
     for (pr_id, d) in &b.pr_diffs {
@@ -1672,6 +1691,22 @@ fn commit_stats_where<P: rusqlite::Params>(
         );
     }
     Ok(out)
+}
+
+/// Pull requests matching `filter` (over `pull_requests p`) that were merged
+/// with a merge commit.
+fn merged_by_merge_commit_where<P: rusqlite::Params>(
+    conn: &Connection,
+    filter: &str,
+    params: P,
+) -> Result<HashSet<String>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT p.id FROM pull_requests p WHERE p.merge_commit_parents >= 2 AND {filter}"
+    ))?;
+    let ids = stmt
+        .query_map(params, |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<HashSet<String>>>()?;
+    Ok(ids)
 }
 
 /// Latest observed diffs of the pull requests matching `filter` (over
