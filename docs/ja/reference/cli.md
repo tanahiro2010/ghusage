@@ -157,7 +157,7 @@ Cache: /Users/me/Library/Application Support/dev.ghusage.ghusage/ghusage.db
 | `--visibility <public\|private>` | 公開リポジトリだけ、または公開でない(private と internal の)リポジトリだけ |
 | `--ownership <owned\|external>` | 自分が所有するリポジトリだけ、またはそれ以外のリポジトリだけ |
 | `--user <USER>` | ほかのユーザーの活動を分析します(自分のトークンで見える範囲に限られます) |
-| `--format <table\|json\|csv>` | 出力形式(既定は `table`)。`csv` を使えるのはレポートと `pr` だけです。`sync`、`doctor`、`auth`、`cache`、`tui` に指定すると、終了コード 2 でエラーになります |
+| `--format <table\|json\|csv\|markdown>` | 出力形式(既定は `table`)。`csv` を使えるのはレポートと `pr` だけです。`sync`、`doctor`、`auth`、`cache`、`tui` に指定すると、終了コード 2 でエラーになります。`markdown` を使えるのは `overview`、`daily`、`weekly`、`monthly`、`yearly`、`repos` だけです([プロフィール README](../guide/profile-readme.md)を参照)。JSON や CSV と同じく、`--include-private` を付けない限りプライベートリポジトリの名前を隠します |
 | `--offline` | キャッシュのデータだけを使い、GitHub には接続しません |
 | `--no-cache` | ローカルのキャッシュではなく、一時的なキャッシュに最新のデータを取得します |
 | `--require-complete` | 期間内に不完全なデータが1つでもあれば、終了コード 6 で終わります |
@@ -191,7 +191,7 @@ Cache: /Users/me/Library/Application Support/dev.ghusage.ghusage/ghusage.db
 |---|---|
 | `0` | 成功 |
 | `1` | 一般的なエラー(例: オフラインモードでキャッシュにアカウントがない、プルリクエストがキャッシュにない、`doctor` のチェックに失敗した、ターミナルのエラー) |
-| `2` | 引数が無効(不明なオプションや値、無効な日付やタイムゾーン、空の期間、無効なプルリクエストの URL、不明なイベントの種類、`sync --offline`、CSV 出力のないコマンドへの `--format csv`) |
+| `2` | 引数が無効(不明なオプションや値、無効な日付やタイムゾーン、空の期間、無効なプルリクエストの URL、不明なイベントの種類、`sync --offline`、CSV 出力のないコマンドへの `--format csv`、Markdown 出力のないコマンドへの `--format markdown`) |
 | `3` | 認証エラー(認証情報がない、トークンファイルが使えない、GitHub がトークンを拒否した) |
 | `4` | GitHub API のエラー(ネットワーク、レート制限、サーバーエラー)。`sync` で一部のデータを最後まで取得できなかったときも、このコードになります。レポートのコマンドは、GitHub に接続できなくてもアカウントがキャッシュにあれば失敗せず、警告を出してキャッシュのデータを表示します |
 | `5` | キャッシュのエラー(データベースを作成できない・開けない、データベースが壊れている・新しすぎる、別の同期が実行中) |

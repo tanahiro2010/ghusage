@@ -2,8 +2,9 @@
 
 use std::cell::Cell;
 use std::io::{self, Stdout, Write};
+use std::sync::Arc;
 use std::sync::Once;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use ghusage_core::sanitize::validate_github_url;
 use ratatui::Terminal;
@@ -55,6 +56,19 @@ pub fn install_panic_hook() {
             previous(info);
         }));
     });
+}
+
+/// Set when the process is asked to stop (SIGTERM or SIGHUP on Unix), so
+/// the event loop can quit through its normal path and restore the terminal.
+pub fn stop_requested() -> Arc<AtomicBool> {
+    let flag = Arc::new(AtomicBool::new(false));
+    #[cfg(unix)]
+    for signal in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGHUP] {
+        // Without a handler the default action still ends the process;
+        // only the terminal restore is lost.
+        let _ = signal_hook::flag::register(signal, Arc::clone(&flag));
+    }
+    flag
 }
 
 /// How many times the panic hook has restored the terminal.

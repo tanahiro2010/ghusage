@@ -21,6 +21,7 @@ pub mod term;
 pub mod ui;
 
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -103,9 +104,10 @@ fn run_here(opts: TuiOptions) -> Result<(), TuiError> {
     app.prepare();
 
     term::install_panic_hook();
+    let stop = term::stop_requested();
     let mut terminal = term::enter()?;
     let guard = term::RestoreGuard;
-    let result = event_loop(&mut terminal, &mut app, &opts);
+    let result = event_loop(&mut terminal, &mut app, &opts, &stop);
     drop(guard);
     Ok(result?)
 }
@@ -114,6 +116,7 @@ fn event_loop<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     opts: &TuiOptions,
+    stop: &AtomicBool,
 ) -> io::Result<()>
 where
     B::Error: Into<io::Error>,
@@ -168,7 +171,7 @@ where
         }
     };
     let mut dirty = true;
-    while !app.should_quit {
+    while !app.should_quit && !stop.load(Ordering::Relaxed) {
         while let Ok(msg) = rx.try_recv() {
             app.on_sync(msg);
             dirty = true;

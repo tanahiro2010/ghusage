@@ -248,3 +248,21 @@ fn help_overlay_lists_keys() {
     assert!(text.contains("Help"));
     assert!(text.contains("Cycle time range"));
 }
+
+#[test]
+fn repository_names_stay_readable_on_a_narrow_terminal() {
+    let mut ds = dataset();
+    ds.repositories.get_mut("R1").unwrap().name = "a-rather-long-repository".into();
+    let mut app = app_with(ds, false);
+    app.handle_key(key('4'));
+    assert_eq!(app.screen, Screen::Repositories);
+    // 110 columns used to leave about 8 characters for the name.
+    let text = screen_text(&app, 110, 30);
+    assert!(text.contains("alice/a-rather-long-repository"), "{text}");
+    assert!(text.contains("Commits"), "{text}");
+    // A wide terminal still shows every column.
+    let wide = screen_text(&app, 200, 30);
+    for col in ["Visibility", "Issues", "Active PRs", "PR events"] {
+        assert!(wide.contains(col), "{col} missing:\n{wide}");
+    }
+}
