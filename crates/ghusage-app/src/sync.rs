@@ -340,10 +340,12 @@ async fn run_inner(
         opts,
         progress,
     };
-    let prs_and_commits = async {
+    // Commit search does not depend on the pull request search, so it starts
+    // right away; only listing the default branches of pull request
+    // repositories waits for the repositories that search found.
+    let (pr_repos_tx, pr_repos_rx) = tokio::sync::oneshot::channel();
+    let prs = async {
         let (refs, search_status) = search_prs(&shared, &pr_ranges).await?;
-        // Commits: commit search plus the default branches of repositories
-        // the subject pushed to or took part in through pull requests.
         let mut pr_repos: Vec<(String, String)> = Vec::new();
         let mut seen_names = HashSet::new();
         for r in refs.values() {
@@ -351,17 +353,19 @@ async fn run_inner(
                 pr_repos.push((r.owner.clone(), r.name.clone()));
             }
         }
-        let ctx = CommitContext {
-            cached_prs: &cached_prs,
-            pr_repos: &pr_repos,
-        };
-        tokio::try_join!(
-            fetch_prs(&shared, &refs, search_status, &pr_states, stale_open),
-            sync_commits(&shared, &commit_ranges, &ctx, known_repos),
-        )?;
-        Ok::<(), AppError>(())
+        let _ = pr_repos_tx.send(pr_repos);
+        fetch_prs(&shared, &refs, search_status, &pr_states, stale_open).await
     };
-    tokio::try_join!(prs_and_commits, sync_issues(&shared, &issue_ranges))?;
+    // Commits: commit search plus the default branches of repositories the
+    // subject pushed to or took part in through pull requests.
+    let commits = sync_commits(
+        &shared,
+        &commit_ranges,
+        &cached_prs,
+        pr_repos_rx,
+        known_repos,
+    );
+    tokio::try_join!(prs, commits, sync_issues(&shared, &issue_ranges))?;
 
     let mut report = report.into_inner();
     report.api = client.stats();
@@ -647,13 +651,6 @@ async fn sync_issues(sh: &Shared<'_, '_>, ranges: &[Period]) -> Result<()> {
 /// Repository id, creation and last update of a cached pull request.
 type CachedPr = (String, DateTime<Utc>, Option<DateTime<Utc>>);
 
-/// What the commit step knows about the subject's pull requests.
-struct CommitContext<'a> {
-    cached_prs: &'a [CachedPr],
-    /// Owner and name of repositories of pull requests found by this sync.
-    pr_repos: &'a [(String, String)],
-}
-
 /// Most repository names listed in a coverage reason.
 const MAX_NAMED_REPOS: usize = 5;
 
@@ -690,7 +687,8 @@ fn find_repo<'a>(
 async fn sync_commits(
     sh: &Shared<'_, '_>,
     ranges: &[Period],
-    ctx: &CommitContext<'_>,
+    cached_prs: &[CachedPr],
+    pr_repos: tokio::sync::oneshot::Receiver<Vec<(String, String)>>,
     mut known_repos: HashMap<String, Repository>,
 ) -> Result<()> {
     let (client, subject, opts, progress) = (sh.client, sh.subject, sh.opts, sh.progress);
@@ -704,15 +702,29 @@ async fn sync_commits(
     progress(SyncProgress::Detail(
         "listing repositories with recent pushes".into(),
     ));
-    let (pushed, listing_failure) = match client.pushed_repositories(user, earliest).await {
+    progress(SyncProgress::Detail("searching commits".into()));
+    // The repository list and every range's commit search run at once.
+    let (listing, searches) = tokio::join!(
+        client.pushed_repositories(user, earliest),
+        futures::future::try_join_all(ranges.iter().map(|range| client.search_commits(
+            &subject.login,
+            *range,
+            opts.public_only
+        )),),
+    );
+    let mut searches = searches?.into_iter();
+    let (pushed, listing_failure) = match listing {
         Ok(list) => (list, None),
         Err(e @ ApiError::Unauthorized) => return Err(e.into()),
         Err(e) => (Vec::new(), Some(format!("repository list failed: {e}"))),
     };
+    // A failed pull request search fails the whole sync elsewhere; here it
+    // just means no pull request repositories.
+    let pr_repos = pr_repos.await.unwrap_or_default();
     // Repositories of pull requests found by this sync.
     let mut pr_repo_ids: HashSet<String> = HashSet::new();
     let mut unresolved: Vec<String> = Vec::new();
-    for (owner, name) in ctx.pr_repos {
+    for (owner, name) in &pr_repos {
         let local = find_repo(known_repos, owner, name).cloned().or_else(|| {
             pushed
                 .iter()
@@ -737,15 +749,7 @@ async fn sync_commits(
 
     for range in ranges {
         let range = *range;
-        progress(SyncProgress::Searching(DataKind::Commits));
-        progress(SyncProgress::Detail(format!(
-            "searching commits {} – {}",
-            range.start.format("%Y-%m-%d"),
-            range.end.format("%Y-%m-%d")
-        )));
-        let fetched = client
-            .search_commits(&subject.login, range, opts.public_only)
-            .await?;
+        let fetched = searches.next().expect("one commit search per range");
         let mut statuses = vec![fetched.status];
         let mut reasons: Vec<String> = fetched.reason.into_iter().collect();
         if let Some(f) = &listing_failure {
@@ -772,8 +776,7 @@ async fn sync_commits(
                 .entry(c.repository.id.clone())
                 .or_insert_with(|| c.repository.clone());
         }
-        let cached_pr_ids = ctx
-            .cached_prs
+        let cached_pr_ids = cached_prs
             .iter()
             .filter(|(_, created, updated)| {
                 *created < range.end && updated.is_none_or(|u| u >= range.start)
