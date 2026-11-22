@@ -1479,6 +1479,8 @@ async fn diff_stats_are_fetched_once_and_unknown_ones_stay_unknown() {
     let o = env.offline_json(&["overview"]).await.json();
     let d = &o["metrics"]["diff_stats"];
     assert_eq!(d["coverage"], "unavailable", "{d}");
+    // Unknown sums are null, never 0.
+    assert!(d["additions"].is_null() && d["deletions"].is_null(), "{d}");
     // Commits whose line counts go into the totals (others are excluded as
     // counted through other commits).
     let commits = d["commits"].as_u64().unwrap() - d["excluded"].as_u64().unwrap();
@@ -1527,6 +1529,7 @@ async fn a_failing_line_count_query_keeps_the_sync_and_leaves_counts_unknown() {
     let d = &o["metrics"]["diff_stats"];
     assert_eq!(d["coverage"], "unavailable", "{d}");
     assert_eq!(d["commits_with_stats"], 0);
+    assert!(d["additions"].is_null(), "{d}");
     // A later run fetches them once GitHub answers again.
     server.reset().await;
     let world = World::base();

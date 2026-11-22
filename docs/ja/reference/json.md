@@ -87,10 +87,10 @@ ghusage prs --format csv > prs.csv
 | `commits` | integer | `commits` で数えたコミットのうち、マージコミットでないもの |
 | `excluded` | integer | そのうち、変更がほかのコミットとして数えられるために行数の合計から除いたもの |
 | `commits_with_stats` | integer | 残りの `commits - excluded` 件のうち、行数が分かっているもの |
-| `additions`, `deletions` | integer | `commits_with_stats` 件のコミットだけの合計 |
+| `additions`, `deletions` | integer または null | `commits_with_stats` 件のコミットだけの合計。`coverage` が `unavailable` のときは `null` |
 | `coverage` | string | `no_commits`、`complete`、`partial`、`unavailable` |
 
-`coverage` が `unavailable` のとき、`additions` と `deletions` は `0` になります。この `0` は「不明」の意味で、0 行という意味ではありません。合計を使う前に `coverage` を確かめてください。
+`coverage` が `unavailable` のとき、`additions` と `deletions` は `null` になります。行数が分かっているコミットがないので、合計は 0 ではなく不明です。`partial` のときは一部のコミットだけの合計なので、使う前に `coverage` を確かめてください。
 
 ```json
 "diff_stats": {

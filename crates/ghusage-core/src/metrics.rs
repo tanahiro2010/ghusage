@@ -483,7 +483,11 @@ pub enum DiffCoverage {
 /// Lines added and deleted by the counted non-merge commits. Merge commits
 /// are left out: GitHub reports their diff against the first parent, which
 /// repeats the changes of the merged branch.
+///
+/// In JSON, `additions` and `deletions` are `null` when `coverage` is
+/// `unavailable`: no commit has known counts, so the sums are unknown.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(into = "DiffTotalsJson", from = "DiffTotalsJson")]
 pub struct DiffTotals {
     /// Non-merge commits counted in `commits`.
     pub commits: u64,
@@ -498,6 +502,44 @@ pub struct DiffTotals {
     pub additions: u64,
     pub deletions: u64,
     pub coverage: DiffCoverage,
+}
+
+/// The JSON form of [`DiffTotals`].
+#[derive(Serialize, Deserialize)]
+struct DiffTotalsJson {
+    commits: u64,
+    excluded: u64,
+    commits_with_stats: u64,
+    additions: Option<u64>,
+    deletions: Option<u64>,
+    coverage: DiffCoverage,
+}
+
+impl From<DiffTotals> for DiffTotalsJson {
+    fn from(d: DiffTotals) -> Self {
+        let known = d.coverage != DiffCoverage::Unavailable;
+        Self {
+            commits: d.commits,
+            excluded: d.excluded,
+            commits_with_stats: d.commits_with_stats,
+            additions: known.then_some(d.additions),
+            deletions: known.then_some(d.deletions),
+            coverage: d.coverage,
+        }
+    }
+}
+
+impl From<DiffTotalsJson> for DiffTotals {
+    fn from(d: DiffTotalsJson) -> Self {
+        Self {
+            commits: d.commits,
+            excluded: d.excluded,
+            commits_with_stats: d.commits_with_stats,
+            additions: d.additions.unwrap_or(0),
+            deletions: d.deletions.unwrap_or(0),
+            coverage: d.coverage,
+        }
+    }
 }
 
 impl DiffTotals {

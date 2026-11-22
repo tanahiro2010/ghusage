@@ -60,6 +60,13 @@ jobs:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-latest]
     env:
       VERIFIED_KEY: ci-verified-test-${{ matrix.os }}-${{ needs.inputs.outputs.rust }}
+      # One runner covers what does not depend on the platform: formatting,
+      # and the heavy 100k-event checks (benchmarks in test mode, terminal
+      # UI responsiveness), which mean little in an unoptimized build. The
+      # benchmark workflow measures performance in release builds.
+      FULL_OS: ubuntu-latest
+      # The default MSVC linker is slow to link the many test binaries.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld.exe
     steps:
       - uses: actions/checkout@v4
         with:
@@ -85,12 +92,17 @@ jobs:
         with:
           # Keep compiled dependencies even when a test fails.
           cache-on-failure: true
-      - if: steps.verified.outputs.cache-hit != 'true'
+      - if: steps.verified.outputs.cache-hit != 'true' && matrix.os == env.FULL_OS
         run: cargo fmt --all -- --check
       - if: steps.verified.outputs.cache-hit != 'true'
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - if: steps.verified.outputs.cache-hit != 'true'
+      - if: steps.verified.outputs.cache-hit != 'true' && matrix.os == env.FULL_OS
         run: cargo test --workspace --all-targets --no-fail-fast
+      - if: steps.verified.outputs.cache-hit != 'true' && matrix.os != env.FULL_OS
+        name: cargo test (without the platform-independent 100k-event checks)
+        run: >-
+          cargo test --workspace --lib --bins --tests --no-fail-fast
+          -- --skip first_render_and_interaction_latency_on_100k_events
       # Reached only when every step above passed.
       - name: Remember that these inputs passed
         if: steps.verified.outputs.cache-hit != 'true'
@@ -102,9 +114,16 @@ jobs:
           path: .ci-verified
           key: ${{ env.VERIFIED_KEY }}
 
+  # The release build of every platform is checked where it matters: pull
+  # requests into `release` (required checks there) and pushes to it. Pushes
+  # to `dev` run the tests only; the release workflow builds every target
+  # again from the tag.
   build:
     name: release build (${{ matrix.os }})
     needs: inputs
+    if: >-
+      (github.event_name == 'pull_request' && github.base_ref == 'release')
+      || github.ref == 'refs/heads/release'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
