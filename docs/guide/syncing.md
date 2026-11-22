@@ -100,9 +100,22 @@ The period then ends at that sync. `--max-age` (default `5m`, or the
 ### Progress
 
 While a sync runs and stderr is a terminal, `ghusage` shows a spinner with
-the state of pull requests, commits and issues, and below it the latest
-step (the repository or pull request just fetched). Both lines are erased
-when the sync ends, so the report output stays clean.
+how many requests run in parallel (out of `--concurrency`), how many have
+finished, and the state of pull requests, commits and issues. Below it are
+the requests in flight with how long each has been running (up to four, the
+rest counted), and the latest step (the repository or pull request just
+fetched). All of it is erased when the sync ends, so the report output stays
+clean.
+
+```text
+⠹ Syncing with GitHub 0:04 · 6/8 in parallel · 31 requests done · pull requests 1/2 · commits 9/22
+  ▸ search commits p4 0.8s
+  ▸ octo/app#16 2.3s
+  ▸ octo/app commits p2 0.4s
+  ▸ octo/tool commits 0.3s
+  … 2 more
+  ↳ commits in octo/site: 12 found
+```
 
 ### When GitHub is not reachable
 

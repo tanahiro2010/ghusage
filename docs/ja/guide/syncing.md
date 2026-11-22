@@ -70,7 +70,17 @@ note: showing data synced 2 min ago (up to 2026-11-21 23:41); use --max-age 0 to
 
 ### 進み具合の表示 {#progress}
 
-同期の実行中に stderr がターミナルなら、`ghusage` はスピナーとともにプルリクエスト、コミット、Issue の状況を表示し、その下に直前の処理(取得し終えたリポジトリやプルリクエスト)を表示します。同期が終わるとどちらの行も消すので、レポートの出力には残りません。
+同期の実行中に stderr がターミナルなら、`ghusage` はスピナーとともに、並列に動いているリクエストの数(上限は `--concurrency`)、終わったリクエストの数、プルリクエスト、コミット、Issue の状況を表示します。その下に、実行中のリクエストを経過時間つきで(最大 4 件、残りは件数だけ)、さらに直前の処理(取得し終えたリポジトリやプルリクエスト)を表示します。同期が終わるとすべて消すので、レポートの出力には残りません。
+
+```text
+⠹ Syncing with GitHub 0:04 · 6/8 in parallel · 31 requests done · pull requests 1/2 · commits 9/22
+  ▸ search commits p4 0.8s
+  ▸ octo/app#16 2.3s
+  ▸ octo/app commits p2 0.4s
+  ▸ octo/tool commits 0.3s
+  … 2 more
+  ↳ commits in octo/site: 12 found
+```
 
 ### GitHub に接続できない場合 {#when-github-is-not-reachable}
 
