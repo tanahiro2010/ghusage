@@ -103,11 +103,12 @@ Lines added and deleted by your counted commits. See
 | `commits` | integer | Non-merge commits counted in `commits` |
 | `excluded` | integer | Of those, commits left out of the line totals because their changes are counted through other commits |
 | `commits_with_stats` | integer | Of the remaining `commits - excluded`, commits with known line counts |
-| `additions`, `deletions` | integer | Sums over the `commits_with_stats` commits only |
+| `additions`, `deletions` | integer or null | Sums over the `commits_with_stats` commits only; `null` when `coverage` is `unavailable` |
 | `coverage` | string | `no_commits`, `complete`, `partial` or `unavailable` |
 
-`additions` and `deletions` are `0` when `coverage` is `unavailable`; that
-`0` means unknown, not zero lines. Check `coverage` before using the sums.
+`additions` and `deletions` are `null` when `coverage` is `unavailable`: no
+commit has known line counts, so the sums are unknown, not zero. With
+`partial` they cover only some commits; check `coverage` before using them.
 
 ```json
 "diff_stats": {
