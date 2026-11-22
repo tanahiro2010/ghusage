@@ -1,0 +1,133 @@
+name: Bug report
+description: Something does not work, crashes, or shows a wrong number.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem.
+
+        **Do not paste tokens or other secrets.** Check every log and output before posting.
+        If your report involves private repositories, do not include their names, titles or URLs.
+        JSON, CSV and Markdown output (`--format json|csv|markdown`) hide private repository names,
+        titles and URLs by default, so prefer those over table output and do not add `--include-private`.
+        Logins of people, node IDs, timestamps and counts are not hidden; remove them if needed.
+        See [Privacy](https://ghusage.under18.dev/reference/privacy).
+
+        For a security problem, do not open a public issue. Report it privately instead
+        (see the "Report a security vulnerability" link on the new issue page).
+
+        If you are unsure how a number is defined rather than sure it is wrong,
+        the "Metric question" template may fit better.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened
+      description: A short description of the problem.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: ghusage version
+      description: Output of `ghusage --version`.
+      placeholder: ghusage 0.1.4
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and architecture
+      placeholder: macOS 15 (Apple Silicon) / Ubuntu 24.04 (x64) / Windows 11 (arm64)
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installation method
+      options:
+        - npm (npm install -g ghusage)
+        - cargo install --git
+        - Built from a local checkout
+        - Other (describe below)
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Wrong or unexpected number
+        - Sync, authentication or network
+        - Local cache
+        - CLI output (table, JSON, CSV, Markdown)
+        - Terminal UI (ghusage tui)
+        - npm launcher or installation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command you ran
+      description: The exact command line, including options such as `--since`, `--timezone`, `--repo` or `--format`.
+      render: shell
+      placeholder: ghusage weekly --since 2026-10-01 --timezone Asia/Tokyo
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: |
+        Output, error message and exit code (`echo $?`). Remove tokens and private repository details.
+        For diagnostics, you can rerun with `GHUSAGE_LOG=debug` (logs go to stderr); review the log before pasting it.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Data for checking a number (if a number is wrong)
+      description: |
+        Help us compare ghusage with GitHub. Useful information includes:
+        - the pull request URL (public repositories only) and the output of `ghusage pr <URL> --timeline`
+        - `--format json` output of the report that shows the number
+        - the value you see on GitHub, for example on the web page or with `gh api`, and the exact query you used
+        - the time zone you use (`--timezone` or `TZ`) and the `Coverage:` line of the report
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: environment
+    attributes:
+      label: Terminal (for terminal UI or display problems)
+      description: Terminal emulator, shell, window size, and whether you use tmux or screen. A screenshot helps.
+      placeholder: WezTerm 20240203 / zsh / 120x40 / inside tmux 3.4
+    validations:
+      required: false
+  - type: textarea
+    id: doctor
+    attributes:
+      label: ghusage doctor output (optional)
+      description: Output of `ghusage doctor`. It may include your login and the cache path; edit them if you prefer.
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I removed tokens and private repository names, titles and URLs from everything above.
+          required: true
+        - label: I checked [Known limitations](https://ghusage.under18.dev/reference/limitations) and this is not listed there.
+          required: false

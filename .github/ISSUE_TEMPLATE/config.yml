@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://ghusage.under18.dev/
+    about: Guides, CLI reference, metric definitions and known limitations.
+  - name: Documentation (日本語)
+    url: https://ghusage.under18.dev/ja/
+    about: 日本語のドキュメント
+  - name: Report a security vulnerability
+    url: https://github.com/tanahiro2010/ghusage/security/advisories/new
+    about: Do not open a public issue for security problems. Report them privately through GitHub's private vulnerability reporting.

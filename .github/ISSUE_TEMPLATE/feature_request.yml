@@ -1,0 +1,60 @@
+name: Feature request
+description: Suggest a new report, metric, option or terminal UI improvement.
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. Please check the [documentation](https://ghusage.under18.dev/)
+        and [Known limitations](https://ghusage.under18.dev/reference/limitations) first:
+        some data is not available from GitHub's APIs.
+
+        Do not paste tokens or private repository names, titles or URLs.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to find out or do? What makes it hard today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: |
+        How it could work: a command, an option, a column, a terminal UI screen.
+        For a new metric, describe exactly what should be counted, for example whose activity,
+        which events, and how it relates to the period.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you use today, such as `--format json` with a script, or other tools.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Reports and metrics
+        - Pull request detail and timeline
+        - Sync and local cache
+        - JSON, CSV or Markdown output
+        - Terminal UI
+        - Installation
+        - Documentation
+        - Other
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Examples, sample output, screenshots or links to the GitHub API documentation.
+    validations:
+      required: false
