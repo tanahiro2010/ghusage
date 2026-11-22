@@ -9,6 +9,7 @@ use ghusage_core::model::{
     ActivityEvent, Actor, EventId, EventMeta, EventType, Repository, Source, Visibility,
 };
 use ghusage_core::time::Period;
+use reqwest::header::HeaderMap;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -62,6 +63,25 @@ struct SearchOutcome {
     reasons: Vec<String>,
 }
 
+/// Extra attempts for a search page that GitHub reports as incomplete.
+const INCOMPLETE_RETRIES: u32 = 2;
+
+/// Fetches one search page. GitHub marks a page `incomplete_results` when
+/// the search timed out on its side, which happens more often while several
+/// pages are requested at once; such a page is fetched again after a short
+/// wait, and only a page that stays incomplete is reported as such.
+async fn get_page(t: &Transport, url: &reqwest::Url) -> Result<(Value, HeaderMap), ApiError> {
+    let mut page = t.get_json(url).await?;
+    for attempt in 1..=INCOMPLETE_RETRIES {
+        if page.0.get("incomplete_results").and_then(Value::as_bool) != Some(true) {
+            break;
+        }
+        tokio::time::sleep(t.backoff(attempt)).await;
+        page = t.get_json(url).await?;
+    }
+    Ok(page)
+}
+
 /// Runs a search over `period`, splitting ranges whose total exceeds the cap.
 async fn search(
     t: &Transport,
@@ -86,7 +106,7 @@ async fn search(
                 ("per_page", "100"),
             ],
         );
-        let (value, headers) = t.get_json(&first).await?;
+        let (value, headers) = get_page(t, &first).await?;
         let total = value
             .get("total_count")
             .and_then(Value::as_u64)
@@ -137,7 +157,8 @@ async fn search(
             && pages > 1
         {
             let urls: Vec<_> = (2..=pages).map(|n| with_page(&next, n)).collect();
-            let fetched = futures::future::try_join_all(urls.iter().map(|u| t.get_json(u))).await?;
+            let fetched =
+                futures::future::try_join_all(urls.iter().map(|u| get_page(t, u))).await?;
             for (url, (value, headers)) in urls.iter().zip(fetched) {
                 seen_urls.insert(url.to_string());
                 take(&value)?;
@@ -158,7 +179,7 @@ async fn search(
                     "search pagination did not terminate".into(),
                 ));
             }
-            let (value, headers) = t.get_json(&next).await?;
+            let (value, headers) = get_page(t, &next).await?;
             take(&value)?;
             last_headers = headers;
         }

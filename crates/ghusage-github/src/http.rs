@@ -513,7 +513,7 @@ impl Transport {
     }
 
     /// Exponential backoff with jitter, capped at one minute.
-    fn backoff(&self, attempt: u32) -> Duration {
+    pub(crate) fn backoff(&self, attempt: u32) -> Duration {
         let exp = attempt.saturating_sub(1).min(20);
         let base = self
             .config
