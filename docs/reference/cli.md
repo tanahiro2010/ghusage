@@ -211,7 +211,7 @@ Cache: /Users/me/Library/Application Support/dev.ghusage.ghusage/ghusage.db
 | `--visibility <public\|private>` | Only public, or only non-public (private and internal) repositories |
 | `--ownership <owned\|external>` | Only repositories you own, or only other repositories |
 | `--user <USER>` | Analyze another user's activity (limited to what your token can see) |
-| `--format <table\|json\|csv>` | Output format (default `table`). `csv` is only available for reports and `pr`; `sync`, `doctor`, `auth`, `cache` and `tui` reject it with exit code 2 |
+| `--format <table\|json\|csv\|markdown>` | Output format (default `table`). `csv` is only available for reports and `pr`; `sync`, `doctor`, `auth`, `cache` and `tui` reject it with exit code 2. `markdown` is only available for `overview`, `daily`, `weekly`, `monthly`, `yearly` and `repos` (see [Profile README](../guide/profile-readme.md)); like JSON and CSV it hides private repository names unless `--include-private` is given |
 | `--offline` | Use only cached data; never contact GitHub |
 | `--no-cache` | Fetch fresh data into a temporary cache instead of the local cache |
 | `--require-complete` | Exit with code 6 if any data for the period is incomplete |
@@ -262,7 +262,7 @@ continues.
 |---|---|
 | `0` | Success |
 | `1` | General error (for example: no cached account in offline mode, pull request not in the cache, a failed `doctor` check, terminal error) |
-| `2` | Invalid arguments (unknown option or value, invalid date or time zone, empty period, invalid pull request URL, unknown event type, `sync --offline`, `--format csv` on a command without CSV output) |
+| `2` | Invalid arguments (unknown option or value, invalid date or time zone, empty period, invalid pull request URL, unknown event type, `sync --offline`, `--format csv` or `--format markdown` on a command without that output) |
 | `3` | Authentication error (no credentials, unusable token file, token rejected by GitHub) |
 | `4` | GitHub API error (network, rate limit, server errors); also `sync` when some data could not be fetched completely. Report commands do not fail when GitHub is unreachable and an account is cached: they warn and show cached data |
 | `5` | Cache error (cannot create or open the database, corrupt or too-new database, another sync is running) |

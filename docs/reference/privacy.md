@@ -40,8 +40,8 @@ diffs (the file contents that changed), so they can be shown again offline.
 
 ## Exports
 
-JSON and CSV output are often shared or committed somewhere, so by default
-they hide information about private and internal repositories: repository
+JSON, CSV and Markdown output are often shared or committed somewhere, so
+by default they hide information about private and internal repositories: repository
 names become `<owner>/repo-<hash>` (with `private` as owner for repositories
 you do not own), pull request and issue titles become `[private]`, and URLs,
 file paths, label names, previous titles and CI check names are removed. The

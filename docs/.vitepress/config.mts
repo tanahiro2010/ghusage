@@ -14,6 +14,7 @@ const enSidebar: DefaultTheme.Sidebar = [
       { text: 'Authentication', link: '/guide/authentication' },
       { text: 'Syncing and the cache', link: '/guide/syncing' },
       { text: 'Terminal UI', link: '/guide/tui' },
+      { text: 'Profile README', link: '/guide/profile-readme' },
     ],
   },
   {
@@ -43,6 +44,7 @@ const jaSidebar: DefaultTheme.Sidebar = [
       { text: '認証', link: '/ja/guide/authentication' },
       { text: '同期とキャッシュ', link: '/ja/guide/syncing' },
       { text: 'ターミナル UI', link: '/ja/guide/tui' },
+      { text: 'プロフィール README', link: '/ja/guide/profile-readme' },
     ],
   },
   {
