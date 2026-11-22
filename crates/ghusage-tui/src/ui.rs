@@ -18,7 +18,11 @@ use ratatui::widgets::{
     Block, Borders, Cell, Clear, Paragraph, Row, Sparkline, Table, TableState, Wrap,
 };
 
-use crate::app::{App, DashboardPane, DetailTab, ListId, OverviewPane, Screen, TimelineFilter};
+use crate::app::{
+    App, CommitState, DashboardPane, DetailTab, ListId, OverviewPane, PrPane, Screen,
+    TimelineFilter,
+};
+use crate::commit_view::{Row as DocRow, RowKind};
 
 const SELECT_SYMBOL: &str = "▶ ";
 
@@ -154,6 +158,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             Screen::PullRequests => draw_pull_requests(f, app, body),
             Screen::PrDetail => draw_pr_detail(f, app, body),
             Screen::PrTimeline => draw_pr_timeline(f, app, body),
+            Screen::CommitDetail => draw_commit_detail(f, app, body),
             Screen::Reviews => draw_reviews(f, app, body),
             Screen::System => draw_system(f, app, body),
         }
@@ -256,7 +261,8 @@ pub fn key_hint(app: &App) -> &'static str {
         Screen::Reviews => "Tab sub/recv · Enter PR",
         Screen::Issues => "Enter issue detail · / search",
         Screen::DayDetail | Screen::RepoDetail => "Tab section · Enter open · Esc back",
-        Screen::PrDetail => "Enter timeline · o open · Esc back",
+        Screen::PrDetail => "Tab commits · Enter open · o open · Esc back",
+        Screen::CommitDetail => "j/k scroll · ] [ file · o open · Esc back",
         Screen::PrTimeline => "Tab type · o open · Esc back",
         Screen::IssueDetail => "o open · Esc back",
         Screen::System => "r refresh",
@@ -286,6 +292,11 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     });
     if app.is_computing() {
         parts.push("⧗ computing".into());
+    }
+    if app.screen == Screen::CommitDetail
+        && matches!(app.commit_state(), Some(CommitState::Loading))
+    {
+        parts.push("⧗ loading commit".into());
     }
     if app.sync.running {
         parts.push(format!(
@@ -868,7 +879,7 @@ fn draw_pr_detail(f: &mut Frame, app: &App, area: Rect) {
         ),
         kv("Creation to merge", dur(r.timing.creation_to_merge_secs)),
         kv(
-            "Review → author reply",
+            "Review → next author activity",
             dur(r.timing.review_to_next_author_activity_secs),
         ),
         kv(
@@ -886,10 +897,233 @@ fn draw_pr_detail(f: &mut Frame, app: &App, area: Rect) {
         ),
         kv("URL", fit(&r.url, w)),
         Line::raw(""),
-        Line::styled("Enter: timeline · o: open on GitHub · Esc: back", dim()),
+        Line::styled(
+            match app.pr_pane {
+                PrPane::Summary => "Enter: timeline · Tab: commits · o: open on GitHub · Esc: back",
+                PrPane::Commits => {
+                    "Enter: open commit · Tab: summary · o: open commit on GitHub · Esc: back"
+                }
+            },
+            dim(),
+        ),
     ];
+    let focus_commits = app.pr_pane == PrPane::Commits;
+    let h = area.height;
+    let wanted = (r.commit_list.len() as u16).saturating_add(3).max(4);
+    let list_h = if h >= 12 {
+        let cap = if focus_commits { h - 4 } else { h / 2 };
+        wanted.min(cap).max(4)
+    } else if focus_commits {
+        h
+    } else {
+        0
+    };
+    let [info_area, list_area] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(list_h)]).areas(area);
+    if info_area.height > 0 {
+        f.render_widget(
+            Paragraph::new(lines).block(block("PR Detail".into(), !focus_commits)),
+            info_area,
+        );
+    }
+    if list_area.height > 0 {
+        draw_pr_commits(f, app, r, list_area, focus_commits);
+    }
+}
+
+/// The commits of the pull request on PR Detail. Commits that are no
+/// longer part of it are marked `removed`.
+fn draw_pr_commits(
+    f: &mut Frame,
+    app: &App,
+    r: &ghusage_app::report::PrReport,
+    area: Rect,
+    focused: bool,
+) {
+    let list = ListId::PrCommits;
+    let all = &r.commit_list;
+    let removed = all.iter().filter(|c| c.removed).count();
+    let mut title = format!("Commits ({}", all.len());
+    if removed > 0 {
+        title.push_str(&format!(", {removed} removed"));
+    }
+    title.push(')');
+    title.push_str(if focused {
+        " · Enter to open · o on GitHub"
+    } else {
+        " · Tab to select"
+    });
+    if all.is_empty() {
+        return empty(
+            f,
+            area,
+            title,
+            &["No commits recorded for this pull request."],
+        );
+    }
+    let vis = app.visible(list);
+    if vis.is_empty() {
+        return empty(f, area, title, &[&no_match(app, list)]);
+    }
+    let wide = area.width >= 70;
+    let fixed: &[u16] = if wide { &[8, 7, 11, 14] } else { &[8, 7] };
+    let msg_w = flex_width(area, fixed);
+    let rows: Vec<Row> = vis
+        .iter()
+        .map(|&i| {
+            let c = &all[i];
+            let mark = if c.removed {
+                "removed"
+            } else if c.is_merge_commit {
+                "merge"
+            } else {
+                ""
+            };
+            let mut cells = vec![
+                Cell::from(ghusage_core::commit::short_sha(&c.sha).to_string()),
+                Cell::from(mark),
+            ];
+            if wide {
+                cells.push(Cell::from(app.zone.format(c.committed_at, "%m-%d %H:%M")));
+                cells.push(Cell::from(fit(&c.author, 14)));
+            }
+            cells.push(Cell::from(fit(c.headline.as_deref().unwrap_or("-"), msg_w)));
+            let row = Row::new(cells);
+            if c.removed { row.style(dim()) } else { row }
+        })
+        .collect();
+    let mut widths: Vec<Constraint> = fixed.iter().map(|w| Constraint::Length(*w)).collect();
+    widths.push(Constraint::Min(8));
+    let header: &[&str] = if wide {
+        &["SHA", "", "Committed", "Author", "Message"]
+    } else {
+        &["SHA", "", "Message"]
+    };
+    let t = styled_table(rows, widths, header).block(block(title, focused));
+    stateful_table(f, app, area, list, t, focused);
+}
+
+// ----- Commit detail ---------------------------------------------------------
+
+fn doc_line(r: &DocRow, width: usize) -> Line<'static> {
+    const KEY_W: usize = 16;
+    match r.kind {
+        RowKind::Field => Line::from(vec![
+            Span::styled(format!("{:<KEY_W$}", r.key), bold()),
+            Span::raw(fit(&r.text, width.saturating_sub(KEY_W))),
+        ]),
+        kind => {
+            let style = match kind {
+                RowKind::Title | RowKind::Total => bold(),
+                RowKind::Heading => bold().add_modifier(Modifier::UNDERLINED),
+                RowKind::FileHeader => bold().fg(Color::Yellow),
+                RowKind::Hunk => Style::new().fg(Color::Cyan),
+                RowKind::Added => Style::new().fg(Color::Green),
+                RowKind::Removed => Style::new().fg(Color::Red),
+                RowKind::Warning => Style::new().fg(Color::Yellow),
+                RowKind::Note => dim(),
+                _ => Style::new(),
+            };
+            Line::styled(fit(&r.text, width), style)
+        }
+    }
+}
+
+fn draw_commit_detail(f: &mut Frame, app: &App, area: Rect) {
+    let Some(key) = &app.detail_commit else {
+        return empty(f, area, "Commit".into(), &["No commit selected."]);
+    };
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let inner_h = area.height.saturating_sub(2) as usize;
+    app.commit_view_height.set(inner_h.max(1));
+    let short = ghusage_core::commit::short_sha(&key.sha).to_string();
+    if let Some(CommitState::Ready(v)) = app.commit_state() {
+        let len = v.rows.len();
+        let top = app.commit_scroll.min(len.saturating_sub(inner_h));
+        let end = (top + inner_h).min(len);
+        // Only the rows on screen are turned into lines.
+        let lines: Vec<Line> = v.rows[top..end]
+            .iter()
+            .map(|r| doc_line(r, inner_w))
+            .collect();
+        let mut title = format!(
+            "Commit {} · lines {}–{} of {len}",
+            clean(&short),
+            top + 1,
+            end
+        );
+        match v.file_at(top) {
+            Some(i) => title.push_str(&format!(" · file {}/{}", i + 1, v.file_rows.len())),
+            None => title.push_str(&format!(" · {} file(s)", v.file_rows.len())),
+        }
+        f.render_widget(
+            Paragraph::new(lines).block(block(fit(&title, inner_w.saturating_sub(4)), true)),
+            area,
+        );
+        return;
+    }
+    // Not loaded (yet): show what the cached activity already tells.
+    let seed = &app.commit_seed;
+    let w = inner_w.saturating_sub(22);
+    let mut lines = vec![
+        Line::styled(
+            fit(
+                &format!(
+                    "{}@{} — {}",
+                    key.repository,
+                    short,
+                    seed.headline.as_deref().unwrap_or("")
+                ),
+                inner_w,
+            ),
+            bold(),
+        ),
+        Line::raw(""),
+        kv("Repository", fit(&key.repository, w)),
+        kv("SHA", fit(&key.sha, w)),
+        kv("Author", fit(seed.author.as_deref().unwrap_or("-"), w)),
+        kv("Date", ts(app.zone, seed.date)),
+    ];
+    if seed.is_merge {
+        lines.push(kv("Parents", "merge commit".into()));
+    }
+    if seed.removed {
+        lines.push(kv(
+            "In the pull request",
+            "removed (no longer part of the pull request)".into(),
+        ));
+    }
+    lines.push(Line::raw(""));
+    match app.commit_state() {
+        Some(CommitState::Failed(e)) if e.offline => {
+            lines.push(Line::styled(
+                "! Not available offline: this commit's files and diff are not in the cache.",
+                bold(),
+            ));
+            lines.push(Line::raw(
+                "Run ghusage tui without --offline (with GitHub reachable) and open it again, or press r to retry.",
+            ));
+            lines.push(Line::styled(clean(&e.message), dim()));
+        }
+        Some(CommitState::Failed(e)) => {
+            lines.push(Line::styled("! Could not load this commit.", bold()));
+            lines.push(Line::raw(clean(&e.message)));
+            lines.push(Line::raw("Press r to try again or o to open it on GitHub."));
+        }
+        _ => {
+            lines.push(Line::raw(
+                "⧗ Loading the commit (from the cache, or from GitHub when online)…",
+            ));
+            lines.push(Line::styled(
+                "Other screens and keys keep working meanwhile; Esc goes back.",
+                dim(),
+            ));
+        }
+    }
     f.render_widget(
-        Paragraph::new(lines).block(block("PR Detail".into(), true)),
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(block(format!("Commit {}", clean(&short)), true)),
         area,
     );
 }
@@ -1982,15 +2216,16 @@ pub const HELP: &[(&str, &str)] = &[
     ),
     (
         "Enter",
-        "Open detail: day, repository, PR (then timeline), issue; review → its PR",
+        "Open detail: day, repository, PR (then timeline), issue, commit; review → its PR",
     ),
     ("Esc", "Back to the previous screen / clear search"),
-    ("j / Down", "Next item"),
-    ("k / Up", "Previous item"),
+    ("j / Down", "Next item (Commit: scroll down)"),
+    ("k / Up", "Previous item (Commit: scroll up)"),
     ("PgDn PgUp g G", "Page down / up, first, last"),
+    ("] / [", "Commit: next / previous file of the diff"),
     (
         "Tab / Shift+Tab",
-        "Next / previous pane or section (Reviews: submitted/received)",
+        "Next / previous pane or section (Reviews: submitted/received; PR: commits)",
     ),
     ("/", "Search the current list"),
     (

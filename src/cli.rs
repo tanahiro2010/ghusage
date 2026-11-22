@@ -152,6 +152,8 @@ pub enum Command {
     Issues,
     /// Detail and timeline of one pull request.
     Pr(PrArgs),
+    /// One commit: message, author, parents, changed files and (with --patch) its diff.
+    Commit(CommitArgs),
     /// Interactive terminal UI.
     Tui,
     /// Fetch data from GitHub into the local cache.
@@ -195,6 +197,16 @@ pub struct PrArgs {
     /// Only these event types in the timeline (e.g. review_submitted,inline_comment). Repeatable.
     #[arg(long = "event-type", value_delimiter = ',')]
     pub event_types: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct CommitArgs {
+    /// The commit: OWNER/REPO@SHA or https://github.com/OWNER/REPO/commit/SHA
+    #[arg(value_name = "COMMIT")]
+    pub reference: String,
+    /// Include the diff of each file.
+    #[arg(long)]
+    pub patch: bool,
 }
 
 #[derive(Debug, Args)]

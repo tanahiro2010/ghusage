@@ -34,8 +34,9 @@ shows private repository names, like table output.
 | `4` | Repositories | Activity per repository, with visibility and owned/external |
 | | Repository Detail | Opened with `Enter` on a repository: its numbers for the period and, in sections, its pull requests, commits, issues, reviews, comments and activity |
 | `5` | Pull Requests | Pull requests you were active in during the period: state, title, events, your events, commits, reviews, comments, people, last activity |
-| | PR Detail | Opened with `Enter` on a pull request: state, author, merge, commits, reviews, comments, review threads, latest CI, participants, timings, coverage, URL |
+| | PR Detail | Opened with `Enter` on a pull request: state, author, merge, commits, reviews, comments, review threads, latest CI, participants, timings, coverage, URL, and the list of the pull request's commits |
 | | PR Timeline | Opened with `Enter` on PR Detail: every event of the pull request in order, filterable by event category |
+| | Commit | Opened with `Enter` on a commit (PR Detail commit list, or the Commits section of a day or repository detail): the commit's facts, message, changed files and diff |
 | `6` | Reviews | Reviews you submitted and reviews on your pull requests. `Enter` opens the reviewed pull request |
 | `7` | Issues | Issues you opened, closed or reopened during the period |
 | | Issue Detail | Opened with `Enter` on an issue: title, repository, author, current state, created and closed times, and the issue's events in the period |
@@ -85,13 +86,82 @@ is shown next to its name. In each section:
   `prs`, `reviews`, `comments` and `issues` commands for that day or
   repository.
 
-`Enter` opens the pull request or issue behind the selected row (commits
-have no detail; `o` opens them on GitHub). Changing the time range with `t`
+`Enter` opens the pull request, issue or commit behind the selected row.
+Changing the time range with `t`
 or the repository filter with `f` leaves a day detail, because the day may
 not be part of the new period; repository and issue details stay open and
 follow the new period.
 
 The Issue Detail lists the issue's events within the selected period only.
+
+### PR Detail commits
+
+Below the pull request's facts, PR Detail lists its commits, oldest first:
+short SHA, the first line of the message, author and commit time. Commits
+that were part of the pull request earlier but no longer are (for example
+after a force push) are still listed, dimmed and marked `removed`; merge
+commits are marked `merge`. The title shows how many commits there are and
+how many were removed. Commit messages are recorded by `sync`; for pull
+requests synced with an older version the message column shows `-` until
+the pull request is synced again.
+
+`Tab` (or `Shift+Tab`) moves the focus between the facts and the commit
+list. With the facts in focus, `Enter` opens the PR Timeline and `o` the
+pull request, as before. With the commit list in focus, `j`/`k` select a
+commit, `/` searches the list (SHA, message, author), `Enter` opens the
+Commit screen and `o` opens the commit on GitHub.
+
+### Commit
+
+The Commit screen shows, in one scrollable page:
+
+- the repository, full SHA, author and committer (git name and GitHub
+  login), author date and committer date, the parent commits (marked
+  `merge commit` when there is more than one) and the number of changed
+  files and lines;
+- the full commit message;
+- the changed files with their status (`added`, `modified`, `removed`,
+  `renamed` with the old path, ...), lines added and removed, and a total;
+- the diff of every file, each starting with a header line
+  `── [n/total] status path (+added −removed)`. Added lines are green,
+  removed lines red, hunk headers (`@@ ... @@`) cyan and file headers
+  yellow; the `+`, `-` and `@@` prefixes stay, so nothing depends on color
+  alone.
+
+The commit is loaded when the screen opens: from the cache if it was opened
+before, otherwise from GitHub (`GET /repos/{owner}/{repo}/commits/{sha}`,
+every page of files), on a separate thread so the UI keeps responding. While
+it loads, the screen shows what the cache already knows (SHA, message
+headline, author, date, whether it was removed from the pull request) and
+"Loading the commit"; the status bar shows `⧗ loading commit`. A fetched
+commit is stored in the cache and can be shown again offline.
+
+With `--offline`, or when GitHub cannot be reached, a commit that is not in
+the cache cannot be shown: the screen says "Not available offline". If
+loading fails (for example the commit was deleted after a force push, or
+access is denied), the screen says why; press `r` to try again or `o` to open
+it on GitHub. With `--public-only`, commits of repositories that are not
+public are not loaded.
+
+GitHub does not return a diff for binary files or very large diffs; such
+files say "no diff available from GitHub". To keep the screen fast, at most
+3000 diff lines per file and 20000 per commit are shown; a note says how
+many lines were left out (`o` opens the full diff on GitHub). Only the rows
+on screen are drawn, so scrolling stays fast on large commits.
+
+| Key | Action |
+|---|---|
+| `j` / `Down`, `k` / `Up` | Scroll one line |
+| `PageDown` / `Space`, `PageUp` | Scroll one screen |
+| `g` / `Home`, `G` / `End` | Top, bottom |
+| `]` | Next file's diff |
+| `[` | Previous file's diff (from the first file: back to the top) |
+| `o` | Open the commit on GitHub |
+| `r` | Load again after a failure (otherwise: reload and sync, as elsewhere) |
+| `Esc` | Back to the screen it was opened from |
+
+The block title shows the visible lines and which file's diff is at the top
+(`file 2/5`).
 
 ## Keys
 
@@ -105,9 +175,9 @@ The Issue Detail lists the issue's events within the selected period only.
 | `PageDown` / `PageUp` | Move 10 rows |
 | `g` / `Home` | First row |
 | `G` / `End` | Last row |
-| `Enter` | Open the detail of the selected row: Daily → Day Detail; Repositories (and the repository panes of Dashboard and Overview) → Repository Detail; Pull Requests (and the pull request pane of Dashboard) → PR Detail → PR Timeline; Reviews → PR Detail of the reviewed pull request; Issues → Issue Detail; a row of a day or repository detail → its PR Detail or Issue Detail |
+| `Enter` | Open the detail of the selected row: Daily → Day Detail; Repositories (and the repository panes of Dashboard and Overview) → Repository Detail; Pull Requests (and the pull request pane of Dashboard) → PR Detail → PR Timeline (or, with the commit list in focus, Commit); Reviews → PR Detail of the reviewed pull request; Issues → Issue Detail; a row of a day or repository detail → its PR Detail, Issue Detail or Commit |
 | `Esc` | On a detail screen: back to the screen it was opened from. Elsewhere: clear the current search |
-| `Tab` / `Shift+Tab` | Dashboard: move the focus between figures, repositories and pull requests. Overview: switch between the summary and the repository pane. Reviews: switch between submitted and received. Day and repository details: next / previous section. PR Timeline: next / previous event category filter |
+| `Tab` / `Shift+Tab` | Dashboard: move the focus between figures, repositories and pull requests. Overview: switch between the summary and the repository pane. Reviews: switch between submitted and received. Day and repository details: next / previous section. PR Detail: switch between the facts and the commit list. PR Timeline: next / previous event category filter |
 
 Selection stops at the first and last row; it does not wrap around.
 
@@ -115,7 +185,7 @@ Selection stops at the first and last row; it does not wrap around.
 
 | Key | Action |
 |---|---|
-| `/` | Start searching the current list (Daily, Repositories, Pull Requests, Reviews, Issues, the sections of day and repository details, Issue Detail, PR Timeline) |
+| `/` | Start searching the current list (Daily, Repositories, Pull Requests, Reviews, Issues, the sections of day and repository details, Issue Detail, PR Timeline, the commit list of PR Detail) |
 | any character | Add to the search text; the list is filtered as you type (case-insensitive) |
 | `Backspace` | Delete the last character |
 | `Up` / `Down` | Move the selection while searching |
@@ -133,7 +203,8 @@ What a search matches:
   and title; commits by SHA and repository; comments by author, repository
   and kind; pull requests, reviews and issues as in their own lists;
 - Issue Detail: actor and event name;
-- PR Timeline: actor, event name, detail.
+- PR Timeline: actor, event name, detail;
+- PR Detail commit list: SHA, message, author.
 
 ### Data and display
 

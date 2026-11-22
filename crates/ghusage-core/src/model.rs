@@ -543,6 +543,9 @@ pub struct EventMeta {
     /// Set when a resync observed that the source object no longer exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub removed_observed_at: Option<DateTime<Utc>>,
+    /// First line of a commit's message (commits only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_headline: Option<String>,
 }
 
 /// A normalized activity event.

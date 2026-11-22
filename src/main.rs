@@ -203,6 +203,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Comments => "comments",
         Command::Issues => "issues",
         Command::Pr(_) => "pr",
+        Command::Commit(_) => "commit",
         Command::Tui => "tui",
         Command::Sync(_) => "sync",
         Command::Doctor => "doctor",
@@ -223,9 +224,11 @@ fn unused_options(g: &GlobalArgs, cmd: &Command) -> Vec<&'static str> {
     // Reports and the TUI use everything; sync uses the period only.
     let (period, filters) = match cmd {
         Command::Sync(_) => (true, false),
-        Command::Pr(_) | Command::Doctor | Command::Auth { .. } | Command::Cache { .. } => {
-            (false, false)
-        }
+        Command::Pr(_)
+        | Command::Commit(_)
+        | Command::Doctor
+        | Command::Auth { .. }
+        | Command::Cache { .. } => (false, false),
         _ => (true, true),
     };
     let mut unused = Vec::new();
@@ -274,6 +277,7 @@ async fn run(cli: Cli) -> Result<i32> {
                 | Command::Auth { .. }
                 | Command::Cache { .. }
                 | Command::Tui
+                | Command::Commit(_)
         )
     {
         return Err(AppError::InvalidArgs(
@@ -350,6 +354,7 @@ async fn run(cli: Cli) -> Result<i32> {
             report_cmd(&g, &cmd, zone, kind, a.details).await
         }
         Command::Pr(ref a) => pr_cmd(&g, a, zone).await,
+        Command::Commit(ref a) => commit_cmd(&g, a, zone).await,
         Command::Sync(ref a) => sync_cmd(&g, &cmd, zone, a.full).await,
         Command::Tui => tui_cmd(&g, &cmd, zone).await,
         Command::Doctor => doctor_cmd(&g, zone).await,
@@ -544,6 +549,31 @@ async fn pr_cmd(g: &GlobalArgs, a: &cli::PrArgs, zone: Zone) -> Result<i32> {
     };
     print_stdout(&out)?;
     Ok(require_complete(g, r.coverage))
+}
+
+async fn commit_cmd(g: &GlobalArgs, a: &cli::CommitArgs, zone: Zone) -> Result<i32> {
+    let Some(target) = ghusage_app::commit::CommitTarget::parse(&a.reference) else {
+        return Err(AppError::InvalidArgs(format!(
+            "not a commit: {} (expected OWNER/REPO@SHA or https://github.com/OWNER/REPO/commit/SHA)",
+            ghusage_core::sanitize::sanitize_line(&a.reference)
+        )));
+    };
+    let mut s = Session::open(session_config(g)).await?;
+    if let Some(reason) = &s.offline_reason {
+        eprintln!(
+            "warning: GitHub is not reachable ({}); showing cached data",
+            clean(reason)
+        );
+    }
+    let loaded = ghusage_app::commit::load(&mut s, &target).await?;
+    let redact = g.format != Format::Table && !g.include_private;
+    let r = ghusage_app::commit::report(&loaded, a.patch, redact);
+    let out = match g.format {
+        Format::Json => to_json(&r)?,
+        _ => render::commit(&r, zone, style(g, std::io::stdout().is_terminal())),
+    };
+    print_stdout(&out)?;
+    Ok(exit::SUCCESS)
 }
 
 async fn sync_cmd(g: &GlobalArgs, cmd: &Command, zone: Zone, full: bool) -> Result<i32> {

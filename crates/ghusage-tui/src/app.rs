@@ -2,8 +2,9 @@
 //! (`ghusage_app::report`); this module only decides which report to show,
 //! caches it, and tracks navigation, selection and search.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 
 use chrono::{DateTime, Utc};
@@ -18,6 +19,7 @@ use ghusage_core::time::{Period, Zone, resolve_period};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::background::SyncMsg;
+use crate::commit_view::{CommitFailure, CommitKey, CommitMsg, CommitSeed, CommitView};
 use crate::compute::{self, Build, Job, Outcome, Request, Response, Worker};
 use crate::source::{DataSource, SystemInfo};
 
@@ -36,6 +38,7 @@ pub enum Screen {
     Reviews,
     Issues,
     IssueDetail,
+    CommitDetail,
     System,
 }
 
@@ -66,6 +69,7 @@ impl Screen {
             Screen::Reviews => "Reviews",
             Screen::Issues => "Issues",
             Screen::IssueDetail => "Issue Detail",
+            Screen::CommitDetail => "Commit",
             Screen::System => "System",
         }
     }
@@ -85,6 +89,7 @@ impl Screen {
             Screen::Reviews => "Revs",
             Screen::Issues => "Issues",
             Screen::IssueDetail => "Issue",
+            Screen::CommitDetail => "Commit",
             Screen::System => "Sys",
         }
     }
@@ -93,7 +98,7 @@ impl Screen {
     /// from another screen.
     pub fn top(self) -> Screen {
         match self {
-            Screen::PrDetail | Screen::PrTimeline => Screen::PullRequests,
+            Screen::PrDetail | Screen::PrTimeline | Screen::CommitDetail => Screen::PullRequests,
             Screen::DayDetail => Screen::Daily,
             Screen::RepoDetail => Screen::Repositories,
             Screen::IssueDetail => Screen::Issues,
@@ -294,6 +299,23 @@ impl DashboardPane {
     }
 }
 
+/// Focus on the PR Detail screen, switched with Tab / Shift+Tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrPane {
+    /// The pull request's facts; Enter opens the timeline.
+    Summary,
+    /// The list of its commits; Enter opens the selected commit.
+    Commits,
+}
+
+/// Loading state of a commit shown on the commit screen.
+#[derive(Debug, Clone)]
+pub enum CommitState {
+    Loading,
+    Ready(Arc<CommitView>),
+    Failed(CommitFailure),
+}
+
 /// Section of a day or repository detail, cycled with Tab / Shift+Tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DetailTab {
@@ -395,6 +417,7 @@ pub enum ListId {
     DetailReviews,
     DetailComments,
     DetailIssues,
+    PrCommits,
 }
 
 impl ListId {
@@ -451,6 +474,9 @@ pub enum Effect {
     Quit,
     OpenUrl(String),
     StartSync(Period),
+    /// Load a commit (cache first, then GitHub when online) and report
+    /// back through [`App::on_commit`].
+    LoadCommit(CommitKey),
 }
 
 /// Background sync status.
@@ -513,6 +539,18 @@ pub struct App {
     pub detail_issue: Option<String>,
     pub detail_day: Option<DayScope>,
     pub detail_repo: Option<RepoScope>,
+    pub pr_pane: PrPane,
+    /// The commit shown on the commit screen and what was known about it
+    /// before it was loaded.
+    pub detail_commit: Option<CommitKey>,
+    pub commit_seed: CommitSeed,
+    /// First row of the commit screen at the top of the view.
+    pub commit_scroll: usize,
+    /// Rows of the commit screen that fit on screen, as last drawn.
+    pub(crate) commit_view_height: Cell<usize>,
+    commits: HashMap<CommitKey, CommitState>,
+    /// An effect produced while handling a key, returned by `handle_key`.
+    outbox: Option<Effect>,
     /// The day or repository detail last opened (whose report
     /// [`App::detail_report`] returns).
     scope: Option<Screen>,
@@ -592,6 +630,13 @@ impl App {
             detail_issue: None,
             detail_day: None,
             detail_repo: None,
+            pr_pane: PrPane::Summary,
+            detail_commit: None,
+            commit_seed: CommitSeed::default(),
+            commit_scroll: 0,
+            commit_view_height: Cell::new(20),
+            commits: HashMap::new(),
+            outbox: None,
             scope: None,
             search_mode: false,
             show_help: false,
@@ -672,7 +717,9 @@ impl App {
                 end: d.end,
             }),
             Screen::RepoDetail => self.detail_repo.as_ref().map(|r| Slot::Repo(r.id.clone())),
-            Screen::PrDetail | Screen::PrTimeline | Screen::IssueDetail => None,
+            Screen::PrDetail | Screen::PrTimeline | Screen::IssueDetail | Screen::CommitDetail => {
+                None
+            }
         }
     }
 
@@ -817,6 +864,7 @@ impl App {
             Screen::IssueDetail => self
                 .issue_key()
                 .is_some_and(|k| self.pending.contains(&Job::Issue(k))),
+            Screen::CommitDetail => false,
             _ => self
                 .detail_pr
                 .as_ref()
@@ -945,6 +993,8 @@ impl App {
                 .and_then(|k| self.issue_reports.get(&k))
                 .and_then(|r| r.as_ref().err())
                 .map(String::as_str),
+            // Commit loading errors are shown on the commit screen itself.
+            Screen::CommitDetail => None,
             _ => self
                 .detail_pr
                 .as_ref()
@@ -982,6 +1032,7 @@ impl App {
         match self.screen {
             Screen::PrDetail | Screen::PrTimeline => self.pr_report().map(|r| r.coverage),
             Screen::IssueDetail => self.base_report().map(|r| r.overall_coverage()),
+            Screen::CommitDetail => None,
             _ => self.current_report().map(|r| r.overall_coverage()),
         }
     }
@@ -1043,11 +1094,155 @@ impl App {
     fn open_pr(&mut self, id: String) {
         if self.detail_pr.as_ref() != Some(&id) {
             self.timeline_filter = TimelineFilter::All;
-            self.search.remove(&ListId::Timeline);
-            self.reset_list(ListId::Timeline);
+            for l in [ListId::Timeline, ListId::PrCommits] {
+                self.search.remove(&l);
+                self.reset_list(l);
+            }
         }
+        self.pr_pane = PrPane::Summary;
         self.detail_pr = Some(id);
         self.open(Screen::PrDetail);
+    }
+
+    /// Opens the commit screen and asks for the commit unless it is
+    /// already loaded or loading.
+    fn open_commit(&mut self, key: CommitKey, seed: CommitSeed) {
+        if self.detail_commit.as_ref() != Some(&key) {
+            self.commit_scroll = 0;
+        }
+        self.detail_commit = Some(key.clone());
+        self.commit_seed = seed;
+        self.open(Screen::CommitDetail);
+        if matches!(self.commits.get(&key), None | Some(CommitState::Failed(_))) {
+            self.commits.insert(key.clone(), CommitState::Loading);
+            self.outbox = Some(Effect::LoadCommit(key));
+        }
+    }
+
+    /// Loading state of the commit on the commit screen.
+    pub fn commit_state(&self) -> Option<&CommitState> {
+        self.detail_commit
+            .as_ref()
+            .and_then(|k| self.commits.get(k))
+    }
+
+    /// The loaded commit on the commit screen.
+    pub fn commit_view(&self) -> Option<&CommitView> {
+        match self.commit_state() {
+            Some(CommitState::Ready(v)) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// Whether any commit is being loaded.
+    pub fn commit_loading(&self) -> bool {
+        self.commits
+            .values()
+            .any(|s| matches!(s, CommitState::Loading))
+    }
+
+    /// Applies a loaded commit (or why it could not be loaded).
+    pub fn on_commit(&mut self, msg: CommitMsg) {
+        let state = match msg.result {
+            Ok(v) => CommitState::Ready(v),
+            Err(f) => CommitState::Failed(f),
+        };
+        self.commits.insert(msg.key, state);
+    }
+
+    /// Scrolls the commit screen to `row` (clamped to the content).
+    fn scroll_commit_to(&mut self, row: usize) {
+        let len = self.commit_view().map_or(0, |v| v.rows.len());
+        let height = self.commit_view_height.get().max(1);
+        self.commit_scroll = row.min(len.saturating_sub(height));
+    }
+
+    fn scroll_commit(&mut self, delta: isize) {
+        let row = self.commit_scroll.saturating_add_signed(delta);
+        self.scroll_commit_to(row);
+    }
+
+    /// Keys of the commit screen. Returns `false` for keys it does not use.
+    fn commit_key(&mut self, code: KeyCode) -> bool {
+        let page = self.commit_view_height.get().max(1) as isize;
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => self.scroll_commit(1),
+            KeyCode::Char('k') | KeyCode::Up => self.scroll_commit(-1),
+            KeyCode::PageDown | KeyCode::Char(' ') => self.scroll_commit(page),
+            KeyCode::PageUp => self.scroll_commit(-page),
+            KeyCode::Home | KeyCode::Char('g') => self.scroll_commit_to(0),
+            KeyCode::End | KeyCode::Char('G') => self.scroll_commit_to(usize::MAX),
+            KeyCode::Char(']') => match self.commit_view().map(|v| v.next_file(self.commit_scroll))
+            {
+                Some(Some(row)) => self.scroll_commit_to(row),
+                Some(None) => self.message = Some("no next file".into()),
+                None => {}
+            },
+            KeyCode::Char('[') => match self.commit_view().map(|v| v.prev_file(self.commit_scroll))
+            {
+                Some(Some(row)) => self.scroll_commit_to(row),
+                // Before the first file: back to the top.
+                Some(None) if self.commit_scroll > 0 => self.scroll_commit_to(0),
+                Some(None) => self.message = Some("no previous file".into()),
+                None => {}
+            },
+            KeyCode::Char('r') => {
+                if let (Some(key), Some(CommitState::Failed(_))) =
+                    (self.detail_commit.clone(), self.commit_state())
+                {
+                    self.commits.insert(key.clone(), CommitState::Loading);
+                    self.outbox = Some(Effect::LoadCommit(key));
+                    self.message = Some("loading the commit again".into());
+                } else {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// The commit behind the selected row of the PR Detail commit list.
+    fn selected_pr_commit(&self) -> Option<(CommitKey, CommitSeed)> {
+        let r = self.pr_report()?;
+        let c = r.commit_list.get(self.selected_row(ListId::PrCommits)?)?;
+        Some((
+            CommitKey {
+                repository: r.repository.clone(),
+                sha: c.sha.clone(),
+            },
+            CommitSeed {
+                headline: c.headline.clone(),
+                author: Some(c.author.clone()),
+                date: Some(c.committed_at),
+                url: c.url.clone(),
+                removed: c.removed,
+                is_merge: c.is_merge_commit,
+            },
+        ))
+    }
+
+    /// The commit behind the selected row of a day or repository detail.
+    fn selected_detail_commit(&self) -> Option<(CommitKey, CommitSeed)> {
+        let r = self.detail_report()?;
+        let c = r
+            .commits
+            .as_ref()?
+            .get(self.selected_row(ListId::DetailCommits)?)?;
+        Some((
+            CommitKey {
+                repository: c.repository.clone(),
+                sha: c.sha.clone()?,
+            },
+            CommitSeed {
+                headline: c.message_headline.clone(),
+                author: Some(self.system.login.clone()).filter(|l| !l.is_empty()),
+                date: Some(c.committed_at),
+                url: c.url.clone(),
+                removed: false,
+                is_merge: c.is_merge_commit,
+            },
+        ))
     }
 
     fn open_issue(&mut self, id: String) {
@@ -1141,7 +1336,8 @@ impl App {
             Screen::IssueDetail => Some(ListId::IssueEvents),
             Screen::DayDetail | Screen::RepoDetail => Some(self.detail_tab.list()),
             Screen::PrTimeline => Some(ListId::Timeline),
-            Screen::PrDetail | Screen::System => None,
+            Screen::PrDetail => (self.pr_pane == PrPane::Commits).then_some(ListId::PrCommits),
+            Screen::System | Screen::CommitDetail => None,
         }
     }
 
@@ -1325,6 +1521,16 @@ impl App {
                 .and_then(|r| r.issues.as_ref())
                 .map(|rows| indices(rows.len(), &|i| issue_hit(&rows[i])))
                 .unwrap_or_default(),
+            ListId::PrCommits => self
+                .pr_report()
+                .map(|r| {
+                    let rows = &r.commit_list;
+                    indices(rows.len(), &|i| {
+                        let c = &rows[i];
+                        hit(&[&c.sha, c.headline.as_deref().unwrap_or(""), &c.author])
+                    })
+                })
+                .unwrap_or_default(),
         }
     }
 
@@ -1366,7 +1572,8 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return None;
         }
-        let effect = self.dispatch(key);
+        self.outbox = None;
+        let effect = self.dispatch(key).or_else(|| self.outbox.take());
         self.prepare();
         effect
     }
@@ -1392,6 +1599,9 @@ impl App {
             return None;
         }
         self.message = None;
+        if self.screen == Screen::CommitDetail && self.commit_key(key.code) {
+            return None;
+        }
         match key.code {
             KeyCode::Char('q') => {
                 self.should_quit = true;
@@ -1520,11 +1730,18 @@ impl App {
                     self.open_pr(id);
                 }
             }
-            Screen::PrDetail => {
-                if self.pr_report().is_some() {
-                    self.open(Screen::PrTimeline);
+            Screen::PrDetail => match self.pr_pane {
+                PrPane::Summary => {
+                    if self.pr_report().is_some() {
+                        self.open(Screen::PrTimeline);
+                    }
                 }
-            }
+                PrPane::Commits => {
+                    if let Some((key, seed)) = self.selected_pr_commit() {
+                        self.open_commit(key, seed);
+                    }
+                }
+            },
             Screen::Reviews => {
                 let Some(list) = self.current_list() else {
                     return;
@@ -1561,7 +1778,7 @@ impl App {
                 }
             }
             Screen::DayDetail | Screen::RepoDetail => self.enter_detail_row(),
-            Screen::PrTimeline | Screen::IssueDetail | Screen::System => {}
+            Screen::PrTimeline | Screen::IssueDetail | Screen::System | Screen::CommitDetail => {}
         }
     }
 
@@ -1575,6 +1792,13 @@ impl App {
         let Some(i) = self.selected_row(list) else {
             return;
         };
+        if self.detail_tab == DetailTab::Commits {
+            match self.selected_detail_commit() {
+                Some((key, seed)) => self.open_commit(key, seed),
+                None => self.message = Some("this commit has no SHA to open".into()),
+            }
+            return;
+        }
         let Some(r) = self.detail_report() else {
             return;
         };
@@ -1615,9 +1839,6 @@ impl App {
         match target {
             Some(Target::Pr(id)) => self.open_pr(id),
             Some(Target::Issue(id)) => self.open_issue(id),
-            None if self.detail_tab == DetailTab::Commits => {
-                self.message = Some("press o to open the commit on GitHub".into())
-            }
             None => self.message = Some("nothing to open for this row".into()),
         }
     }
@@ -1640,6 +1861,12 @@ impl App {
             Screen::PrTimeline => {
                 self.timeline_filter = self.timeline_filter.step(delta);
                 self.reset_list(ListId::Timeline);
+            }
+            Screen::PrDetail => {
+                self.pr_pane = match self.pr_pane {
+                    PrPane::Summary => PrPane::Commits,
+                    PrPane::Commits => PrPane::Summary,
+                }
             }
             Screen::DayDetail | Screen::RepoDetail => {
                 let tabs = self.detail_tabs();
@@ -1736,7 +1963,19 @@ impl App {
                     .and_then(|rows| rows.get(i))
                     .map(|p| p.url.clone())
             }),
-            Screen::PrDetail => self.pr_report().map(|r| r.url.clone()),
+            Screen::PrDetail => match self.pr_pane {
+                PrPane::Summary => self.pr_report().map(|r| r.url.clone()),
+                PrPane::Commits => self
+                    .selected_pr_commit()
+                    .map(|(key, seed)| seed.url.unwrap_or_else(|| key.github_url())),
+            },
+            Screen::CommitDetail => {
+                let key = self.detail_commit.as_ref()?;
+                self.commit_view()
+                    .and_then(|v| v.url.clone())
+                    .or_else(|| self.commit_seed.url.clone())
+                    .or_else(|| Some(key.github_url()))
+            }
             Screen::PrTimeline => {
                 let r = self.pr_report()?;
                 row(ListId::Timeline)

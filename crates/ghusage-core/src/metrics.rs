@@ -1118,6 +1118,58 @@ pub fn pr_detail(ds: &Dataset, pr_id: &str, types: &[EventType]) -> Option<PrDet
     })
 }
 
+/// One commit of a pull request, for listing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrCommitRow {
+    pub sha: String,
+    /// First line of the commit message, when it was fetched.
+    pub headline: Option<String>,
+    /// The commit author's GitHub login, or `unknown`.
+    pub author: String,
+    pub authored_at: Option<DateTime<Utc>>,
+    pub committed_at: DateTime<Utc>,
+    pub is_merge_commit: bool,
+    pub url: Option<String>,
+    /// The commit was in the pull request earlier but no longer is (for
+    /// example after a force push).
+    pub removed: bool,
+}
+
+/// The commits of a pull request, current and removed, one row per SHA,
+/// oldest first. Rows are not limited to a period: like [`pr_detail`] they
+/// describe the pull request as a whole.
+pub fn pr_commit_rows(ds: &Dataset, pr_id: &str) -> Vec<PrCommitRow> {
+    let mut by_sha: BTreeMap<String, PrCommitRow> = BTreeMap::new();
+    for e in ds
+        .events
+        .iter()
+        .filter(|e| e.event_type == EventType::PrCommit && e.parent_pr_id.as_deref() == Some(pr_id))
+    {
+        let sha = e.meta.sha.clone().unwrap_or_else(|| e.entity_id.clone());
+        let row = PrCommitRow {
+            sha: sha.clone(),
+            headline: e.meta.message_headline.clone(),
+            author: e.actor.display().to_string(),
+            authored_at: e.meta.author_date,
+            committed_at: e.occurred_at,
+            is_merge_commit: e.meta.is_merge_commit == Some(true),
+            url: e.url.clone(),
+            removed: e.is_removed(),
+        };
+        match by_sha.get_mut(&sha.to_ascii_lowercase()) {
+            // A commit still in the pull request wins over a removed copy.
+            Some(existing) if existing.removed && !row.removed => *existing = row,
+            Some(_) => {}
+            None => {
+                by_sha.insert(sha.to_ascii_lowercase(), row);
+            }
+        }
+    }
+    let mut rows: Vec<PrCommitRow> = by_sha.into_values().collect();
+    rows.sort_by(|a, b| (a.committed_at, &a.sha).cmp(&(b.committed_at, &b.sha)));
+    rows
+}
+
 /// A review row for the reviews view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewRow {
@@ -1278,6 +1330,9 @@ pub struct CommitRow {
     pub repository: String,
     pub is_merge_commit: bool,
     pub url: Option<String>,
+    /// First line of the commit message, when it was fetched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_headline: Option<String>,
 }
 
 /// The subject's distinct commits in the period, oldest first. There is
@@ -1294,6 +1349,7 @@ pub fn commit_rows(ds: &Dataset, opts: &Options) -> Vec<CommitRow> {
             repository: ds.repo_name(&e.repository_id),
             is_merge_commit: e.meta.is_merge_commit == Some(true),
             url: e.url.clone(),
+            message_headline: e.meta.message_headline.clone(),
         })
         .collect();
     rows.sort_by(|a, b| (a.committed_at, &a.event_id).cmp(&(b.committed_at, &b.event_id)));

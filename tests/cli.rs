@@ -38,7 +38,7 @@ fn help_and_version_succeed() {
         .stdout(predicate::str::starts_with("ghusage "));
     for sub in [
         "daily", "weekly", "monthly", "yearly", "repos", "prs", "reviews", "issues", "comments",
-        "tui", "sync", "doctor", "pr",
+        "tui", "sync", "doctor", "pr", "commit",
     ] {
         ghusage(&d).args([sub, "--help"]).assert().success();
     }

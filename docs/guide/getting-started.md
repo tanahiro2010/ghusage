@@ -30,15 +30,92 @@ launcher runs it with your arguments. Node.js 18 or newer is required.
 You only install `ghusage`; npm picks the matching package above
 automatically.
 
-- If optional dependencies are skipped (for example `npm install
-  --omit=optional` or `--no-optional`) or a minimum release age setting
-  (`npm --before`, `--min-release-age`, mise `minimum_release_age`) holds the
-  binary package back, the binary is not installed and `ghusage` exits with a
-  message explaining how to reinstall.
-- On other platforms the launcher exits with a message; build from source
-  instead.
+To update to the latest release:
+
+```sh
+npm install -g ghusage@latest
+```
+
+If npm did not install the platform package (see
+[Missing native package](#missing-native-package) for why this happens), the
+launcher fetches it the first time you run `ghusage`:
+
+- It runs `npm pack @ghusage/ghusage-<platform>@<version>`, so your npm
+  configuration applies as usual: the registry or registry proxy you use,
+  authentication, and npm's integrity checks. It prints one line to stderr
+  while doing so, for example
+  `ghusage: fetching @ghusage/ghusage-darwin-arm64@0.1.1 ...`.
+- It keeps only the binary, in a per-user cache, and uses that copy from then
+  on:
+
+  | OS | Cache directory |
+  |---|---|
+  | macOS | `~/Library/Caches/ghusage` |
+  | Linux | `$XDG_CACHE_HOME/ghusage`, or `~/.cache/ghusage` |
+  | Windows | `%LOCALAPPDATA%\ghusage\cache` |
+
+  Binaries are stored under `native/<version>/<platform>/` there. Set
+  `GHUSAGE_CACHE_DIR` to use another directory. Deleting the directory is
+  safe; it is filled again when needed.
+- Set `GHUSAGE_NO_AUTO_INSTALL=1` to turn this off. `ghusage` then exits with
+  an explanation instead.
+
+Other notes:
+
+- On platforms not listed above the launcher exits with a message; build from
+  source instead.
 - Set `GHUSAGE_BINARY` to the path of a `ghusage` binary to make the
-  launcher run that binary instead (for example one you built yourself).
+  launcher run that binary instead (for example one you built yourself). It
+  takes precedence over the installed and the cached binary.
+
+### Missing native package
+
+If `ghusage` exits with `the native binary for <platform> is missing`, npm
+installed the launcher but not the platform package of the same version, and
+fetching it automatically did not work either. Common causes:
+
+- The release was published moments ago and your registry does not serve the
+  platform package yet.
+- Your npm registry is a proxy, mirror or security tool that holds new
+  versions back, so it serves the new launcher but not yet the new platform
+  package.
+- Optional dependencies were skipped (`npm install --omit=optional` or
+  `--no-optional`).
+- A minimum release age setting (`npm --before`, `--min-release-age`, mise
+  `minimum_release_age`) held the platform package back.
+- `GHUSAGE_NO_AUTO_INSTALL` is set, so the launcher did not try to fetch it.
+
+To fix it:
+
+1. Reinstall the same version, so npm installs the platform package
+   (replace `0.1.1` with the version from the message):
+
+   ```sh
+   npm uninstall -g ghusage && npm install -g ghusage@0.1.1
+   ```
+
+2. Check which registry npm uses:
+
+   ```sh
+   npm config get registry
+   ```
+
+   If it is not `https://registry.npmjs.org/` but a proxy or mirror, wait
+   until it serves the new platform package, or install the previous
+   version of `ghusage` meanwhile (`npm view ghusage versions` lists them):
+
+   ```sh
+   npm install -g ghusage@<previous version>
+   ```
+
+3. You can also install from the public npm registry directly:
+
+   ```sh
+   npm install -g ghusage@0.1.1 --registry https://registry.npmjs.org
+   ```
+
+   If your organization requires its registry proxy, follow that policy
+   instead.
 
 ### From source
 

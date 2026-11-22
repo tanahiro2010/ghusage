@@ -2,10 +2,12 @@
 //! it reaches the terminal.
 
 use chrono::{DateTime, Utc};
+use ghusage_app::commit::{CommitReport, CommitSource, PersonReport};
 use ghusage_app::report::{PrReport, Report, ReportKind};
+use ghusage_core::commit::DiffLineKind;
 use ghusage_core::coverage::{CoverageStatus, CoverageSummary};
 use ghusage_core::metrics::{Stats, Summary};
-use ghusage_core::sanitize::{display_width, sanitize_line, truncate_width};
+use ghusage_core::sanitize::{display_width, sanitize_code_line, sanitize_line, truncate_width};
 use ghusage_core::time::Zone;
 
 /// Output styling. Colors are only used on a terminal without NO_COLOR.
@@ -27,6 +29,15 @@ impl Style {
     }
     pub fn dim(&self, s: &str) -> String {
         self.paint("2", s)
+    }
+    pub fn green(&self, s: &str) -> String {
+        self.paint("32", s)
+    }
+    pub fn red(&self, s: &str) -> String {
+        self.paint("31", s)
+    }
+    pub fn cyan(&self, s: &str) -> String {
+        self.paint("36", s)
     }
     pub fn warn(&self, s: &str) -> String {
         self.paint("33", s)
@@ -815,5 +826,154 @@ pub fn pr(r: &PrReport, timeline: bool, style: Style) -> String {
         r.coverage.as_str(),
         t(zone, r.synced_at)
     )));
+    out
+}
+
+fn person(p: &PersonReport, zone: Zone) -> String {
+    let who = match (&p.name, &p.login) {
+        (Some(n), Some(l)) => format!("{n} ({l})"),
+        (Some(n), None) => n.clone(),
+        (None, Some(l)) => l.clone(),
+        (None, None) => "unknown".into(),
+    };
+    format!("{} · {}", sanitize_line(&who), t(zone, p.date))
+}
+
+/// A commit: facts, message, changed files and, when the report carries
+/// them, the diffs. Every line from GitHub is sanitized.
+pub fn commit(r: &CommitReport, zone: Zone, style: Style) -> String {
+    let mut out = String::new();
+    let headline = ghusage_core::commit::headline(&r.message);
+    out.push_str(&style.bold(&format!(
+        "{}@{} — {}\n",
+        sanitize_line(&r.repository),
+        ghusage_core::commit::short_sha(&r.sha),
+        sanitize_line(headline)
+    )));
+    let parents = if r.parents.is_empty() {
+        "none (root commit)".to_string()
+    } else {
+        let list: Vec<&str> = r
+            .parents
+            .iter()
+            .map(|p| ghusage_core::commit::short_sha(p))
+            .collect();
+        format!(
+            "{}{}",
+            list.join(", "),
+            if r.is_merge { " (merge commit)" } else { "" }
+        )
+    };
+    out.push_str(&kv(&[
+        ("SHA", sanitize_line(&r.sha)),
+        ("Author", person(&r.author, zone)),
+        ("Committer", person(&r.committer, zone)),
+        ("Parents", sanitize_line(&parents)),
+        (
+            "Changes",
+            format!(
+                "{} file(s), +{} −{}",
+                r.stats.files, r.stats.additions, r.stats.deletions
+            ),
+        ),
+        (
+            "URL",
+            r.url
+                .as_deref()
+                .map(sanitize_line)
+                .unwrap_or_else(|| "-".into()),
+        ),
+        (
+            "Source",
+            match r.source {
+                CommitSource::Cache => "cache".into(),
+                CommitSource::Github => "GitHub".into(),
+            },
+        ),
+    ]));
+    out.push('\n');
+    out.push_str(&style.bold("Message\n"));
+    for line in r.message.lines() {
+        out.push_str("    ");
+        out.push_str(&sanitize_code_line(line));
+        out.push('\n');
+    }
+    out.push('\n');
+    let mut tb = Table::new(&["Status", "+", "-", "File"]).numeric(&[1, 2]);
+    for f in &r.files {
+        let name = match &f.previous_filename {
+            Some(old) if old != &f.filename => format!("{old} → {}", f.filename),
+            _ => f.filename.clone(),
+        };
+        tb.row(vec![
+            f.status.as_str().to_string(),
+            f.additions.to_string(),
+            f.deletions.to_string(),
+            name,
+        ]);
+    }
+    if tb.is_empty() {
+        out.push_str("No changed files.\n");
+    } else {
+        out.push_str(&tb.render(style));
+        let adds: u64 = r.files.iter().map(|f| f.additions).sum();
+        let dels: u64 = r.files.iter().map(|f| f.deletions).sum();
+        out.push_str(&format!(
+            "Total: {} file(s), +{adds} −{dels}\n",
+            r.files.len()
+        ));
+    }
+    if r.files_truncated {
+        out.push_str(
+            &style.warn(
+                "Not every changed file could be listed (GitHub lists at most 3000 files).\n",
+            ),
+        );
+    }
+    let with_patches = r.files.iter().any(|f| f.patch.is_some());
+    if with_patches {
+        for f in &r.files {
+            out.push('\n');
+            out.push_str(&style.bold(&format!(
+                "{} {}\n",
+                f.status.as_str(),
+                sanitize_line(&f.filename)
+            )));
+            let Some(patch) = &f.patch else {
+                out.push_str(&style.dim(if f.patch_available {
+                    "    (diff not included)\n"
+                } else if f.changes == 0
+                    && matches!(
+                        f.status,
+                        ghusage_core::commit::FileStatus::Renamed
+                            | ghusage_core::commit::FileStatus::Copied
+                            | ghusage_core::commit::FileStatus::Unchanged
+                    )
+                {
+                    "    (no content changes)\n"
+                } else {
+                    "    (no diff available from GitHub: binary file or diff too large)\n"
+                }));
+                continue;
+            };
+            for (kind, line) in ghusage_core::commit::diff_lines(patch) {
+                let line = sanitize_code_line(line);
+                let painted = match kind {
+                    DiffLineKind::Added => style.green(&line),
+                    DiffLineKind::Removed => style.red(&line),
+                    DiffLineKind::Hunk => style.cyan(&line),
+                    DiffLineKind::Note => style.dim(&line),
+                    DiffLineKind::Context => line,
+                };
+                out.push_str(&painted);
+                out.push('\n');
+            }
+        }
+    }
+    if r.private_repositories_redacted && r.message == "[private]" {
+        out.push_str(&style.dim(
+            "Repository name, message, file paths and diffs of a private repository are hidden; use --include-private to show them.\n",
+        ));
+    }
     out
 }

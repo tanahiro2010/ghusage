@@ -157,6 +157,7 @@ pub(crate) struct SearchCommit {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct CommitDetail {
+    message: Option<String>,
     author: Option<GitSignature>,
     committer: Option<GitSignature>,
 }
@@ -276,6 +277,12 @@ pub(crate) fn commit_record(
             author_date,
             is_merge_commit: item.parents.as_ref().map(|p| p.len() > 1),
             committer,
+            message_headline: detail
+                .message
+                .as_deref()
+                .map(ghusage_core::commit::headline)
+                .filter(|h| !h.is_empty())
+                .map(|h| crate::http::truncate(h, 300)),
             ..EventMeta::default()
         },
         coverage: CoverageStatus::Complete,

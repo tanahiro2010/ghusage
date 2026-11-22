@@ -245,8 +245,15 @@ fn enter_on_a_day_opens_its_activity() {
     assert_eq!(app.visible(ListId::DetailCommits).len(), 1);
     assert!(screen_text(&app, 140, 30).contains("aaa2"));
     enter(&mut app);
-    assert_eq!(app.screen, Screen::DayDetail, "commits have no detail");
-    assert!(app.message.as_deref().unwrap().contains("press o"));
+    assert_eq!(
+        app.screen,
+        Screen::CommitDetail,
+        "commits open the commit screen"
+    );
+    assert_eq!(app.detail_commit.as_ref().unwrap().sha, "aaa2");
+    esc(&mut app);
+    assert_eq!(app.screen, Screen::DayDetail);
+    assert_eq!(app.detail_tab, DetailTab::Commits);
 
     tab(&mut app);
     assert_eq!(app.detail_tab, DetailTab::PullRequests);

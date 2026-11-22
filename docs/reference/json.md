@@ -257,6 +257,25 @@ Ordered by repository and number.
 Events at the same instant are ordered by the natural order of a pull
 request's life (opened, commits, force pushes, ..., merged, closed, reopened).
 
+## Commit (`ghusage commit`)
+
+| Field | Description |
+|---|---|
+| `schema_version` | As in reports |
+| `repository`, `sha`, `url` | The commit (`url` is its page on GitHub, or `null`) |
+| `message` | The full commit message |
+| `author`, `committer` | `{name, login, date}`: git name, linked GitHub login and date (each may be `null`) |
+| `parents` | SHAs of the parent commits |
+| `is_merge` | Whether the commit has more than one parent |
+| `stats` | `files`, `additions`, `deletions`, `total` |
+| `files` | Array of `{filename, previous_filename, status, additions, deletions, changes, patch_available}`; with `--patch` also `patch` (unified diff) when GitHub returned one |
+| `files_truncated` | Whether some changed files are not listed |
+| `source` | `cache` or `github` |
+| `fetched_at` | When the commit was fetched from GitHub |
+| `private_repositories_redacted` | As in reports |
+
+`ghusage commit` has no CSV output.
+
 ## Other commands
 
 ### sync
@@ -373,6 +392,7 @@ way.
 | Review, comment and event URLs, repository URLs | `null` |
 | Review thread file paths, label and milestone names, previous titles, CI check names | removed |
 | Repository names in coverage reasons and in `sync` failures | `[private repository]` (any repository not known to be public) |
+| `ghusage commit` of a repository not known to be public | repository `private/repo-<8 hex characters>`, `url` `null`, message `[private]`, file paths `[private]`, no previous paths, diffs and git names removed |
 
 Logins of people (yours and others') and GitHub node IDs are not hidden.
 Table output and the terminal UI always show real names, because they are

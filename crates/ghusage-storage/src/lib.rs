@@ -543,11 +543,7 @@ impl Store {
                     .iter()
                     .filter_map(|e| e.parent_pr_id.clone())
                     .collect();
-                let mut stmt = self.conn.prepare_cached(&format!(
-                    "SELECT {EVENT_COLS} FROM activity_events e \
-                     JOIN account_events ae ON ae.event_id = e.event_id \
-                     WHERE ae.account_id = ?1 AND e.parent_pr_id = ?2"
-                ))?;
+                let mut stmt = self.conn.prepare_cached(&pr_events_sql())?;
                 let mut active: Vec<String> = active.into_iter().collect();
                 active.sort();
                 for pr in active {
@@ -653,6 +649,69 @@ impl Store {
             )
             .optional()
             .map_err(|e| classify(e.into()))
+    }
+
+    /// A stored repository matched case-insensitively by owner and name.
+    pub fn repository_by_name(&self, owner: &str, name: &str) -> Result<Option<Repository>> {
+        (|| {
+            let mut stmt = self.conn.prepare(
+                "SELECT * FROM repositories \
+                 WHERE owner = ?1 COLLATE NOCASE AND name = ?2 COLLATE NOCASE LIMIT 1",
+            )?;
+            let mut rows = stmt.query(params![owner, name])?;
+            match rows.next()? {
+                Some(r) => Ok(Some(repo_from_row(r)?)),
+                None => Ok(None),
+            }
+        })()
+        .map_err(classify)
+    }
+
+    /// Stores (or replaces) a fetched commit detail.
+    pub fn put_commit_detail(&mut self, d: &ghusage_core::commit::CommitDetail) -> Result<()> {
+        (|| {
+            self.conn.execute(
+                "INSERT INTO commit_details (repository, sha, fetched_at, fetched_at_ns, detail) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) \
+                 ON CONFLICT (repository, sha) DO UPDATE SET \
+                 fetched_at = excluded.fetched_at, fetched_at_ns = excluded.fetched_at_ns, \
+                 detail = excluded.detail",
+                params![
+                    d.repository,
+                    d.sha.to_ascii_lowercase(),
+                    secs(d.fetched_at),
+                    nanos(d.fetched_at),
+                    to_json(d)?
+                ],
+            )?;
+            Ok(())
+        })()
+        .map_err(classify)
+    }
+
+    /// A stored commit detail of `repository` (`owner/name`, any case) by
+    /// full or abbreviated SHA. An abbreviation matching more than one
+    /// stored commit finds nothing.
+    pub fn commit_detail(
+        &self,
+        repository: &str,
+        sha: &str,
+    ) -> Result<Option<ghusage_core::commit::CommitDetail>> {
+        (|| {
+            let sha = sha.to_ascii_lowercase();
+            let mut stmt = self.conn.prepare(
+                "SELECT detail FROM commit_details \
+                 WHERE repository = ?1 AND substr(sha, 1, length(?2)) = ?2 LIMIT 2",
+            )?;
+            let found: Vec<String> = stmt
+                .query_map(params![repository, sha], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            match found.as_slice() {
+                [one] => Ok(Some(from_json("commit detail", one)?)),
+                _ => Ok(None),
+            }
+        })()
+        .map_err(classify)
     }
 
     /// Marks a stored repository (matched case-insensitively by owner and
@@ -1470,6 +1529,17 @@ fn query_list<T, P: rusqlite::Params>(
     Ok(out)
 }
 
+/// Events of one pull request seen by an account. `CROSS JOIN` keeps
+/// SQLite from driving the join from `account_events`, which would scan every
+/// event of the account once per pull request.
+fn pr_events_sql() -> String {
+    format!(
+        "SELECT {EVENT_COLS} FROM activity_events e \
+         CROSS JOIN account_events ae ON ae.event_id = e.event_id \
+         WHERE e.parent_pr_id = ?2 AND ae.account_id = ?1"
+    )
+}
+
 fn coverage_for(conn: &Connection, account_id: i64) -> Result<Vec<CoverageRecord>> {
     query_list(
         conn,
@@ -1656,5 +1726,27 @@ impl SyncLock {
 impl Drop for SyncLock {
     fn drop(&mut self) {
         let _ = fs4::FileExt::unlock(&self.file);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pull_request_events_are_found_through_the_parent_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("t.db")).unwrap();
+        let plan: Vec<String> = query_list(
+            &store.conn,
+            &format!("EXPLAIN QUERY PLAN {}", pr_events_sql()),
+            params![1, "PR_x"],
+            |r| Ok(r.get::<_, String>(3)?),
+        )
+        .unwrap();
+        assert!(
+            plan[0].contains("activity_events_parent_pr"),
+            "unexpected plan: {plan:?}"
+        );
     }
 }

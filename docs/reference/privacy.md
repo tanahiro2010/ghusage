@@ -21,7 +21,9 @@ directory (see [Syncing and the cache](../guide/syncing.md#data-directory)):
 repositories, pull requests, issues, commits, reviews, comments, review
 threads, timeline events, CI results, coverage and sync history, for the
 accounts you analyzed. It may contain private repository names, titles and
-metadata that your token can read.
+metadata that your token can read. Commits you open with `ghusage commit` or
+in the terminal UI are stored with their message, changed file names and
+diffs (the file contents that changed), so they can be shown again offline.
 
 - Tokens are **never** written to the cache, to logs or to output. Error
   messages do not include them.
@@ -59,8 +61,8 @@ repositories are then neither fetched nor shown.
 
 ## Terminal safety
 
-Text from GitHub (titles, logins, repository names, label names, error
-messages) is stripped of control characters and escape sequences before it
-is printed, so content on GitHub cannot inject terminal escape codes. CSV
+Text from GitHub (titles, logins, repository names, label names, commit
+messages, file names, diffs, error messages) is stripped of control
+characters and escape sequences before it is printed, so content on GitHub cannot inject terminal escape codes. CSV
 cells that start with `=`, `+`, `-` or `@` are prefixed with `'` to prevent
 spreadsheet formula injection.

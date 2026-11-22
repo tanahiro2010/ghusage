@@ -7,10 +7,14 @@
 //! - [`source`]: read access to the local cache.
 //! - [`background`]: GitHub sync on a separate thread with its own runtime,
 //!   reporting over a channel.
+//! - [`commit_fetch`] / [`commit_view`]: loading a commit (cache first, then
+//!   GitHub when online) on its own thread, and turning it into rows to draw.
 //! - [`term`]: terminal setup/restore, panic hook and URL opening.
 
 pub mod app;
 pub mod background;
+pub mod commit_fetch;
+pub mod commit_view;
 mod compute;
 pub mod source;
 pub mod term;
@@ -127,10 +131,50 @@ where
         let effect = app.start_sync();
         start_sync(app, effect);
     }
+    let (commit_tx, commit_rx) = mpsc::channel::<commit_view::CommitMsg>();
+    let mut commit_loader: Option<mpsc::Sender<commit_view::CommitKey>> = None;
+    let mut load_commit = |app: &mut App, key: commit_view::CommitKey| {
+        if commit_loader.is_none() {
+            match commit_fetch::spawn(
+                opts.session.clone(),
+                opts.background_sync,
+                opts.zone,
+                commit_tx.clone(),
+            ) {
+                Ok(tx) => commit_loader = Some(tx),
+                Err(e) => {
+                    app.on_commit(commit_view::CommitMsg {
+                        key,
+                        result: Err(commit_view::CommitFailure {
+                            offline: false,
+                            message: format!("cannot start the commit loader: {e}"),
+                        }),
+                    });
+                    return;
+                }
+            }
+        }
+        if let Some(tx) = &commit_loader
+            && let Err(mpsc::SendError(key)) = tx.send(key)
+        {
+            commit_loader = None;
+            app.on_commit(commit_view::CommitMsg {
+                key,
+                result: Err(commit_view::CommitFailure {
+                    offline: false,
+                    message: "the commit loader stopped".into(),
+                }),
+            });
+        }
+    };
     let mut dirty = true;
     while !app.should_quit {
         while let Ok(msg) = rx.try_recv() {
             app.on_sync(msg);
+            dirty = true;
+        }
+        while let Ok(msg) = commit_rx.try_recv() {
+            app.on_commit(msg);
             dirty = true;
         }
         if app.poll_results() {
@@ -142,7 +186,7 @@ where
             dirty = false;
         }
         // Poll often while results are expected so they show up quickly.
-        let wait = if app.is_busy() || app.sync.running {
+        let wait = if app.is_busy() || app.sync.running || app.commit_loading() {
             Duration::from_millis(15)
         } else {
             Duration::from_millis(100)
@@ -163,6 +207,7 @@ where
                         }
                     }
                     e @ Some(Effect::StartSync(_)) => start_sync(app, e),
+                    Some(Effect::LoadCommit(key)) => load_commit(app, key),
                     Some(Effect::Quit) | None => {}
                 }
                 dirty = true;
