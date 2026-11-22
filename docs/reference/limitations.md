@@ -151,6 +151,9 @@ the API does not keep cannot be recovered later:
   continues.
 - Secondary rate limits are honored with waits of up to 60 seconds.
   `Retry-After` is honored when given in seconds.
+- This rate-limit handling is covered by automated tests that simulate
+  GitHub's rate-limit responses. It has not been exercised by actually
+  exhausting a real account's limits.
 - When GitHub cannot be reached, report commands fall back to cached data
   with a warning, but nothing new is fetched; `ghusage sync` needs a working
   connection.
@@ -163,9 +166,14 @@ the API does not keep cannot be recovered later:
   ARM64), macOS (ARM64 and Intel) and Windows (x86_64). The npm binaries,
   including Windows ARM64, are built and smoke-tested (installed with npm and
   run) on each of these platforms; the full test suite does not run on
-  Windows ARM64. Linux and Windows have not yet been verified by hand on real
-  machines. This includes the sync lock,
-  opening links from the terminal UI, and terminal rendering.
+  Windows ARM64.
+- Windows (x86_64) has been checked by hand on a real machine: sign-in,
+  sync progress, tables, the terminal UI (tabs, detail views, resizing,
+  wide characters, restoring the terminal) and opening links. Running two
+  syncs at once (the sync lock) has not been checked by hand on Windows.
+- Linux has not been checked by hand on a real machine; there it is covered
+  by continuous integration only, including a smoke test that drives the
+  terminal UI in a pseudo-terminal.
 - File permission checks for `--token-file` are done on Unix-like systems
   only.
 - GitHub Enterprise Server (`GHUSAGE_API_URL`) has not been tested.
