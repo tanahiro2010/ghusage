@@ -21,7 +21,7 @@
 mod codec;
 mod schema;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -29,7 +29,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use ghusage_core::coverage::{CoverageRecord, CoverageStatus, DataKind};
-use ghusage_core::metrics::Dataset;
+use ghusage_core::metrics::{Dataset, LineCounts, PrDiff};
 use ghusage_core::model::{
     ActivityEvent, CheckOutcome, Collection, EventId, EventMeta, EventType, Issue, PrState,
     PullRequest, Repository, ReviewThread, Source, Subject, Visibility,
@@ -120,9 +120,23 @@ pub struct WriteBatch {
     pub events: Vec<ActivityEvent>,
     pub pr_commits: Vec<PrCommitLink>,
     pub pr_snapshots: Vec<PrSnapshot>,
+    /// Lines added and deleted by commits.
+    pub commit_stats: Vec<CommitStats>,
+    /// Latest observed diffs of pull requests, by pull request id.
+    pub pr_diffs: Vec<(String, PrDiff)>,
     pub coverage: Vec<CoverageRecord>,
     /// `(key, value)` sync cursors for `account`.
     pub cursors: Vec<(String, String)>,
+}
+
+/// Lines added and deleted by one commit, as GitHub reported them at
+/// `observed_at`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitStats {
+    pub repository_id: String,
+    pub sha: String,
+    pub counts: LineCounts,
+    pub observed_at: DateTime<Utc>,
 }
 
 /// Bookkeeping of one sync run.
@@ -566,6 +580,7 @@ impl Store {
             }
         };
         let coverage = coverage_for(&self.conn, account_id)?;
+        let (commit_stats, pr_diffs) = diff_stats_for(&self.conn, account_id)?;
         Ok(Dataset::new(
             subject.clone(),
             subject_is_viewer,
@@ -575,7 +590,8 @@ impl Store {
             threads,
             events,
             coverage,
-        ))
+        )
+        .with_diff_stats(commit_stats, pr_diffs))
     }
 
     /// Loads every event of one pull request (any time) plus entities.
@@ -626,6 +642,13 @@ impl Store {
             Some(id) => coverage_for(&self.conn, id)?,
             None => Vec::new(),
         };
+        let commit_stats = commit_stats_where(
+            &self.conn,
+            "(c.repository_id, c.sha) IN \
+             (SELECT repository_id, sha FROM pull_request_commits WHERE pr_id = ?1)",
+            params![pr_id],
+        )?;
+        let pr_diffs = pr_diffs_where(&self.conn, "p.id = ?1", params![pr_id])?;
         Ok(Dataset::new(
             subject.clone(),
             subject_is_viewer,
@@ -635,7 +658,8 @@ impl Store {
             threads,
             events,
             coverage,
-        ))
+        )
+        .with_diff_stats(commit_stats, pr_diffs))
     }
 
     /// Finds a stored pull request by repository full name and number.
@@ -687,6 +711,21 @@ impl Store {
                     secs(d.fetched_at),
                     nanos(d.fetched_at),
                     to_json(d)?
+                ],
+            )?;
+            // The totals also describe the commit for reports, when the
+            // repository is known.
+            self.conn.execute(
+                "UPDATE commits SET additions = ?1, deletions = ?2, stats_observed_at = ?3, \
+                 stats_observed_at_ns = ?4 WHERE sha = ?5 AND repository_id IN \
+                 (SELECT id FROM repositories WHERE owner || '/' || name = ?6 COLLATE NOCASE)",
+                params![
+                    d.stats.additions as i64,
+                    d.stats.deletions as i64,
+                    secs(d.fetched_at),
+                    nanos(d.fetched_at),
+                    d.sha.to_ascii_lowercase(),
+                    d.repository
                 ],
             )?;
             Ok(())
@@ -1042,6 +1081,48 @@ fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
                 .or_default()
                 .insert(l.sha.to_ascii_lowercase());
         }
+    }
+
+    for c in &b.commit_stats {
+        require_repository(
+            tx,
+            &c.repository_id,
+            &format!("commit statistics {}:{}", c.repository_id, c.sha),
+        )?;
+        tx.execute(
+            "INSERT INTO commits (repository_id, sha, additions, deletions, stats_observed_at, \
+             stats_observed_at_ns) VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT(repository_id, sha) DO UPDATE SET \
+             additions = excluded.additions, deletions = excluded.deletions, \
+             stats_observed_at = excluded.stats_observed_at, \
+             stats_observed_at_ns = excluded.stats_observed_at_ns",
+            params![
+                c.repository_id,
+                c.sha.to_ascii_lowercase(),
+                c.counts.additions as i64,
+                c.counts.deletions as i64,
+                secs(c.observed_at),
+                nanos(c.observed_at)
+            ],
+        )?;
+    }
+    for (pr_id, d) in &b.pr_diffs {
+        require_pull_request(tx, pr_id, &format!("pull request diff {pr_id:?}"))?;
+        // An older observation never replaces a newer one.
+        tx.execute(
+            "UPDATE pull_requests SET additions = ?2, deletions = ?3, changed_files = ?4, \
+             diff_observed_at = ?5, diff_observed_at_ns = ?6 \
+             WHERE id = ?1 AND (diff_observed_at IS NULL \
+             OR (diff_observed_at, diff_observed_at_ns) <= (?5, ?6))",
+            params![
+                pr_id,
+                d.additions as i64,
+                d.deletions as i64,
+                d.changed_files as i64,
+                secs(d.observed_at),
+                nanos(d.observed_at)
+            ],
+        )?;
     }
 
     let mut removal_time: HashMap<&str, DateTime<Utc>> = HashMap::new();
@@ -1543,6 +1624,85 @@ fn pr_events_sql() -> String {
          CROSS JOIN account_events ae ON ae.event_id = e.event_id \
          WHERE e.parent_pr_id = ?2 AND ae.account_id = ?1"
     )
+}
+
+/// Known commit statistics of the account's repositories and diffs of its
+/// pull requests.
+#[allow(clippy::type_complexity)]
+fn diff_stats_for(
+    conn: &Connection,
+    account_id: i64,
+) -> Result<(HashMap<String, LineCounts>, BTreeMap<String, PrDiff>)> {
+    let commits = commit_stats_where(
+        conn,
+        "c.repository_id IN \
+         (SELECT repository_id FROM account_repositories WHERE account_id = ?1)",
+        params![account_id],
+    )?;
+    let prs = pr_diffs_where(
+        conn,
+        "p.id IN (SELECT pr_id FROM account_pull_requests WHERE account_id = ?1)",
+        params![account_id],
+    )?;
+    Ok((commits, prs))
+}
+
+/// Commit statistics matching `filter` (over `commits c`), keyed by the
+/// commit's event id.
+fn commit_stats_where<P: rusqlite::Params>(
+    conn: &Connection,
+    filter: &str,
+    params: P,
+) -> Result<HashMap<String, LineCounts>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT c.repository_id, c.sha, c.additions, c.deletions FROM commits c \
+         WHERE c.additions IS NOT NULL AND c.deletions IS NOT NULL AND {filter}"
+    ))?;
+    let mut rows = stmt.query(params)?;
+    let mut out = HashMap::new();
+    while let Some(r) = rows.next()? {
+        let repo: String = r.get(0)?;
+        let sha: String = r.get(1)?;
+        out.insert(
+            EventId::commit(&repo, &sha).0,
+            LineCounts {
+                additions: r.get::<_, i64>(2)?.max(0) as u64,
+                deletions: r.get::<_, i64>(3)?.max(0) as u64,
+            },
+        );
+    }
+    Ok(out)
+}
+
+/// Latest observed diffs of the pull requests matching `filter` (over
+/// `pull_requests p`).
+fn pr_diffs_where<P: rusqlite::Params>(
+    conn: &Connection,
+    filter: &str,
+    params: P,
+) -> Result<BTreeMap<String, PrDiff>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT p.id, p.additions, p.deletions, p.changed_files, p.diff_observed_at, \
+         p.diff_observed_at_ns FROM pull_requests p \
+         WHERE p.diff_observed_at IS NOT NULL AND {filter}"
+    ))?;
+    let mut rows = stmt.query(params)?;
+    let mut out = BTreeMap::new();
+    while let Some(r) = rows.next()? {
+        let n = |i: usize| -> Result<u64> {
+            Ok(r.get::<_, Option<i64>>(i)?.unwrap_or(0).max(0) as u64)
+        };
+        out.insert(
+            r.get::<_, String>(0)?,
+            PrDiff {
+                additions: n(1)?,
+                deletions: n(2)?,
+                changed_files: n(3)?,
+                observed_at: time(r.get(4)?, r.get(5)?)?,
+            },
+        );
+    }
+    Ok(out)
 }
 
 fn coverage_for(conn: &Connection, account_id: i64) -> Result<Vec<CoverageRecord>> {

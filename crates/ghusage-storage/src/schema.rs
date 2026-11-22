@@ -14,7 +14,7 @@ use crate::{Result, StorageError};
 pub(crate) type Migration = fn(&rusqlite::Transaction<'_>) -> rusqlite::Result<()>;
 
 /// Every migration step, in order. The current schema version is its length.
-pub(crate) const MIGRATIONS: &[Migration] = &[v1_initial, v2_commit_details];
+pub(crate) const MIGRATIONS: &[Migration] = &[v1_initial, v2_commit_details, v3_diff_stats];
 
 pub(crate) const CURRENT_VERSION: u32 = MIGRATIONS.len() as u32;
 
@@ -128,6 +128,24 @@ CREATE TABLE commit_details (
     detail         TEXT NOT NULL,
     PRIMARY KEY (repository, sha)
 ) WITHOUT ROWID;
+"#,
+    )
+}
+
+/// Lines added and deleted per commit, and the latest observed diff of each
+/// pull request. `NULL` means not known (never zero by default).
+fn v3_diff_stats(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        r#"
+ALTER TABLE commits ADD COLUMN additions INTEGER;
+ALTER TABLE commits ADD COLUMN deletions INTEGER;
+ALTER TABLE commits ADD COLUMN stats_observed_at INTEGER;
+ALTER TABLE commits ADD COLUMN stats_observed_at_ns INTEGER;
+ALTER TABLE pull_requests ADD COLUMN additions INTEGER;
+ALTER TABLE pull_requests ADD COLUMN deletions INTEGER;
+ALTER TABLE pull_requests ADD COLUMN changed_files INTEGER;
+ALTER TABLE pull_requests ADD COLUMN diff_observed_at INTEGER;
+ALTER TABLE pull_requests ADD COLUMN diff_observed_at_ns INTEGER;
 "#,
     )
 }
@@ -454,7 +472,7 @@ mod tests {
         .unwrap();
         assert!(!table_exists(&conn, "commit_details"));
         migrate(&mut conn, MIGRATIONS, Some(&path)).unwrap();
-        assert_eq!(user_version(&conn).unwrap(), 2);
+        assert_eq!(user_version(&conn).unwrap(), CURRENT_VERSION);
         assert!(table_exists(&conn, "commit_details"));
         let v: String = conn
             .query_row(
@@ -465,6 +483,31 @@ mod tests {
             .unwrap();
         assert_eq!(v, "v");
         assert!(dir.path().join("cache.db.bak-v1").exists());
+    }
+
+    #[test]
+    fn version_2_cache_gains_unknown_diff_statistics() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn, &[v1_initial, v2_commit_details], None).unwrap();
+        conn.execute_batch(
+            "INSERT INTO repositories (id, owner, name, owner_kind, visibility, is_fork, \
+             accessible) VALUES ('R1', 'o', 'r', 'User', 'public', 0, 1); \
+             INSERT INTO commits (repository_id, sha, author_login) VALUES ('R1', 'abc', 'me');",
+        )
+        .unwrap();
+        migrate(&mut conn, MIGRATIONS, None).unwrap();
+        assert_eq!(user_version(&conn).unwrap(), 3);
+        // Existing commits keep their data; their statistics are unknown
+        // (NULL), not zero.
+        let (login, additions): (String, Option<i64>) = conn
+            .query_row(
+                "SELECT author_login, additions FROM commits WHERE sha = 'abc'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(login, "me");
+        assert_eq!(additions, None);
     }
 
     #[test]
