@@ -534,14 +534,22 @@ impl Store {
                     period.contains(e.occurred_at)
                         || e.meta.author_date.is_some_and(|d| period.contains(d))
                 });
-                // Pull requests active in the period come with all their
-                // events, so lifetime timings see what happened before the
+                // The subject's pull requests active in the period come with
+                // all their events, so lifetime timings (computed only for the
+                // subject's own pull requests) see what happened before the
                 // period. Counting always applies the period itself.
                 let mut seen: HashSet<String> =
                     events.iter().map(|e| e.event_id.0.clone()).collect();
+                let own: HashSet<&str> = pull_requests
+                    .iter()
+                    .filter(|pr| pr.author.is(subject))
+                    .map(|pr| pr.id.as_str())
+                    .collect();
                 let active: HashSet<String> = events
                     .iter()
-                    .filter_map(|e| e.parent_pr_id.clone())
+                    .filter_map(|e| e.parent_pr_id.as_deref())
+                    .filter(|id| own.contains(id))
+                    .map(str::to_owned)
                     .collect();
                 let mut stmt = self.conn.prepare_cached(&pr_events_sql())?;
                 let mut active: Vec<String> = active.into_iter().collect();
