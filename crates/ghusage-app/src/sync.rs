@@ -185,14 +185,19 @@ pub fn cached_subject(store: &Store, user: Option<&str>) -> Result<(Subject, boo
 pub const PUBLIC_ONLY_SCOPE: &str = " (public repositories only)";
 
 /// Marker in the scope of commit coverage recorded by syncs that list
-/// repository commits in addition to commit search.
-pub const COMMIT_LISTING_SCOPE: &str = "(repository listing + commit search)";
+/// repository commits in addition to commit search, and take search results
+/// only from repositories the subject is related to.
+pub const COMMIT_LISTING_SCOPE: &str =
+    "(repository listing + commit search in related repositories)";
 
 /// Coverage records that count for the current mode. Records from a
 /// public-only sync do not cover private data, so they are ignored unless
-/// the current mode is public-only too. Commit records written before
-/// repository listing was added relied on commit search alone, which misses
-/// commits, so they are ignored and the range is synced again.
+/// the current mode is public-only too. Commit records without
+/// [`COMMIT_LISTING_SCOPE`] are ignored and the range is synced again:
+/// records written before repository listing was added relied on commit
+/// search alone, which misses commits, and records written before search
+/// results were limited to related repositories may count copies of the
+/// subject's commits in unrelated repositories.
 pub fn applicable_coverage(records: Vec<CoverageRecord>, public_only: bool) -> Vec<CoverageRecord> {
     records
         .into_iter()
@@ -326,6 +331,11 @@ async fn run_inner(
     // account (another `--user`, or only viewed) still has to be fetched
     // for this one, even if it has not changed.
     let linked_prs: HashSet<String> = cached.pull_requests.keys().cloned().collect();
+    let cached_issue_repos: HashSet<String> = cached
+        .issues
+        .values()
+        .map(|i| i.repository_id.clone())
+        .collect();
     let cached_prs: Vec<CachedPr> = cached
         .pull_requests
         .into_values()
@@ -359,8 +369,10 @@ async fn run_inner(
     };
     // Commit search does not depend on the pull request search, so it starts
     // right away; only listing the default branches of pull request
-    // repositories waits for the repositories that search found.
+    // repositories, and telling related repositories from unrelated ones,
+    // waits for the repositories that pull request and issue search found.
     let (pr_repos_tx, pr_repos_rx) = tokio::sync::oneshot::channel();
+    let (issue_repos_tx, issue_repos_rx) = tokio::sync::oneshot::channel();
     let prs = async {
         let (refs, search_status) = search_prs(&shared, &pr_ranges).await?;
         let mut pr_repos: Vec<(String, String)> = Vec::new();
@@ -379,10 +391,16 @@ async fn run_inner(
         &shared,
         &commit_ranges,
         &cached_prs,
+        &cached_issue_repos,
         pr_repos_rx,
+        issue_repos_rx,
         known_repos,
     );
-    tokio::try_join!(prs, commits, sync_issues(&shared, &issue_ranges))?;
+    tokio::try_join!(
+        prs,
+        commits,
+        sync_issues(&shared, &issue_ranges, issue_repos_tx)
+    )?;
 
     let mut report = report.into_inner();
     report.api = client.stats();
@@ -656,9 +674,16 @@ async fn fetch_prs(
     Ok(())
 }
 
-/// Finds issues updated in `ranges` and fetches the changed ones.
-async fn sync_issues(sh: &Shared<'_, '_>, ranges: &[Period]) -> Result<()> {
+/// Finds issues updated in `ranges` and fetches the changed ones. The
+/// repositories of the issues found are sent to `issue_repos` as soon as
+/// every range was searched.
+async fn sync_issues(
+    sh: &Shared<'_, '_>,
+    ranges: &[Period],
+    issue_repos: tokio::sync::oneshot::Sender<Vec<(String, String)>>,
+) -> Result<()> {
     let (client, subject, opts, progress) = (sh.client, sh.subject, sh.opts, sh.progress);
+    let mut searched = Vec::new();
     for &range in ranges {
         progress(SyncProgress::Searching(DataKind::Issues));
         progress(SyncProgress::Detail(format!(
@@ -673,6 +698,17 @@ async fn sync_issues(sh: &Shared<'_, '_>, ranges: &[Period]) -> Result<()> {
                 opts.public_only,
             )
             .await?;
+        searched.push((range, found));
+    }
+    let mut repos: Vec<(String, String)> = Vec::new();
+    let mut seen_names = HashSet::new();
+    for r in searched.iter().flat_map(|(_, found)| &found.items) {
+        if seen_names.insert(format!("{}/{}", r.owner, r.name).to_ascii_lowercase()) {
+            repos.push((r.owner.clone(), r.name.clone()));
+        }
+    }
+    let _ = issue_repos.send(repos);
+    for (range, found) in searched {
         sh.report.borrow_mut().issues_found += found.items.len() as u64;
         // An issue whose update time is unchanged since it was last fetched
         // completely has no new history.
@@ -798,17 +834,41 @@ fn find_repo<'a>(
         .find(|r| r.owner.eq_ignore_ascii_case(owner) && r.name.eq_ignore_ascii_case(name))
 }
 
+/// Repositories the subject is related to other than through commits: owned
+/// by the subject, in the subject's repository list, or with pull requests
+/// or issues of the subject. Commit search also finds the subject's commits
+/// in repositories that merely contain a copy of them, such as a project
+/// uploaded again as a new repository instead of forked (GitHub does not
+/// mark those as forks). Search results in other repositories are left
+/// out; GitHub's contribution graph does not count such copies either.
+struct Related<'a> {
+    login: &'a str,
+    ids: HashSet<String>,
+    /// Lowercase `owner/name` of repositories known only by name.
+    names: HashSet<String>,
+}
+
+impl Related<'_> {
+    fn contains(&self, r: &Repository) -> bool {
+        r.owner.eq_ignore_ascii_case(self.login)
+            || self.ids.contains(&r.id)
+            || self.names.contains(&r.full_name().to_ascii_lowercase())
+    }
+}
+
 /// Syncs commits for `ranges`: commit search, plus the commits list of the
 /// default branch of every repository the subject pushed to (repository
 /// listing), had commits found by search in, or has pull requests in.
 /// Both sources produce the same event ids, so a commit found by both is
-/// stored once.
+/// stored once. Search results only count in [`Related`] repositories.
 #[allow(clippy::too_many_arguments)]
 async fn sync_commits(
     sh: &Shared<'_, '_>,
     ranges: &[Period],
     cached_prs: &[CachedPr],
+    cached_issue_repos: &HashSet<String>,
     pr_repos: tokio::sync::oneshot::Receiver<Vec<(String, String)>>,
+    issue_repos: tokio::sync::oneshot::Receiver<Vec<(String, String)>>,
     mut known_repos: HashMap<String, Repository>,
 ) -> Result<()> {
     let (client, subject, opts, progress) = (sh.client, sh.subject, sh.opts, sh.progress);
@@ -866,10 +926,46 @@ async fn sync_commits(
             Err(_) => unresolved.push(format!("{owner}/{name}")),
         }
     }
+    // A failed issue search fails the whole sync elsewhere too.
+    let issue_repos = issue_repos.await.unwrap_or_default();
+    let related = Related {
+        login: &subject.login,
+        ids: pushed
+            .iter()
+            .map(|p| p.repository.id.clone())
+            .chain(pr_repo_ids.iter().cloned())
+            .chain(cached_prs.iter().map(|(id, _, _)| id.clone()))
+            .chain(cached_issue_repos.iter().cloned())
+            .collect(),
+        names: unresolved
+            .iter()
+            .cloned()
+            .chain(issue_repos.iter().map(|(o, n)| format!("{o}/{n}")))
+            .map(|n| n.to_ascii_lowercase())
+            .collect(),
+    };
+    // Without the repository list, relation cannot be told, so every search
+    // result is kept (and the coverage is partial anyway).
+    let judge = listing_failure.is_none();
 
     for range in ranges {
         let range = *range;
         let fetched = searches.next().expect("one commit search per range");
+        let (items, unrelated): (Vec<CommitRecord>, Vec<CommitRecord>) = fetched
+            .items
+            .into_iter()
+            .partition(|c| !judge || related.contains(&c.repository));
+        let mut unrelated_ids: Vec<String> =
+            unrelated.iter().map(|c| c.repository.id.clone()).collect();
+        unrelated_ids.sort();
+        unrelated_ids.dedup();
+        if !unrelated.is_empty() {
+            progress(SyncProgress::Detail(format!(
+                "skipping {} commit(s) found by search in {} unrelated repositories",
+                unrelated.len(),
+                unrelated_ids.len()
+            )));
+        }
         let mut statuses = vec![fetched.status];
         let mut reasons: Vec<String> = fetched.reason.into_iter().collect();
         if let Some(f) = &listing_failure {
@@ -891,7 +987,7 @@ async fn sync_commits(
                 candidates.insert(p.repository.id.clone(), p.repository.clone());
             }
         }
-        for c in &fetched.items {
+        for c in &items {
             candidates
                 .entry(c.repository.id.clone())
                 .or_insert_with(|| c.repository.clone());
@@ -923,7 +1019,7 @@ async fn sync_commits(
             total,
         });
         let mut found: BTreeMap<EventId, CommitRecord> = BTreeMap::new();
-        for c in fetched.items {
+        for c in items {
             found.insert(c.event.event_id.clone(), c);
         }
         let mut inaccessible: Vec<(String, String)> = Vec::new();
@@ -1023,6 +1119,13 @@ async fn sync_commits(
         let reason = (!reasons.is_empty()).then(|| reasons.join("; "));
         let rec = record(DataKind::Commits, range, status, reason, subject, opts);
         batch.coverage.push(rec.clone());
+        // Earlier versions stored search results from unrelated
+        // repositories; drop those of this range.
+        if !unrelated_ids.is_empty() {
+            sh.store
+                .borrow_mut()
+                .remove_listed_commits(&subject.login, range, &unrelated_ids)?;
+        }
         sh.store.borrow_mut().apply(&batch)?;
         sh.report.borrow_mut().coverage.push(rec);
     }

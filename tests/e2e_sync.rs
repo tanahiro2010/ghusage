@@ -986,6 +986,166 @@ async fn empty_and_inaccessible_repositories_do_not_fail_the_commit_sync() {
     assert_eq!(o["metrics"]["commits"], 6);
 }
 
+/// copier/widget-copy: someone else's copy of acme/widget, uploaded as a new
+/// repository rather than forked. It holds my sha 1 and sha 60.
+fn widget_copy() -> RepoFixture {
+    let rest = support::rest_repo("R_copy", "copier", "User", "widget-copy", false);
+    let mine = Some((ME, ME_ID, "User"));
+    RepoFixture {
+        owner: "copier".into(),
+        name: "widget-copy".into(),
+        gql: gql_repo("R_copy", user("copier"), "widget-copy", "PUBLIC", "READ"),
+        listed: listed_repo(&rest, "pull", "2024-03-09T00:00:00Z"),
+        default_branch: vec![
+            list_commit(&rest, &sha(60), mine, "2024-03-06T09:00:00Z", 1),
+            list_commit(&rest, &sha(1), mine, "2024-03-04T10:00:00Z", 1),
+        ],
+        rest,
+    }
+}
+
+/// Commit search finds sha 1 and sha 60 in [`widget_copy`] too.
+fn copy_search_results(copy: &RepoFixture) -> Vec<Value> {
+    let mine = Some((ME, ME_ID, "User"));
+    vec![
+        search_commit(&copy.rest, &sha(1), mine, "2024-03-04T10:00:00Z", 1),
+        search_commit(&copy.rest, &sha(60), mine, "2024-03-06T09:00:00Z", 1),
+    ]
+}
+
+/// `GET /user/repos` listing only the base world's repositories.
+async fn mount_base_repo_list(server: &wiremock::MockServer) {
+    let mut listed: Vec<Value> = World::base()
+        .repos
+        .iter()
+        .map(|r| r.listed.clone())
+        .collect();
+    listed.sort_by(|a, b| {
+        b["pushed_at"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(a["pushed_at"].as_str().unwrap_or(""))
+    });
+    Mock::given(method("GET"))
+        .and(path("/user/repos"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(Value::Array(listed)))
+        .with_priority(1)
+        .mount(server)
+        .await;
+}
+
+fn repository_names(report: &Value) -> Vec<String> {
+    report["repositories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["full_name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn commits_found_by_search_in_unrelated_repositories_are_not_counted() {
+    let mut world = World::base();
+    let mine = Some((ME, ME_ID, "User"));
+    let copy = widget_copy();
+    world.commits.extend(copy_search_results(&copy));
+    // upstream/tool is not in my repository list either, but I opened
+    // upstream/tool#9: search finds my sha 61 there, and its default branch
+    // also holds my sha 70, which search misses.
+    let tool_rest = support::rest_repo("R_tool", "upstream", "User", "tool", false);
+    world.commits.push(search_commit(
+        &tool_rest,
+        &sha(61),
+        mine,
+        "2024-03-06T10:00:00Z",
+        1,
+    ));
+    world.repos.push(RepoFixture {
+        owner: "upstream".into(),
+        name: "tool".into(),
+        gql: gql_repo("R_tool", user("upstream"), "tool", "PUBLIC", "READ"),
+        listed: listed_repo(&tool_rest, "pull", "2024-03-09T00:00:00Z"),
+        default_branch: vec![
+            list_commit(&tool_rest, &sha(70), mine, "2024-03-07T10:00:00Z", 1),
+            list_commit(&tool_rest, &sha(61), mine, "2024-03-06T10:00:00Z", 1),
+        ],
+        rest: tool_rest,
+    });
+    let mut issue = issue_1();
+    issue.owner = "upstream".into();
+    issue.name = "tool".into();
+    issue.number = 9;
+    issue.node_id = "I_tool".into();
+    issue.gql["id"] = json!("I_tool");
+    issue.gql["number"] = json!(9);
+    issue.gql["url"] = json!("https://github.com/upstream/tool/issues/9");
+    issue.gql["state"] = json!("OPEN");
+    issue.gql["closedAt"] = Value::Null;
+    issue.gql["timelineItems"] = connection(vec![]);
+    world.issues.push(issue);
+    world.repos.push(copy);
+    let server = serve(&world).await;
+    mount_base_repo_list(&server).await;
+    let env = Env::new(&server);
+
+    let r = env.sync(&[]).await;
+    r.expect_code(0).assert_clean();
+    assert_eq!(r.json()["status"], "complete");
+    let reqs = requests(&server).await;
+    assert_eq!(request_count(&reqs, "/repos/copier/widget-copy/commits"), 0);
+    assert_eq!(request_count(&reqs, "/repos/upstream/tool/commits"), 1);
+
+    let o = env.offline_json(&["overview"]).await.json();
+    // The base 6 plus sha 61 and sha 70 of upstream/tool; nothing of the
+    // copy, although search found sha 1 and sha 60 there.
+    assert_eq!(o["metrics"]["commits"], 8);
+    assert_eq!(coverage_status(&o, "commits"), "complete");
+    let names = repository_names(&o);
+    assert!(names.contains(&"upstream/tool".to_string()), "{names:?}");
+    assert!(
+        !names.contains(&"copier/widget-copy".to_string()),
+        "{names:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn commits_of_unrelated_repositories_already_cached_are_removed_by_a_resync() {
+    // The copy is in my repository list at first, so its commits count.
+    let mut world = World::base();
+    let copy = widget_copy();
+    world.commits.extend(copy_search_results(&copy));
+    world.repos.push(copy);
+    let server = serve(&world).await;
+    let env = Env::new(&server);
+    env.sync(&[]).await.expect_code(0).assert_clean();
+    let o = env.offline_json(&["overview"]).await.json();
+    // sha 1 counts once per repository.
+    assert_eq!(o["metrics"]["commits"], 8);
+
+    // Once it is not, a sync of the period takes them out again.
+    mount_base_repo_list(&server).await;
+    let r = env.sync(&["--full"]).await;
+    r.expect_code(0).assert_clean();
+    let o = env.offline_json(&["overview"]).await.json();
+    assert_eq!(o["metrics"]["commits"], 6);
+    assert_eq!(coverage_status(&o, "commits"), "complete");
+    let names = repository_names(&o);
+    assert!(
+        !names.contains(&"copier/widget-copy".to_string()),
+        "{names:?}"
+    );
+    // Everything else is as if the copy had never been seen.
+    let clean = Env::new(&serve(&World::base()).await);
+    clean.sync(&[]).await.expect_code(0);
+    for report in ["overview", "daily", "repos"] {
+        let a = env.offline_json(&[report]).await.json();
+        let b = clean.offline_json(&[report]).await.json();
+        assert_eq!(a["metrics"], b["metrics"], "{report}");
+        assert_eq!(a["activity_breakdown"], b["activity_breakdown"], "{report}");
+        assert_eq!(a["repositories"], b["repositories"], "{report}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn public_only_sync_does_not_list_private_repositories() {
     let server = serve(&World::base()).await;

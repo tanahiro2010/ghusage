@@ -789,6 +789,80 @@ impl Store {
             .map_err(|e| classify(e.into()))
     }
 
+    /// Removes from `account` its commits in `repository_ids` with committer
+    /// date in `period` that were found by commit search or a default-branch
+    /// listing (commits of pull requests stay). A repository left with no
+    /// commits, pull requests or issues of the account is removed from the
+    /// account too. Stored rows stay for other accounts. Returns the number
+    /// of commits removed.
+    pub fn remove_listed_commits(
+        &mut self,
+        account: &str,
+        period: Period,
+        repository_ids: &[String],
+    ) -> Result<usize> {
+        (|| {
+            let tx = self.conn.transaction()?;
+            let Some(account_id) = account_id(&tx, account)? else {
+                return Ok(0);
+            };
+            let mut removed = 0;
+            for repo_id in repository_ids {
+                // Coarse filter on whole seconds, then the exact half-open
+                // check.
+                let mut events: Vec<String> = Vec::new();
+                {
+                    let mut stmt = tx.prepare_cached(
+                        "SELECT e.event_id, e.occurred_at, e.occurred_at_ns \
+                         FROM activity_events e \
+                         JOIN account_events ae ON ae.event_id = e.event_id \
+                         WHERE ae.account_id = ?1 AND e.repository_id = ?2 \
+                         AND e.event_type = ?3 AND e.parent_pr_id IS NULL \
+                         AND e.source IN (?4, ?5) AND e.occurred_at BETWEEN ?6 AND ?7",
+                    )?;
+                    let mut rows = stmt.query(params![
+                        account_id,
+                        repo_id,
+                        EventType::CommitAuthored.as_str(),
+                        Source::Search.as_str(),
+                        Source::Rest.as_str(),
+                        secs(period.start),
+                        secs(period.end),
+                    ])?;
+                    while let Some(r) = rows.next()? {
+                        let at = time(r.get("occurred_at")?, r.get("occurred_at_ns")?)?;
+                        if period.contains(at) {
+                            events.push(r.get("event_id")?);
+                        }
+                    }
+                }
+                for event_id in &events {
+                    removed += tx.execute(
+                        "DELETE FROM account_events WHERE account_id = ?1 AND event_id = ?2",
+                        params![account_id, event_id],
+                    )?;
+                }
+                tx.execute(
+                    "DELETE FROM account_repositories \
+                     WHERE account_id = ?1 AND repository_id = ?2 \
+                     AND NOT EXISTS (SELECT 1 FROM account_events ae \
+                         JOIN activity_events e ON e.event_id = ae.event_id \
+                         WHERE ae.account_id = ?1 AND e.repository_id = ?2) \
+                     AND NOT EXISTS (SELECT 1 FROM account_pull_requests ap \
+                         JOIN pull_requests p ON p.id = ap.pr_id \
+                         WHERE ap.account_id = ?1 AND p.repository_id = ?2) \
+                     AND NOT EXISTS (SELECT 1 FROM account_issues ai \
+                         JOIN issues i ON i.id = ai.issue_id \
+                         WHERE ai.account_id = ?1 AND i.repository_id = ?2)",
+                    params![account_id, repo_id],
+                )?;
+            }
+            tx.commit()?;
+            Ok(removed)
+        })()
+        .map_err(classify)
+    }
+
     pub fn coverage(&self, account: &str) -> Result<Vec<CoverageRecord>> {
         (|| match account_id(&self.conn, account)? {
             Some(id) => coverage_for(&self.conn, id),

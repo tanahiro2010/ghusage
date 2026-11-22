@@ -335,6 +335,82 @@ fn same_sha_in_two_repositories_is_two_commits() {
 }
 
 #[test]
+fn listed_commits_are_removed_from_one_account_in_the_period_only() {
+    let mut s = store_with_base();
+    let mut listed = commit_event("R3", "ddd444", t(3, 2));
+    listed.source = Source::Rest;
+    // A commit known through a pull request (same event type, no parent).
+    let mut from_pr = commit_event("R3", "eee555", t(3, 3));
+    from_pr.source = Source::Graphql;
+    s.apply(&WriteBatch {
+        account: "alice".into(),
+        repositories: vec![repo("R3", "copier", "tool"), repo("R4", "copier", "lib")],
+        events: vec![
+            commit_event("R1", "ccc333", t(3, 1)),
+            commit_event("R3", "ccc333", t(3, 1)),
+            listed,
+            from_pr,
+            commit_event("R3", "fff666", t(6, 0)),
+            commit_event("R4", "ggg777", t(3, 4)),
+        ],
+        ..Default::default()
+    })
+    .unwrap();
+    s.apply(&WriteBatch {
+        account: "bob".into(),
+        repositories: vec![repo("R3", "copier", "tool")],
+        events: vec![commit_event("R3", "ccc333", t(3, 1))],
+        ..Default::default()
+    })
+    .unwrap();
+    let commits_in = |s: &Store, repo_id: &str| -> Vec<String> {
+        let mut v: Vec<String> = alice_dataset(s)
+            .events
+            .iter()
+            .filter(|e| e.repository_id == repo_id && e.event_type == EventType::CommitAuthored)
+            .map(|e| e.entity_id.clone())
+            .collect();
+        v.sort();
+        v
+    };
+
+    let period = Period::new(t(3, 0), t(5, 0)).unwrap();
+    assert_eq!(
+        s.remove_listed_commits("alice", period, &["R3".into()])
+            .unwrap(),
+        2
+    );
+    // Commits after the period and through pull requests stay, and so does
+    // the same sha in another repository.
+    assert_eq!(commits_in(&s, "R3"), vec!["eee555", "fff666"]);
+    assert_eq!(commits_in(&s, "R1"), vec!["aaa111", "ccc333"]);
+    assert!(alice_dataset(&s).repositories.contains_key("R3"));
+    // Another account keeps its link to the same commit.
+    let bob = s.load_dataset(&subject("bob"), false, None).unwrap();
+    assert_eq!(bob.events.len(), 1);
+    assert!(bob.repositories.contains_key("R3"));
+
+    // A repository left with nothing of the account leaves the account; one
+    // with an issue of the account stays.
+    let all = Period::new(t(1, 0), t(8, 0)).unwrap();
+    assert_eq!(
+        s.remove_listed_commits("alice", all, &["R4".into(), "R2".into()])
+            .unwrap(),
+        1
+    );
+    let ds = alice_dataset(&s);
+    assert!(!ds.repositories.contains_key("R4"));
+    assert!(ds.repositories.contains_key("R2"));
+    assert!(ds.issues.contains_key("I1"));
+    // Removing again changes nothing.
+    assert_eq!(
+        s.remove_listed_commits("alice", all, &["R4".into()])
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn renamed_repository_keeps_its_id_and_data() {
     let mut s = store_with_base();
     let b = WriteBatch {
