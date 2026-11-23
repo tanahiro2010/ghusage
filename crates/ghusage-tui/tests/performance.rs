@@ -5,7 +5,6 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use chrono::Duration as Days;
 use common::*;
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::metrics::Dataset;
@@ -13,6 +12,7 @@ use ghusage_core::model::{
     Actor, ActorKind, EventMeta, EventType, PrState, PullRequest, Repository, Subject, Visibility,
 };
 use ghusage_tui::source::MemorySource;
+use jiff::SignedDuration;
 use ratatui::crossterm::event::KeyCode;
 
 fn big_dataset(events: usize) -> Dataset {
@@ -59,7 +59,7 @@ fn big_dataset(events: usize) -> Dataset {
             synced_at: None,
         })
         .collect();
-    let span = (p.end - p.start).num_seconds();
+    let span = (p.end - p.start).as_secs();
     let types = [
         EventType::PrCommit,
         EventType::ReviewSubmitted,
@@ -72,7 +72,7 @@ fn big_dataset(events: usize) -> Dataset {
         let t = types[i % types.len()];
         let pr = i % 2000;
         let actor: Actor = if i % 3 == 0 { alice() } else { bob() };
-        let at = p.start + Days::seconds((i as i64 * 7919) % span);
+        let at = p.start + SignedDuration::from_secs((i as i64 * 7919) % span);
         let meta = EventMeta {
             sha: Some(format!("{i:040x}")),
             ..EventMeta::default()

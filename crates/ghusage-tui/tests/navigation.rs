@@ -182,7 +182,7 @@ fn time_range_cycles_and_recomputes_the_period() {
 
     app.handle_key(key('t'));
     assert_eq!(app.time_range, TimeRange::Today);
-    let today = resolve_period(Some("today"), None, "today", zone(), now()).unwrap();
+    let today = resolve_period(Some("today"), None, "today", &zone(), now()).unwrap();
     assert_eq!(app.period, today);
     assert!(app.report_builds() > builds, "new period is computed");
     assert_eq!(app.base_report().unwrap().metrics.commits, 0);
@@ -197,7 +197,7 @@ fn time_range_cycles_and_recomputes_the_period() {
     assert_eq!(app.time_range, TimeRange::Last90Days);
     app.handle_key(key('t'));
     assert_eq!(app.time_range, TimeRange::ThisMonth);
-    let month = resolve_period(Some("1m"), None, "1m", zone(), now()).unwrap();
+    let month = resolve_period(Some("1m"), None, "1m", &zone(), now()).unwrap();
     assert_eq!(app.period, month);
     app.handle_key(key('t'));
     assert_eq!(app.time_range, TimeRange::Initial);

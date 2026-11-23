@@ -4,13 +4,13 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use chrono::{DateTime, Utc};
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::metrics::{LineCounts, PrDiff};
 use ghusage_core::model::{
     ActivityEvent, Actor, CheckOutcome, Collection, EventId, EventMeta, EventType, PrState,
     PullRequest, ReviewState, ReviewThread, Source,
 };
+use jiff::Timestamp;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -828,7 +828,7 @@ pub(crate) async fn fetch(
         tracker.note(n);
     }
 
-    let now = Utc::now();
+    let now = Timestamp::now();
     let merged_at = time(&pr.merged_at);
     let mut b = Builder {
         repo_id: repository.id.clone(),
@@ -937,10 +937,9 @@ pub(crate) async fn fetch(
                 continue;
             }
             "ClosedEvent" => {
-                meta.via_merge = Some(
-                    merged_at
-                        .is_some_and(|m| (at - m).num_seconds().abs() <= MERGE_CLOSE_WINDOW_SECS),
-                );
+                meta.via_merge = Some(merged_at.is_some_and(|m| {
+                    at.duration_since(m).as_secs_f64().abs() <= MERGE_CLOSE_WINDOW_SECS as f64
+                }));
                 EventType::PrClosed
             }
             "ReopenedEvent" => EventType::PrReopened,
@@ -1428,7 +1427,7 @@ fn dedupe(events: Vec<ActivityEvent>) -> Vec<ActivityEvent> {
 struct Builder {
     repo_id: String,
     pr_id: String,
-    now: DateTime<Utc>,
+    now: Timestamp,
     events: Vec<ActivityEvent>,
 }
 
@@ -1440,7 +1439,7 @@ impl Builder {
         event_id: EventId,
         actor: Actor,
         entity_id: String,
-        occurred_at: DateTime<Utc>,
+        occurred_at: Timestamp,
         url: Option<String>,
         meta: EventMeta,
         source: Source,

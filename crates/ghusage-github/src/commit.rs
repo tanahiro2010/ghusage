@@ -1,8 +1,8 @@
 //! One commit with its files and diff (`GET /repos/{owner}/{repo}/commits/{ref}`).
 
-use chrono::Utc;
 use ghusage_core::commit::{CommitDetail, CommitFile, CommitPerson, DiffStats, FileStatus};
 use ghusage_core::model::Visibility;
+use jiff::Timestamp;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -177,6 +177,6 @@ pub(crate) async fn fetch(
         files,
         files_truncated: next.is_some() || bad > 0,
         visibility: Visibility::Unknown,
-        fetched_at: Utc::now(),
+        fetched_at: Timestamp::now(),
     })
 }

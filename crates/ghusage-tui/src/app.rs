@@ -7,7 +7,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 
-use chrono::{DateTime, Utc};
 use ghusage_app::report::{IssueReport, PrReport, QueryContext, Report, ReportKind};
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::metrics::{
@@ -16,6 +15,7 @@ use ghusage_core::metrics::{
 };
 use ghusage_core::model::{EventCategory, EventType};
 use ghusage_core::time::{Period, Zone, resolve_period};
+use jiff::Timestamp;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::background::SyncMsg;
@@ -385,8 +385,8 @@ impl DetailTab {
 /// The day shown on the day detail screen.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DayScope {
-    pub start: DateTime<Utc>,
-    pub end: DateTime<Utc>,
+    pub start: Timestamp,
+    pub end: Timestamp,
     pub label: String,
 }
 
@@ -441,8 +441,8 @@ pub(crate) enum Slot {
     Issues,
     /// Every listing for one day of the period.
     Day {
-        start: DateTime<Utc>,
-        end: DateTime<Utc>,
+        start: Timestamp,
+        end: Timestamp,
     },
     /// Every listing for one repository.
     Repo(String),
@@ -451,8 +451,8 @@ pub(crate) enum Slot {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct CacheKey {
     pub(crate) slot: Slot,
-    pub(crate) start: DateTime<Utc>,
-    pub(crate) end: DateTime<Utc>,
+    pub(crate) start: Timestamp,
+    pub(crate) end: Timestamp,
     pub(crate) filter: FilterPreset,
 }
 
@@ -460,8 +460,8 @@ pub(crate) struct CacheKey {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct IssueKey {
     pub(crate) id: String,
-    pub(crate) start: DateTime<Utc>,
-    pub(crate) end: DateTime<Utc>,
+    pub(crate) start: Timestamp,
+    pub(crate) end: Timestamp,
     pub(crate) filter: FilterPreset,
 }
 
@@ -502,7 +502,7 @@ pub struct AppConfig {
     pub background_sync: bool,
 }
 
-type Clock = Box<dyn Fn() -> DateTime<Utc>>;
+type Clock = Box<dyn Fn() -> Timestamp>;
 
 /// Where reports are computed.
 enum Compute {
@@ -582,7 +582,7 @@ impl App {
     /// Creates the UI state. Reports are computed on a worker thread that
     /// owns `source`; the calling thread never waits for them.
     pub fn new(source: Box<dyn DataSource + Send>, cfg: AppConfig) -> std::io::Result<Self> {
-        Self::with_clock(source, cfg, Box::new(Utc::now))
+        Self::with_clock(source, cfg, Box::new(Timestamp::now))
     }
 
     /// Like [`App::new`] with a custom clock for relative time ranges.
@@ -678,7 +678,7 @@ impl App {
     pub fn query_context(&self) -> QueryContext {
         QueryContext {
             period: self.period,
-            zone: self.zone,
+            zone: self.zone.clone(),
             filter: self.filter(),
             commit_basis: self.commit_basis,
             redact_private: false,
@@ -1911,7 +1911,7 @@ impl App {
         for _ in 0..TimeRange::CYCLE.len() {
             let p = match next.since() {
                 None => Ok(self.initial_period),
-                Some(since) => resolve_period(Some(since), None, since, self.zone, now),
+                Some(since) => resolve_period(Some(since), None, since, &self.zone, now),
             };
             if let Ok(p) = p {
                 self.time_range = next;
@@ -2086,7 +2086,7 @@ impl App {
     }
 
     /// The clock used for relative ranges.
-    pub fn now(&self) -> DateTime<Utc> {
+    pub fn now(&self) -> Timestamp {
         (self.clock)()
     }
 }

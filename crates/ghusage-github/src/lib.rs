@@ -17,13 +17,13 @@ mod url;
 
 use std::time::Duration;
 
-use chrono::{DateTime, TimeZone, Utc};
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::metrics::{LineCounts, PrDiff};
 use ghusage_core::model::{
     ActivityEvent, Collection, Issue, PullRequest, Repository, ReviewThread,
 };
 use ghusage_core::time::Period;
+use jiff::Timestamp;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -81,7 +81,7 @@ pub enum ApiError {
     #[error("not found or not accessible: {0}")]
     NotFound(String),
     #[error("GitHub rate limit exceeded; resets at {reset_at:?}")]
-    RateLimited { reset_at: Option<DateTime<Utc>> },
+    RateLimited { reset_at: Option<Timestamp> },
     #[error("request timed out after {attempts} attempt(s)")]
     Timeout { attempts: u32 },
     #[error("GitHub API returned HTTP {status} after {attempts} attempt(s)")]
@@ -132,7 +132,7 @@ pub struct UserInfo {
 pub struct RateLimitInfo {
     pub core_remaining: u64,
     pub core_limit: u64,
-    pub core_reset: DateTime<Utc>,
+    pub core_reset: Timestamp,
     pub search_remaining: u64,
     pub search_limit: u64,
     pub graphql_remaining: u64,
@@ -160,7 +160,7 @@ pub struct CommitRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushedRepository {
     pub repository: Repository,
-    pub pushed_at: Option<DateTime<Utc>>,
+    pub pushed_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,7 +177,7 @@ pub struct IssueRef {
     pub name: String,
     pub number: u64,
     pub kind: IssueKind,
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
 }
 
 /// All data of one pull request.
@@ -313,8 +313,8 @@ impl GitHubClient {
             core_limit: core.limit.unwrap_or(0),
             core_reset: core
                 .reset
-                .and_then(|r| Utc.timestamp_opt(r, 0).single())
-                .unwrap_or_else(Utc::now),
+                .and_then(|r| Timestamp::from_second(r).ok())
+                .unwrap_or_else(Timestamp::now),
             search_remaining: search.remaining.unwrap_or(0),
             search_limit: search.limit.unwrap_or(0),
             graphql_remaining: graphql.remaining.unwrap_or(0),
@@ -344,7 +344,7 @@ impl GitHubClient {
     pub async fn pushed_repositories(
         &self,
         user: Option<&str>,
-        pushed_since: DateTime<Utc>,
+        pushed_since: Timestamp,
     ) -> Result<Vec<PushedRepository>, ApiError> {
         repos::pushed_repositories(&self.transport, user, pushed_since).await
     }

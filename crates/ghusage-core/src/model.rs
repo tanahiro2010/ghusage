@@ -5,7 +5,7 @@
 //! a review thread's resolution, the latest CI result) lives in separate
 //! structs and is never used as a substitute for historical events.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -502,7 +502,7 @@ pub struct EventMeta {
     pub sha: Option<String>,
     /// Commit author date (the event's `occurred_at` is the committer date).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub author_date: Option<DateTime<Utc>>,
+    pub author_date: Option<Timestamp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_merge_commit: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -534,7 +534,7 @@ pub struct EventMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub edited_at: Option<DateTime<Utc>>,
+    pub edited_at: Option<Timestamp>,
     /// Set on a `ReviewSubmitted` event when the review only carries replies
     /// to existing review threads (GitHub records every thread reply as a
     /// review with no body). Such reviews are not counted as submissions.
@@ -542,7 +542,7 @@ pub struct EventMeta {
     pub thread_reply_only: Option<bool>,
     /// Set when a resync observed that the source object no longer exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub removed_observed_at: Option<DateTime<Utc>>,
+    pub removed_observed_at: Option<Timestamp>,
     /// First line of a commit's message (commits only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_headline: Option<String>,
@@ -558,8 +558,8 @@ pub struct ActivityEvent {
     /// Id of the source entity (commit sha, review id, comment id, ...).
     pub entity_id: String,
     pub parent_pr_id: Option<String>,
-    pub occurred_at: DateTime<Utc>,
-    pub observed_at: DateTime<Utc>,
+    pub occurred_at: Timestamp,
+    pub observed_at: Timestamp,
     pub source: Source,
     pub url: Option<String>,
     pub meta: EventMeta,
@@ -674,10 +674,10 @@ pub struct PullRequest {
     pub author: Actor,
     pub state: PrState,
     pub is_draft: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: Option<DateTime<Utc>>,
-    pub closed_at: Option<DateTime<Utc>>,
-    pub merged_at: Option<DateTime<Utc>>,
+    pub created_at: Timestamp,
+    pub updated_at: Option<Timestamp>,
+    pub closed_at: Option<Timestamp>,
+    pub merged_at: Option<Timestamp>,
     /// `None` when GitHub did not report who merged.
     pub merged_by: Option<Actor>,
     pub head_sha: Option<String>,
@@ -685,7 +685,7 @@ pub struct PullRequest {
     pub latest_ci: Option<CheckOutcome>,
     /// Coverage of this PR's internal activity.
     pub coverage: CoverageStatus,
-    pub synced_at: Option<DateTime<Utc>>,
+    pub synced_at: Option<Timestamp>,
 }
 
 /// Current review thread state. Resolution history is not reconstructed.
@@ -711,8 +711,8 @@ pub struct Issue {
     pub url: String,
     pub author: Actor,
     pub is_open: bool,
-    pub created_at: DateTime<Utc>,
-    pub closed_at: Option<DateTime<Utc>>,
+    pub created_at: Timestamp,
+    pub closed_at: Option<Timestamp>,
 }
 
 /// A collection of pull request data fetched as a unit. When a collection

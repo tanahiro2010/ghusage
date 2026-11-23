@@ -7,8 +7,6 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-chrono = { version = "0.4.45", features = ["serde"] }
-chrono-tz = "0.10.4"
 jiff = { version = "1.0.2", features = ["serde"] }
 iana-time-zone = "0.1.65"
 serde = { version = "1.0.229", features = ["derive"] }

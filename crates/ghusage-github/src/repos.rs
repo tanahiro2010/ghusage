@@ -3,9 +3,9 @@
 
 use std::collections::HashSet;
 
-use chrono::{DateTime, Duration, Utc};
 use ghusage_core::model::{Repository, Source, Visibility};
 use ghusage_core::time::Period;
+use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
 
 use crate::http::{Transport, parse_time};
@@ -101,7 +101,7 @@ impl RestRepo {
 pub(crate) async fn pushed_repositories(
     t: &Transport,
     user: Option<&str>,
-    pushed_since: DateTime<Utc>,
+    pushed_since: Timestamp,
 ) -> Result<Vec<PushedRepository>, ApiError> {
     let first = match user {
         None => t.rest_url(
@@ -179,9 +179,9 @@ pub(crate) async fn default_branch_commits(
     author_login: &str,
     period: Period,
 ) -> Result<Fetched<Vec<CommitRecord>>, ApiError> {
-    let margin = Duration::days(LIST_MARGIN_DAYS);
-    let since = (period.start - margin).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let until = (period.end + margin).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let margin = SignedDuration::from_secs(LIST_MARGIN_DAYS * 24 * 60 * 60);
+    let since = (period.start - margin).to_string();
+    let until = (period.end + margin).to_string();
     let first = t.rest_url(
         &["repos", &repository.owner, &repository.name, "commits"],
         &[
@@ -199,7 +199,7 @@ pub(crate) async fn default_branch_commits(
         Err(ApiError::Http { status: 409, .. }) => Vec::new(),
         Err(e) => return Err(e),
     };
-    let now = Utc::now();
+    let now = Timestamp::now();
     let mut seen = HashSet::new();
     let mut records = Vec::new();
     let mut bad = 0usize;

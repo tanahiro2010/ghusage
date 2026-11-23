@@ -3,16 +3,16 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use chrono::{DateTime, Utc};
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::metrics::{
     self, CommitDateBasis, Dataset, DiffCoverage, Filter, LineCounts, Options,
 };
 use ghusage_core::model::*;
 use ghusage_core::time::{Granularity, Period, Zone};
+use jiff::Timestamp;
 
-fn at(s: &str) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+fn at(s: &str) -> Timestamp {
+    s.parse().unwrap()
 }
 
 fn me() -> Actor {

@@ -5,7 +5,6 @@ mod render;
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
-use chrono::Utc;
 use clap::Parser;
 use ghusage_app::report::{self, QueryContext, ReportKind};
 use ghusage_app::session::{self, Session, SessionConfig};
@@ -17,6 +16,7 @@ use ghusage_core::metrics::{
 use ghusage_core::model::{EventType, PrState};
 use ghusage_core::time::{Granularity, Period, Zone, resolve_period};
 use ghusage_github::ClientConfig;
+use jiff::{SignedDuration, Timestamp};
 
 use cli::{AuthCommand, CacheCommand, Cli, Command, Format, GlobalArgs};
 use render::Style;
@@ -157,13 +157,13 @@ fn default_since(cmd: &Command) -> &'static str {
     }
 }
 
-fn period(g: &GlobalArgs, cmd: &Command, zone: Zone) -> Result<Period> {
+fn period(g: &GlobalArgs, cmd: &Command, zone: &Zone) -> Result<Period> {
     Ok(resolve_period(
         g.since.as_deref(),
         g.until.as_deref(),
         default_since(cmd),
         zone,
-        Utc::now(),
+        Timestamp::now(),
     )?)
 }
 
@@ -393,13 +393,13 @@ async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<
         );
     }
     if !s.is_offline() && s.needs_sync(period)? {
-        let now = Utc::now();
-        let max_age = chrono::Duration::from_std(g.max_age).unwrap_or(chrono::Duration::MAX);
+        let now = Timestamp::now();
+        let max_age = SignedDuration::from_secs(g.max_age.as_secs().min(i64::MAX as u64) as i64);
         if let Some(until) = s.synced_until(period)?
             && until < period.end
-            && now - until <= max_age
+            && until.duration_until(now) <= max_age
         {
-            let mins = (now - until).num_minutes();
+            let mins = until.duration_until(now).as_secs() / 60;
             eprintln!(
                 "note: showing data synced {} ago (up to {}); use --max-age 0 to fetch the latest",
                 if mins < 1 {
@@ -452,7 +452,7 @@ async fn report_cmd(
     kind: ReportKind,
     details: bool,
 ) -> Result<i32> {
-    let (s, period) = prepared_session(g, period(g, cmd, zone)?, zone).await?;
+    let (s, period) = prepared_session(g, period(g, cmd, &zone)?, zone.clone()).await?;
     let ds = s.dataset(Some(period))?;
     let ctx = QueryContext {
         period,
@@ -610,7 +610,7 @@ async fn sync_cmd(
             "sync cannot run with --offline".into(),
         ));
     }
-    let period = period(g, cmd, zone)?;
+    let period = period(g, cmd, &zone)?;
     let mut s = Session::open(session_config(g)).await?;
     if let Some(reason) = &s.offline_reason {
         return Err(AppError::Api(ghusage_github::ApiError::Network(
@@ -701,7 +701,7 @@ async fn sync_cmd(
 }
 
 async fn tui_cmd(g: &GlobalArgs, cmd: &Command, zone: Zone) -> Result<i32> {
-    let period = period(g, cmd, zone)?;
+    let period = period(g, cmd, &zone)?;
     let mut cfg = session_config(g);
     let online = !g.offline;
     // The TUI reads from the cache and syncs in the background.
@@ -774,7 +774,7 @@ async fn auth_status_cmd(g: &GlobalArgs) -> Result<i32> {
                     "  rate limit: core {}/{} (resets {}), search {}/{}, graphql {}/{}\n",
                     r.core_remaining,
                     r.core_limit,
-                    r.core_reset.to_rfc3339(),
+                    r.core_reset.strftime("%Y-%m-%dT%H:%M:%S%.f%:z"),
                     r.search_remaining,
                     r.search_limit,
                     r.graphql_remaining,
@@ -809,8 +809,8 @@ fn cache_cmd(g: &GlobalArgs, c: CacheCommand, zone: Zone) -> Result<i32> {
                 Some(a) => store.last_sync_run(a)?,
                 None => None,
             };
-            let now = Utc::now();
-            let p30 = Period::new(now - chrono::Duration::days(30), now)?;
+            let now = Timestamp::now();
+            let p30 = Period::new(now - SignedDuration::from_secs(30 * 24 * 60 * 60), now)?;
             let coverage = match &account {
                 Some(a) => {
                     let recs = store.coverage(a)?;
@@ -870,7 +870,7 @@ fn cache_cmd(g: &GlobalArgs, c: CacheCommand, zone: Zone) -> Result<i32> {
                         o.push_str(&render::coverage_lines(
                             &coverage,
                             last.and_then(|r| r.finished_at),
-                            zone,
+                            &zone,
                             style,
                         ));
                     }

@@ -1,6 +1,5 @@
 //! Report, redaction, JSON and CSV behavior on synthetic data.
 
-use chrono::{DateTime, TimeZone, Utc};
 use ghusage_app::csv_out;
 use ghusage_app::report::{self, QueryContext, ReportKind};
 use ghusage_app::sync::{
@@ -10,9 +9,10 @@ use ghusage_core::coverage::{CoverageRecord, CoverageStatus, DataKind};
 use ghusage_core::metrics::{CommitDateBasis, Dataset, Filter, Participation, PrSort};
 use ghusage_core::model::*;
 use ghusage_core::time::{Granularity, Period, Zone};
+use jiff::{SignedDuration, Timestamp};
 
-fn t(d: u32, h: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 11, d, h, 0, 0).unwrap()
+fn t(d: u32, h: u32) -> Timestamp {
+    format!("2026-11-{d:02}T{h:02}:00:00Z").parse().unwrap()
 }
 
 fn me() -> Actor {
@@ -42,7 +42,7 @@ fn ev(
     actor: Actor,
     repo: &str,
     pr: Option<&str>,
-    at: DateTime<Utc>,
+    at: Timestamp,
 ) -> ActivityEvent {
     ActivityEvent {
         event_id: EventId(id.into()),
@@ -237,7 +237,7 @@ fn json_has_required_root_fields_and_iso_timestamps() {
     }
     assert_eq!(v["schema_version"], 1);
     let synced = v["synced_at"].as_str().unwrap();
-    assert!(DateTime::parse_from_rfc3339(synced).is_ok());
+    assert!(synced.parse::<Timestamp>().is_ok());
     // Unknown values are null, zero values are numbers.
     assert!(v["metrics"]["issues_opened"].is_number());
     assert_eq!(v["activity_breakdown"].as_array().unwrap().len(), 7);
@@ -281,7 +281,7 @@ fn csv_round_trips_and_neutralizes_formulas() {
 fn only_missing_ranges_are_fetched() {
     let period = Period::new(t(1, 0), t(20, 0)).unwrap();
     let mut opts = SyncOptions::new(period, t(20, 0));
-    opts.overlap = chrono::Duration::days(1);
+    opts.overlap = SignedDuration::from_secs(24 * 60 * 60);
     let recs = vec![CoverageRecord {
         kind: DataKind::Commits,
         start: t(1, 0),

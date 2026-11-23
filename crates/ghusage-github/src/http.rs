@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, TimeZone, Utc};
+use jiff::{SignedDuration, Timestamp};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 use reqwest::{Method, Url};
 use serde::Deserialize;
@@ -438,7 +438,7 @@ impl Transport {
                     header_str(&headers, "retry-after").and_then(|v| v.trim().parse::<u64>().ok())
                 {
                     let wait = Duration::from_secs(secs);
-                    let reset_at = Utc::now() + chrono::Duration::seconds(secs as i64);
+                    let reset_at = Timestamp::now() + SignedDuration::from_secs(secs as i64);
                     if wait > self.config.max_rate_limit_wait {
                         return Decision::Fail(ApiError::RateLimited {
                             reset_at: Some(reset_at),
@@ -498,10 +498,13 @@ impl Transport {
     fn primary_limit(&self, headers: &HeaderMap, attempt: u32) -> Decision {
         let reset_at = header_str(headers, "x-ratelimit-reset")
             .and_then(|v| v.trim().parse::<i64>().ok())
-            .and_then(|secs| Utc.timestamp_opt(secs, 0).single());
+            .and_then(|secs| Timestamp::from_second(secs).ok());
         let delay = match reset_at {
             Some(reset) => {
-                let secs = (reset - Utc::now()).num_seconds().max(0) as u64;
+                let secs = reset
+                    .duration_since(Timestamp::now())
+                    .as_secs_f64()
+                    .max(0.0) as u64;
                 Duration::from_secs(secs + 1)
             }
             None => self.backoff(attempt),
@@ -630,10 +633,8 @@ pub(crate) fn with_page(url: &Url, n: u64) -> Url {
 }
 
 /// Parses a GitHub timestamp.
-pub(crate) fn parse_time(s: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|d| d.with_timezone(&Utc))
+pub(crate) fn parse_time(s: &str) -> Option<Timestamp> {
+    s.parse().ok()
 }
 
 #[cfg(test)]

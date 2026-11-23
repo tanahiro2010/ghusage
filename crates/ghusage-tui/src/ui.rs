@@ -3,13 +3,13 @@
 //! `sanitize_line` / `truncate_width` before it reaches the terminal, and
 //! no information is carried by color alone.
 
-use chrono::{DateTime, Utc};
 use ghusage_app::report::Report;
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::metrics::{IssueRow, ReviewDirection, Summary};
 use ghusage_core::model::{ActorKind, PrState};
 use ghusage_core::sanitize::{display_width, sanitize_line, truncate_width};
 use ghusage_core::time::Zone;
+use jiff::Timestamp;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -34,7 +34,7 @@ fn fit(s: &str, width: usize) -> String {
     truncate_width(s, width)
 }
 
-fn ts(zone: Zone, t: Option<DateTime<Utc>>) -> String {
+fn ts(zone: &Zone, t: Option<Timestamp>) -> String {
     t.map(|t| zone.format(t, "%Y-%m-%d %H:%M"))
         .unwrap_or_else(|| "-".into())
 }
@@ -170,7 +170,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
-    let z = app.zone;
+    let z = &app.zone;
     let text = format!(
         " ghusage · {} · {} → {} ({}) · range: {} · repos: {}",
         clean(&app.system.login),
@@ -731,7 +731,7 @@ fn draw_repositories(f: &mut Frame, app: &App, area: Rect) {
                 s.pr_internal_events.to_string(),
                 line_cells(&s.diff_stats)[0].clone(),
                 line_cells(&s.diff_stats)[1].clone(),
-                ts(app.zone, s.last_activity),
+                ts(&app.zone, s.last_activity),
             ];
             let mut row = vec![fit(&name, name_w)];
             row.extend(
@@ -803,7 +803,7 @@ fn draw_pull_requests(f: &mut Frame, app: &App, area: Rect) {
                 Cell::from(p.reviews.to_string()),
                 Cell::from(p.comments.to_string()),
                 Cell::from(p.participants.to_string()),
-                Cell::from(ts(app.zone, p.last_activity)),
+                Cell::from(ts(&app.zone, p.last_activity)),
             ])
         })
         .collect();
@@ -859,7 +859,7 @@ fn draw_pr_detail(f: &mut Frame, app: &App, area: Rect) {
         }
         return loading(f, area, "PR Detail");
     };
-    let z = app.zone;
+    let z = &app.zone;
     let w = area.width.saturating_sub(26) as usize;
     let state = match (r.state, r.is_draft) {
         (PrState::Open, true) => "open (draft)".to_string(),
@@ -1160,7 +1160,7 @@ fn draw_commit_detail(f: &mut Frame, app: &App, area: Rect) {
         kv("Repository", fit(&key.repository, w)),
         kv("SHA", fit(&key.sha, w)),
         kv("Author", fit(seed.author.as_deref().unwrap_or("-"), w)),
-        kv("Date", ts(app.zone, seed.date)),
+        kv("Date", ts(&app.zone, seed.date)),
     ];
     if seed.is_merge {
         lines.push(kv("Parents", "merge commit".into()));
@@ -1355,7 +1355,7 @@ fn draw_reviews(f: &mut Frame, app: &App, area: Rect) {
                 None => x.repository.clone(),
             };
             Row::new(vec![
-                ts(app.zone, Some(x.submitted_at)),
+                ts(&app.zone, Some(x.submitted_at)),
                 fit(&x.reviewer, 20),
                 state,
                 fit(&pr, pr_w),
@@ -1747,7 +1747,7 @@ fn draw_issue_detail(f: &mut Frame, app: &App, area: Rect) {
         }
         return loading(f, area, "Issue Detail");
     };
-    let z = app.zone;
+    let z = &app.zone;
     let w = area.width.saturating_sub(26) as usize;
     let lines = vec![
         Line::styled(
@@ -1928,7 +1928,7 @@ fn draw_scope_detail(f: &mut Frame, app: &App, area: Rect) {
     if vis.is_empty() {
         return empty(f, list_area, title, &[&no_match(app, list)]);
     }
-    let z = app.zone;
+    let z = &app.zone;
     let t = match app.detail_tab {
         DetailTab::Activity => {
             let rows_all = r.activity.as_deref().unwrap_or(&[]);
@@ -2136,7 +2136,7 @@ fn draw_scope_detail(f: &mut Frame, app: &App, area: Rect) {
 // ----- System ----------------------------------------------------------------
 
 fn draw_system(f: &mut Frame, app: &App, area: Rect) {
-    let z = app.zone;
+    let z = &app.zone;
     let s = &app.system;
     let w = area.width.saturating_sub(26) as usize;
     let mut lines = vec![

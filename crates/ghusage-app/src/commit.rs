@@ -3,9 +3,9 @@
 //! from GitHub only when missing; a fetched commit is stored for offline
 //! use. Commit content never affects any count.
 
-use chrono::{DateTime, Utc};
 use ghusage_core::commit::{CommitDetail, CommitPerson, FileStatus};
 use ghusage_core::model::Visibility;
+use jiff::Timestamp;
 use serde::Serialize;
 
 use crate::error::AppError;
@@ -151,7 +151,7 @@ pub async fn load(
 pub struct PersonReport {
     pub name: Option<String>,
     pub login: Option<String>,
-    pub date: Option<DateTime<Utc>>,
+    pub date: Option<Timestamp>,
 }
 
 impl PersonReport {
@@ -203,7 +203,7 @@ pub struct CommitReport {
     pub files: Vec<CommitFileReport>,
     pub files_truncated: bool,
     pub source: CommitSource,
-    pub fetched_at: DateTime<Utc>,
+    pub fetched_at: Timestamp,
     pub private_repositories_redacted: bool,
 }
 

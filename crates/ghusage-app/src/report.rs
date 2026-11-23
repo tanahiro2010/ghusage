@@ -1,7 +1,7 @@
 //! Reports built from the aggregation engine. The CLI (table, JSON, CSV)
 //! and the TUI all render these same structures.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
@@ -28,7 +28,7 @@ pub struct QueryContext {
     pub commit_basis: CommitDateBasis,
     /// Hide names, titles and URLs of non-public repositories.
     pub redact_private: bool,
-    pub synced_at: Option<DateTime<Utc>>,
+    pub synced_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -77,7 +77,7 @@ pub struct Report {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub granularity: Option<Granularity>,
     pub coverage: Vec<CoverageSummary>,
-    pub synced_at: Option<DateTime<Utc>>,
+    pub synced_at: Option<Timestamp>,
     pub private_repositories_redacted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pull_requests: Option<Vec<PrRow>>,
@@ -132,7 +132,7 @@ pub fn coverage_for(ds: &Dataset, period: Period) -> Vec<CoverageSummary> {
 fn options(ctx: &QueryContext, filter: Filter) -> metrics::Options {
     metrics::Options {
         period: ctx.period,
-        zone: ctx.zone,
+        zone: ctx.zone.clone(),
         filter,
         commit_basis: ctx.commit_basis,
     }
@@ -251,8 +251,8 @@ pub struct IssueReport {
     pub url: String,
     pub author: String,
     pub is_open: bool,
-    pub created_at: DateTime<Utc>,
-    pub closed_at: Option<DateTime<Utc>>,
+    pub created_at: Timestamp,
+    pub closed_at: Option<Timestamp>,
     pub events: Vec<ActivityRow>,
     pub private_repositories_redacted: bool,
 }
@@ -283,7 +283,7 @@ fn prepare<'a>(ds: &'a Dataset, ctx: &QueryContext) -> (Cow<'a, Dataset>, Filter
     } else {
         let probe = metrics::Options {
             period: ctx.period,
-            zone: ctx.zone,
+            zone: ctx.zone.clone(),
             filter: ctx.filter.clone(),
             commit_basis: ctx.commit_basis,
         };
@@ -488,8 +488,8 @@ pub fn redact(ds: &Dataset) -> Dataset {
 #[derive(Debug, Clone, Serialize)]
 pub struct TimelineEntry {
     pub event_id: String,
-    pub occurred_at: DateTime<Utc>,
-    pub observed_at: DateTime<Utc>,
+    pub occurred_at: Timestamp,
+    pub observed_at: Timestamp,
     pub actor: String,
     pub actor_kind: ActorKind,
     pub event_type: EventType,
@@ -497,7 +497,7 @@ pub struct TimelineEntry {
     pub detail: Option<String>,
     pub url: Option<String>,
     /// Present when the object was later observed to be gone.
-    pub removed_observed_at: Option<DateTime<Utc>>,
+    pub removed_observed_at: Option<Timestamp>,
 }
 
 /// Detail report of one pull request.
@@ -514,10 +514,10 @@ pub struct PrReport {
     pub author: String,
     pub state: PrState,
     pub is_draft: bool,
-    pub created_at: DateTime<Utc>,
-    pub merged_at: Option<DateTime<Utc>>,
+    pub created_at: Timestamp,
+    pub merged_at: Option<Timestamp>,
     pub merged_by: Option<String>,
-    pub closed_at: Option<DateTime<Utc>>,
+    pub closed_at: Option<Timestamp>,
     pub latest_ci: Option<String>,
     pub commits: u64,
     pub removed_commits: u64,
@@ -536,7 +536,7 @@ pub struct PrReport {
     pub diff: Option<metrics::PrDiff>,
     pub timeline: Vec<TimelineEntry>,
     pub coverage: CoverageStatus,
-    pub synced_at: Option<DateTime<Utc>>,
+    pub synced_at: Option<Timestamp>,
     pub private_repositories_redacted: bool,
 }
 

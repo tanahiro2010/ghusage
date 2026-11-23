@@ -2,8 +2,8 @@
 //! that nulls and missing fields never abort parsing; required values are
 //! checked where they are used.
 
-use chrono::{DateTime, Utc};
 use ghusage_core::model::{Actor, Repository, Visibility};
+use jiff::Timestamp;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -126,7 +126,7 @@ impl GqlRepository {
 }
 
 /// Parses an optional GraphQL timestamp.
-pub(crate) fn time(s: &Option<String>) -> Option<DateTime<Utc>> {
+pub(crate) fn time(s: &Option<String>) -> Option<Timestamp> {
     s.as_deref().and_then(parse_time)
 }
 

@@ -7,8 +7,7 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-chrono = "0.4.45"
-chrono-tz = "0.10.4"
+jiff = { version = "1.0.2", features = ["serde"] }
 csv = "1.4.0"
 directories = "6.0.0"
 futures = "0.3.34"

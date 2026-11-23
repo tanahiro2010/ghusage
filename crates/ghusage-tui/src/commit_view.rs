@@ -4,11 +4,11 @@
 
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
 use ghusage_app::commit::CommitSource;
 use ghusage_core::commit::{CommitDetail, CommitPerson, DiffLineKind, diff_lines, short_sha};
 use ghusage_core::sanitize::{sanitize_code_line, sanitize_line};
 use ghusage_core::time::Zone;
+use jiff::Timestamp;
 
 /// Most diff lines kept for one file.
 pub const MAX_FILE_LINES: usize = 3_000;
@@ -37,7 +37,7 @@ impl CommitKey {
 pub struct CommitSeed {
     pub headline: Option<String>,
     pub author: Option<String>,
-    pub date: Option<DateTime<Utc>>,
+    pub date: Option<Timestamp>,
     pub url: Option<String>,
     /// No longer part of the pull request it was listed in.
     pub removed: bool,
@@ -134,7 +134,7 @@ fn who(p: &CommitPerson) -> String {
     sanitize_line(&s)
 }
 
-fn when(zone: Zone, t: Option<DateTime<Utc>>) -> String {
+fn when(zone: &Zone, t: Option<Timestamp>) -> String {
     t.map(|t| zone.format(t, "%Y-%m-%d %H:%M:%S %Z"))
         .unwrap_or_else(|| "-".into())
 }
@@ -179,9 +179,9 @@ impl CommitView {
             ("Repository", repo.clone()),
             ("SHA", sanitize_line(&d.sha)),
             ("Author", who(&d.author)),
-            ("Author date", when(zone, d.author.date)),
+            ("Author date", when(&zone, d.author.date)),
             ("Committer", who(&d.committer)),
-            ("Committer date", when(zone, d.committer.date)),
+            ("Committer date", when(&zone, d.committer.date)),
             ("Parents", parents),
             (
                 "Changes",
@@ -200,7 +200,7 @@ impl CommitView {
                         CommitSource::Cache => "from the cache",
                         CommitSource::Github => "from GitHub",
                     },
-                    when(zone, Some(d.fetched_at))
+                    when(&zone, Some(d.fetched_at))
                 ),
             ),
         ];

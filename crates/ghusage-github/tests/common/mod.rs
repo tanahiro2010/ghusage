@@ -6,9 +6,9 @@
 
 use std::time::Duration;
 
-use chrono::{DateTime, TimeZone, Utc};
 use ghusage_core::time::Period;
 use ghusage_github::{ClientConfig, Credentials, GitHubClient, Secret, TokenSource};
+use jiff::{Timestamp, civil::Date};
 use serde_json::{Value, json};
 use wiremock::MockServer;
 
@@ -46,16 +46,21 @@ pub fn client_with(server: &MockServer, f: impl FnOnce(&mut ClientConfig)) -> Gi
     GitHubClient::new(Some(credentials()), c).unwrap()
 }
 
-pub fn ts(s: &str) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+pub fn ts(s: &str) -> Timestamp {
+    s.parse().unwrap()
 }
 
 pub fn period(start: &str, end: &str) -> Period {
     Period::new(ts(start), ts(end)).unwrap()
 }
 
-pub fn day(y: i32, m: u32, d: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(y, m, d, 0, 0, 0).unwrap()
+pub fn day(y: i32, m: u8, d: u8) -> Timestamp {
+    Date::new(y as i16, m as i8, d as i8)
+        .unwrap()
+        .at(0, 0, 0, 0)
+        .to_zoned_datetime(jiff::tz::TimeZone::UTC)
+        .unwrap()
+        .timestamp()
 }
 
 /// Asserts that a rendered error contains no trace of the token.

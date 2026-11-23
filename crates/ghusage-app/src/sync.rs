@@ -8,7 +8,6 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use chrono::{DateTime, Duration, Utc};
 use futures::StreamExt;
 use ghusage_core::coverage::{self, CoverageRecord, CoverageStatus, DataKind};
 use ghusage_core::model::{
@@ -19,6 +18,7 @@ use ghusage_github::{
     ApiError, ApiStats, CommitRecord, CommitRef, GitHubClient, IssueKind, IssueRef, PrBundle,
 };
 use ghusage_storage::{CommitStats, PrCommitLink, PrSnapshot, Store, WriteBatch};
+use jiff::{SignedDuration, Timestamp};
 
 use crate::error::{AppError, Result};
 
@@ -33,12 +33,12 @@ pub struct SyncOptions {
     pub public_only: bool,
     /// Refetch the whole period instead of only missing ranges.
     pub full: bool,
-    pub now: DateTime<Utc>,
+    pub now: Timestamp,
     /// How far before a missing range to start refetching, to catch data
     /// GitHub indexed late.
-    pub overlap: Duration,
+    pub overlap: SignedDuration,
     /// Open pull requests not refreshed for this long are refetched.
-    pub recheck_open_after: Duration,
+    pub recheck_open_after: SignedDuration,
     /// Number of pull requests/issues fetched concurrently.
     pub concurrency: usize,
     /// Whether the subject is the authenticated user. Repository discovery
@@ -49,14 +49,14 @@ pub struct SyncOptions {
 }
 
 impl SyncOptions {
-    pub fn new(period: Period, now: DateTime<Utc>) -> Self {
+    pub fn new(period: Period, now: Timestamp) -> Self {
         Self {
             period,
             public_only: false,
             full: false,
             now,
-            overlap: Duration::days(3),
-            recheck_open_after: Duration::days(7),
+            overlap: SignedDuration::from_secs(3 * 24 * 60 * 60),
+            recheck_open_after: SignedDuration::from_secs(7 * 24 * 60 * 60),
             concurrency: 8,
             subject_is_viewer: true,
         }
@@ -211,12 +211,12 @@ pub fn ranges_to_fetch(
         return vec![opts.period];
     }
     let summary = coverage::summarize(records, kind, opts.period.start, opts.period.end);
-    let mut ranges: Vec<(DateTime<Utc>, DateTime<Utc>)> = summary
+    let mut ranges: Vec<(Timestamp, Timestamp)> = summary
         .gaps()
         .map(|g| ((g.start - opts.overlap).max(opts.period.start), g.end))
         .collect();
     ranges.sort();
-    let mut merged: Vec<(DateTime<Utc>, DateTime<Utc>)> = Vec::new();
+    let mut merged: Vec<(Timestamp, Timestamp)> = Vec::new();
     for (s, e) in ranges {
         match merged.last_mut() {
             Some(last) if s <= last.1 => last.1 = last.1.max(e),
@@ -284,7 +284,7 @@ pub async fn run(
 ) -> Result<SyncReport> {
     let run_id = store.begin_sync_run(&subject.login, Some(opts.period), opts.now)?;
     let result = run_inner(client, store, subject, opts, progress).await;
-    let finished = Utc::now();
+    let finished = Timestamp::now();
     match &result {
         Ok(report) => {
             let stats = serde_json::to_string(&report.api).ok();
@@ -319,7 +319,7 @@ async fn run_inner(
     progress: &dyn Fn(SyncProgress),
 ) -> Result<SyncReport> {
     let existing = applicable_coverage(store.coverage(&subject.login)?, opts.public_only);
-    let probe = Period::new(opts.now, opts.now + Duration::seconds(1))?;
+    let probe = Period::new(opts.now, opts.now + SignedDuration::from_secs(1))?;
     let cached = store.load_dataset(subject, false, Some(probe))?;
     let known_repos: HashMap<String, Repository> = cached.repositories.into_iter().collect();
     // Pull requests already linked to this account. One cached for another
@@ -337,7 +337,7 @@ async fn run_inner(
     // Periodically recheck open pull requests even if search did not
     // report them as updated.
     let stale_open = stale_open_prs(store, subject, opts)?;
-    let pr_states: HashMap<String, (Option<DateTime<Utc>>, CoverageStatus)> = store
+    let pr_states: HashMap<String, (Option<Timestamp>, CoverageStatus)> = store
         .pr_sync_states()?
         .into_iter()
         .filter(|s| linked_prs.contains(&s.pr_id))
@@ -453,7 +453,7 @@ pub async fn fetch_line_counts(
         ));
     }
     let total = wanted.len();
-    let now = Utc::now();
+    let now = Timestamp::now();
     let mut done = 0;
     for chunk in wanted.chunks(500) {
         progress(SyncProgress::Fetching {
@@ -527,7 +527,7 @@ async fn search_prs(
         ] {
             (sh.progress)(SyncProgress::Detail(format!(
                 "searching pull requests: {q} updated since {}",
-                range.start.format("%Y-%m-%d")
+                range.start.strftime("%Y-%m-%d")
             )));
             let found = client
                 .search_issues(
@@ -556,7 +556,7 @@ async fn fetch_prs(
     sh: &Shared<'_, '_>,
     refs: &BTreeMap<String, IssueRef>,
     search_status: SearchStatus,
-    states: &HashMap<String, (Option<DateTime<Utc>>, CoverageStatus)>,
+    states: &HashMap<String, (Option<Timestamp>, CoverageStatus)>,
     stale_open: Vec<(String, PrKey)>,
 ) -> Result<()> {
     let (client, subject, opts, progress) = (sh.client, sh.subject, sh.opts, sh.progress);
@@ -663,7 +663,7 @@ async fn sync_issues(sh: &Shared<'_, '_>, ranges: &[Period]) -> Result<()> {
         progress(SyncProgress::Searching(DataKind::Issues));
         progress(SyncProgress::Detail(format!(
             "searching issues updated since {}",
-            range.start.format("%Y-%m-%d")
+            range.start.strftime("%Y-%m-%d")
         )));
         let found = client
             .search_issues(
@@ -680,7 +680,7 @@ async fn sync_issues(sh: &Shared<'_, '_>, ranges: &[Period]) -> Result<()> {
         for r in found.items {
             let key = issue_cursor(&r.node_id);
             let seen = sh.store.borrow().cursor(&subject.login, &key)?;
-            if !opts.full && seen.as_deref() == Some(r.updated_at.to_rfc3339().as_str()) {
+            if !opts.full && seen.as_deref() == Some(r.updated_at.to_string().as_str()) {
                 sh.report.borrow_mut().issues_unchanged += 1;
             } else {
                 changed.push(r);
@@ -719,7 +719,7 @@ async fn sync_issues(sh: &Shared<'_, '_>, ranges: &[Period]) -> Result<()> {
                         ));
                     }
                     let cursors = if bundle.status.is_complete() {
-                        vec![(issue_cursor(&r.node_id), r.updated_at.to_rfc3339())]
+                        vec![(issue_cursor(&r.node_id), r.updated_at.to_string())]
                     } else {
                         Vec::new()
                     };
@@ -769,7 +769,7 @@ async fn sync_issues(sh: &Shared<'_, '_>, ranges: &[Period]) -> Result<()> {
 }
 
 /// Repository id, creation and last update of a cached pull request.
-type CachedPr = (String, DateTime<Utc>, Option<DateTime<Utc>>);
+type CachedPr = (String, Timestamp, Option<Timestamp>);
 
 /// Most repository names listed in a coverage reason.
 const MAX_NAMED_REPOS: usize = 5;
@@ -1059,7 +1059,7 @@ fn stale_open_prs(
     subject: &Subject,
     opts: &SyncOptions,
 ) -> Result<Vec<(String, PrKey)>> {
-    let probe = Period::new(opts.now, opts.now + Duration::seconds(1))?;
+    let probe = Period::new(opts.now, opts.now + SignedDuration::from_secs(1))?;
     let ds = store.load_dataset(subject, false, Some(probe))?;
     Ok(ds
         .pull_requests
@@ -1111,7 +1111,7 @@ pub fn pr_batch(subject: &Subject, bundle: PrBundle) -> WriteBatch {
         .map(|e| e.observed_at)
         .max()
         .or(bundle.pull_request.synced_at)
-        .unwrap_or_else(Utc::now);
+        .unwrap_or_else(Timestamp::now);
     let present: HashSet<EventId> = bundle.events.iter().map(|e| e.event_id.clone()).collect();
     let present_threads = bundle.threads.iter().map(|t| t.id.clone()).collect();
     let pr_commits: Vec<PrCommitLink> = bundle

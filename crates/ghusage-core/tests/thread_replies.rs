@@ -1,14 +1,14 @@
 //! GitHub records every reply to a review thread as a review without a
 //! body. Such reviews are replies, not review submissions.
 
-use chrono::{DateTime, Utc};
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::metrics::{self, CommitDateBasis, Dataset, Filter, Options};
 use ghusage_core::model::*;
 use ghusage_core::time::{Period, Zone};
+use jiff::Timestamp;
 
-fn at(s: &str) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+fn at(s: &str) -> Timestamp {
+    s.parse().unwrap()
 }
 fn me() -> Actor {
     Actor::new(Some("U_me".into()), Some("me".into()), Some("User"))

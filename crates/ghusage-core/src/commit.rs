@@ -2,7 +2,7 @@
 //! GitHub. Unlike activity events this is a snapshot of content, not
 //! activity: it never contributes to any count.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::model::Visibility;
@@ -13,7 +13,7 @@ use crate::model::Visibility;
 pub struct CommitPerson {
     pub name: Option<String>,
     pub login: Option<String>,
-    pub date: Option<DateTime<Utc>>,
+    pub date: Option<Timestamp>,
 }
 
 impl CommitPerson {
@@ -135,7 +135,7 @@ pub struct CommitDetail {
     pub files_truncated: bool,
     /// Visibility of the repository when the commit was fetched.
     pub visibility: Visibility,
-    pub fetched_at: DateTime<Utc>,
+    pub fetched_at: Timestamp,
 }
 
 impl CommitDetail {

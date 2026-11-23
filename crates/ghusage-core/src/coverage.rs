@@ -3,7 +3,7 @@
 //! Incomplete fetches are never reported as complete. A `Complete` record
 //! always carries a scope describing exactly what was fetched.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -99,21 +99,21 @@ impl DataKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoverageRecord {
     pub kind: DataKind,
-    pub start: DateTime<Utc>,
-    pub end: DateTime<Utc>,
+    pub start: Timestamp,
+    pub end: Timestamp,
     pub status: CoverageStatus,
     /// What was fetched (event types and source range).
     pub scope: String,
     /// Why the status is not complete, when applicable.
     pub reason: Option<String>,
-    pub recorded_at: DateTime<Utc>,
+    pub recorded_at: Timestamp,
 }
 
 /// A contiguous part of a requested range with a single status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoverageSegment {
-    pub start: DateTime<Utc>,
-    pub end: DateTime<Utc>,
+    pub start: Timestamp,
+    pub end: Timestamp,
     pub status: CoverageStatus,
     pub reason: Option<String>,
 }
@@ -140,8 +140,8 @@ impl CoverageSummary {
 pub fn summarize(
     records: &[CoverageRecord],
     kind: DataKind,
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
+    start: Timestamp,
+    end: Timestamp,
 ) -> CoverageSummary {
     let mut relevant: Vec<&CoverageRecord> = records
         .iter()
@@ -217,10 +217,8 @@ pub fn summarize(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
-
-    fn t(d: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 1, d, 0, 0, 0).unwrap()
+    fn t(d: u32) -> Timestamp {
+        format!("2026-01-{d:02}T00:00:00Z").parse().unwrap()
     }
 
     fn rec(s: u32, e: u32, status: CoverageStatus, at: u32) -> CoverageRecord {

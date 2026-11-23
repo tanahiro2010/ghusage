@@ -27,7 +27,6 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use ghusage_core::coverage::{CoverageRecord, CoverageStatus, DataKind};
 use ghusage_core::metrics::{Dataset, LineCounts, PrDiff};
 use ghusage_core::model::{
@@ -35,6 +34,7 @@ use ghusage_core::model::{
     PullRequest, Repository, ReviewThread, Source, Subject, Visibility,
 };
 use ghusage_core::time::Period;
+use jiff::Timestamp;
 use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, Row, Transaction, params};
 
 use codec::{
@@ -91,7 +91,7 @@ pub struct PrCommitLink {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrSnapshot {
     pub pr_id: String,
-    pub observed_at: DateTime<Utc>,
+    pub observed_at: Timestamp,
     /// Collections fetched completely in this sync. For each, stored events
     /// of this PR in that collection whose ids are not in `present` get
     /// `removed_observed_at = observed_at`; present ones get it cleared.
@@ -139,7 +139,7 @@ pub struct CommitStats {
     pub repository_id: String,
     pub sha: String,
     pub counts: LineCounts,
-    pub observed_at: DateTime<Utc>,
+    pub observed_at: Timestamp,
 }
 
 /// Bookkeeping of one sync run.
@@ -147,12 +147,12 @@ pub struct CommitStats {
 pub struct SyncRun {
     pub id: i64,
     pub account: String,
-    pub started_at: DateTime<Utc>,
-    pub finished_at: Option<DateTime<Utc>>,
+    pub started_at: Timestamp,
+    pub finished_at: Option<Timestamp>,
     /// `running`, `success`, `partial`, `failed`.
     pub status: String,
-    pub period_start: Option<DateTime<Utc>>,
-    pub period_end: Option<DateTime<Utc>>,
+    pub period_start: Option<Timestamp>,
+    pub period_end: Option<Timestamp>,
     /// JSON object with API statistics (request count, retries, ...).
     pub stats_json: Option<String>,
     pub message: Option<String>,
@@ -162,8 +162,8 @@ pub struct SyncRun {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrSyncState {
     pub pr_id: String,
-    pub updated_at: Option<DateTime<Utc>>,
-    pub synced_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<Timestamp>,
+    pub synced_at: Option<Timestamp>,
     pub coverage: ghusage_core::coverage::CoverageStatus,
 }
 
@@ -831,7 +831,7 @@ impl Store {
         &mut self,
         account: &str,
         period: Option<Period>,
-        started_at: DateTime<Utc>,
+        started_at: Timestamp,
     ) -> Result<i64> {
         (|| {
             let tx = self.conn.transaction()?;
@@ -861,7 +861,7 @@ impl Store {
         &mut self,
         id: i64,
         status: &str,
-        finished_at: DateTime<Utc>,
+        finished_at: Timestamp,
         stats_json: Option<&str>,
         message: Option<&str>,
     ) -> Result<()> {
@@ -996,7 +996,7 @@ fn ensure_account(tx: &Transaction<'_>, login: &str) -> Result<i64> {
     tx.execute(
         "INSERT INTO accounts (login, created_at) VALUES (?1, ?2) \
          ON CONFLICT(login) DO NOTHING",
-        params![login, Utc::now().timestamp()],
+        params![login, Timestamp::now().as_second()],
     )?;
     Ok(account_id(tx, login)?.expect("account row was just ensured"))
 }
@@ -1144,7 +1144,7 @@ fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
         )?;
     }
 
-    let mut removal_time: HashMap<&str, DateTime<Utc>> = HashMap::new();
+    let mut removal_time: HashMap<&str, Timestamp> = HashMap::new();
     for s in &b.pr_snapshots {
         apply_snapshot(tx, s, current_links.get(s.pr_id.as_str()))?;
         removal_time.insert(s.pr_id.as_str(), s.observed_at);
@@ -1152,7 +1152,7 @@ fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
 
     // Commits that are no longer part of their pull request keep their link
     // (history) but their commit event is marked removed.
-    let now = Utc::now();
+    let now = Timestamp::now();
     let mut stmt = tx.prepare(
         "SELECT pr_id, sha FROM pull_request_commits WHERE is_current = 0 AND pr_id = ?1",
     )?;
@@ -1481,7 +1481,7 @@ fn upsert_pr_commit(tx: &Transaction<'_>, l: &PrCommitLink) -> Result<()> {
 }
 
 /// Sets the removal observation of an event unless one is already stored.
-fn mark_removed(tx: &Transaction<'_>, event_id: &str, at: DateTime<Utc>) -> Result<()> {
+fn mark_removed(tx: &Transaction<'_>, event_id: &str, at: Timestamp) -> Result<()> {
     tx.execute(
         "UPDATE activity_events SET removed_observed_at = ?2, removed_observed_at_ns = ?3 \
          WHERE event_id = ?1 AND removed_observed_at IS NULL",

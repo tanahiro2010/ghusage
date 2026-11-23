@@ -104,7 +104,7 @@ fn sync_blocking(
                 "core {}/{} (resets {}), graphql {}/{}, search {}/{}",
                 r.core_remaining,
                 r.core_limit,
-                r.core_reset.format("%Y-%m-%d %H:%M UTC"),
+                r.core_reset.strftime("%Y-%m-%d %H:%M UTC"),
                 r.graphql_remaining,
                 r.graphql_limit,
                 r.search_remaining,

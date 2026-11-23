@@ -1,7 +1,6 @@
 //! Shared builders for the aggregation test suites.
 #![allow(dead_code)]
 
-use chrono::{DateTime, NaiveDate, Utc};
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::metrics::{CommitDateBasis, Dataset, Filter, Options};
 use ghusage_core::model::{
@@ -9,15 +8,15 @@ use ghusage_core::model::{
     Repository, ReviewThread, Source, Subject, Visibility,
 };
 use ghusage_core::time::{Period, Zone};
+use jiff::{Timestamp, civil::Date};
 
-pub fn utc(s: &str) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(s)
+pub fn utc(s: &str) -> Timestamp {
+    s.parse()
         .unwrap_or_else(|e| panic!("bad timestamp {s}: {e}"))
-        .with_timezone(&Utc)
 }
 
-pub fn date(s: &str) -> NaiveDate {
-    NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+pub fn date(s: &str) -> Date {
+    s.parse().unwrap()
 }
 
 pub fn zone(name: &str) -> Zone {
@@ -120,7 +119,7 @@ pub fn event(
     actor: Actor,
     repository_id: &str,
     pr: Option<&str>,
-    at: DateTime<Utc>,
+    at: Timestamp,
 ) -> ActivityEvent {
     ActivityEvent {
         entity_id: id.0.clone(),

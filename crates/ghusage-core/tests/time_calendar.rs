@@ -8,6 +8,7 @@ use common::*;
 use ghusage_core::metrics::{self, summary};
 use ghusage_core::model::Visibility;
 use ghusage_core::time::{Granularity, Period, bucket_key, buckets, parse_bound, resolve_period};
+use jiff::SignedDuration;
 
 fn commits_dataset(times: &[&str]) -> ghusage_core::metrics::Dataset {
     let events = times
@@ -35,9 +36,10 @@ fn per_bucket(
 }
 
 fn minutes(p: Period, z: &str, g: Granularity) -> Vec<i64> {
-    buckets(p, zone(z), g)
+    let zone = zone(z);
+    buckets(p, &zone, g)
         .iter()
-        .map(|b| (b.end - b.start).num_minutes())
+        .map(|b| b.end.duration_since(b.start).as_secs() / 60)
         .collect()
 }
 
@@ -72,7 +74,7 @@ fn adjacent_periods_count_a_boundary_event_exactly_once() {
 fn empty_or_inverted_period_is_rejected() {
     let t = utc("2026-11-20T00:00:00Z");
     assert!(Period::new(t, t).is_err());
-    assert!(Period::new(t, t - chrono::Duration::seconds(1)).is_err());
+    assert!(Period::new(t, t - SignedDuration::from_secs(1)).is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -83,7 +85,8 @@ fn empty_or_inverted_period_is_rejected() {
 fn weeks_start_on_monday_and_are_clipped_to_the_period() {
     // 2026-11-18 is a Wednesday; 2026-12-02 is a Wednesday.
     let p = Period::new(utc("2026-11-18T00:00:00Z"), utc("2026-12-02T00:00:00Z")).unwrap();
-    let b = buckets(p, zone("UTC"), Granularity::Week);
+    let zone = zone("UTC");
+    let b = buckets(p, &zone, Granularity::Week);
     let keys: Vec<_> = b.iter().map(|b| b.key).collect();
     assert_eq!(
         keys,
@@ -111,11 +114,11 @@ fn tokyo_week_boundary_differs_from_utc() {
     // 2026-11-22T15:00Z is Sunday in UTC but Monday 00:00 in Tokyo.
     let t = utc("2026-11-22T15:00:00Z");
     assert_eq!(
-        bucket_key(t, zone("UTC"), Granularity::Week),
+        bucket_key(t, &zone("UTC"), Granularity::Week),
         date("2026-11-16")
     );
     assert_eq!(
-        bucket_key(t, zone("Asia/Tokyo"), Granularity::Week),
+        bucket_key(t, &zone("Asia/Tokyo"), Granularity::Week),
         date("2026-11-23")
     );
     let ds = commits_dataset(&["2026-11-22T15:00:00Z"]);
@@ -143,8 +146,8 @@ fn months_are_calendar_months() {
 #[test]
 fn tokyo_month_starts_at_utc_15_00_of_the_previous_day() {
     let tokyo = zone("Asia/Tokyo");
-    let opts = local_days("2026-01-01", "2026-03-01", tokyo);
-    let b = buckets(opts.period, tokyo, Granularity::Month);
+    let opts = local_days("2026-01-01", "2026-03-01", tokyo.clone());
+    let b = buckets(opts.period, &tokyo, Granularity::Month);
     assert_eq!(b.len(), 2);
     assert_eq!(b[1].key, date("2026-02-01"));
     assert_eq!(b[1].start, utc("2026-01-31T15:00:00Z"));
@@ -157,14 +160,14 @@ fn tokyo_month_starts_at_utc_15_00_of_the_previous_day() {
 fn year_end_is_split_by_month_but_shares_an_iso_week() {
     let ds = commits_dataset(&["2026-12-31T23:59:59Z", "2027-01-01T00:00:00Z"]);
     let utc_zone = zone("UTC");
-    let months = local_days("2026-12-01", "2027-02-01", utc_zone);
+    let months = local_days("2026-12-01", "2027-02-01", utc_zone.clone());
     assert_eq!(per_bucket(&ds, &months, Granularity::Month), vec![1, 1]);
-    let days = local_days("2026-12-31", "2027-01-02", utc_zone);
+    let days = local_days("2026-12-31", "2027-01-02", utc_zone.clone());
     assert_eq!(per_bucket(&ds, &days, Granularity::Day), vec![1, 1]);
     // 2026-12-31 is a Thursday: its week starts Monday 2026-12-28, which is
     // ISO week 53 of 2026 (2026 starts on a Thursday). 2027-01-01 (Friday)
     // belongs to that same week.
-    let weeks = local_days("2026-12-28", "2027-01-04", utc_zone);
+    let weeks = local_days("2026-12-28", "2027-01-04", utc_zone.clone());
     let b = metrics::breakdown(&ds, &weeks, Granularity::Week);
     assert_eq!(b.len(), 1);
     assert_eq!(b[0].bucket.label, "2026-W53");
@@ -187,7 +190,7 @@ fn tokyo_new_year_starts_nine_hours_earlier_than_utc() {
 #[test]
 fn leap_day_2028_is_its_own_day() {
     let feb = local_days("2028-02-01", "2028-03-01", zone("UTC"));
-    let b = buckets(feb.period, feb.zone, Granularity::Day);
+    let b = buckets(feb.period, &feb.zone, Granularity::Day);
     assert_eq!(b.len(), 29);
     assert_eq!(b[28].key, date("2028-02-29"));
     assert_eq!(b[28].label, "2028-02-29");
@@ -209,7 +212,7 @@ fn leap_day_2028_is_its_own_day() {
     // the following year has no leap day
     let feb27 = local_days("2027-02-01", "2027-03-01", zone("UTC"));
     assert_eq!(
-        buckets(feb27.period, feb27.zone, Granularity::Day).len(),
+        buckets(feb27.period, &feb27.zone, Granularity::Day).len(),
         28
     );
 }
@@ -229,12 +232,12 @@ fn leap_day_in_tokyo_starts_at_utc_15_00_on_the_28th() {
 #[test]
 fn new_york_dst_days_are_23_and_25_hours() {
     let ny = zone("America/New_York");
-    let spring = local_days("2026-03-07", "2026-03-10", ny);
+    let spring = local_days("2026-03-07", "2026-03-10", ny.clone());
     assert_eq!(
         minutes(spring.period, "America/New_York", Granularity::Day),
         vec![1440, 23 * 60, 1440]
     );
-    let fall = local_days("2026-10-31", "2026-11-03", ny);
+    let fall = local_days("2026-10-31", "2026-11-03", ny.clone());
     assert_eq!(
         minutes(fall.period, "America/New_York", Granularity::Day),
         vec![1440, 25 * 60, 1440]
@@ -245,10 +248,10 @@ fn new_york_dst_days_are_23_and_25_hours() {
 fn london_dst_days_are_23_and_25_hours() {
     let london = zone("Europe/London");
     // BST starts Sunday 2026-03-29 and ends Sunday 2026-10-25.
-    let spring = local_days("2026-03-29", "2026-03-30", london);
+    let spring = local_days("2026-03-29", "2026-03-30", london.clone());
     assert_eq!(spring.period.start, utc("2026-03-29T00:00:00Z"));
     assert_eq!(spring.period.end, utc("2026-03-29T23:00:00Z"));
-    let fall = local_days("2026-10-25", "2026-10-26", london);
+    let fall = local_days("2026-10-25", "2026-10-26", london.clone());
     assert_eq!(fall.period.start, utc("2026-10-24T23:00:00Z"));
     assert_eq!(fall.period.end, utc("2026-10-26T00:00:00Z"));
     assert_eq!(
@@ -321,15 +324,15 @@ fn date_bounds_cover_whole_local_days_across_dst() {
     let now = utc("2026-11-21T03:00:00Z");
     // start of 03-08 is midnight EST; the inclusive end is midnight EDT of 03-09
     assert_eq!(
-        parse_bound("2026-03-08", ny, false, now).unwrap(),
+        parse_bound("2026-03-08", &ny, false, now).unwrap(),
         utc("2026-03-08T05:00:00Z")
     );
     assert_eq!(
-        parse_bound("2026-03-08", ny, true, now).unwrap(),
+        parse_bound("2026-03-08", &ny, true, now).unwrap(),
         utc("2026-03-09T04:00:00Z")
     );
-    let p = resolve_period(Some("2026-03-08"), Some("2026-03-08"), "7d", ny, now).unwrap();
-    assert_eq!((p.end - p.start).num_hours(), 23);
+    let p = resolve_period(Some("2026-03-08"), Some("2026-03-08"), "7d", &ny, now).unwrap();
+    assert_eq!((p.end - p.start).as_hours(), 23);
 }
 
 #[test]
@@ -339,7 +342,7 @@ fn utc_and_tokyo_date_bounds() {
         Some("2026-11-01"),
         Some("2026-11-30"),
         "7d",
-        zone("UTC"),
+        &zone("UTC"),
         now,
     )
     .unwrap();
@@ -349,7 +352,7 @@ fn utc_and_tokyo_date_bounds() {
         Some("2026-11-01"),
         Some("2026-11-30"),
         "7d",
-        zone("Asia/Tokyo"),
+        &zone("Asia/Tokyo"),
         now,
     )
     .unwrap();
@@ -362,7 +365,7 @@ fn buckets_partition_partial_day_periods() {
     // Starts and ends mid-day in Tokyo; the first and last buckets are clipped.
     let p = Period::new(utc("2026-11-20T10:00:00Z"), utc("2026-11-23T02:00:00Z")).unwrap();
     for g in [Granularity::Day, Granularity::Week, Granularity::Month] {
-        let b = buckets(p, zone("Asia/Tokyo"), g);
+        let b = buckets(p, &zone("Asia/Tokyo"), g);
         assert_eq!(b.first().unwrap().start, p.start);
         assert_eq!(b.last().unwrap().end, p.end);
         for w in b.windows(2) {
@@ -370,7 +373,7 @@ fn buckets_partition_partial_day_periods() {
         }
     }
     // Tokyo days touched: 11-20 (19:00..), 11-21, 11-22, 11-23 (..11:00)
-    assert_eq!(buckets(p, zone("Asia/Tokyo"), Granularity::Day).len(), 4);
+    assert_eq!(buckets(p, &zone("Asia/Tokyo"), Granularity::Day).len(), 4);
 }
 
 #[test]
@@ -400,10 +403,10 @@ fn relative_years_start_on_january_first() {
     let now = utc("2026-11-21T03:00:00Z");
     let utc_zone = zone("UTC");
     // 1y: this calendar year; 3y: this year and the two before.
-    let p = resolve_period(Some("1y"), None, "7d", utc_zone, now).unwrap();
+    let p = resolve_period(Some("1y"), None, "7d", &utc_zone, now).unwrap();
     assert_eq!(p.start, utc("2026-01-01T00:00:00Z"));
-    let p = resolve_period(Some("3y"), None, "7d", utc_zone, now).unwrap();
+    let p = resolve_period(Some("3y"), None, "7d", &utc_zone, now).unwrap();
     assert_eq!(p.start, utc("2024-01-01T00:00:00Z"));
     assert_eq!(p.end, now);
-    assert!(resolve_period(Some("0y"), None, "7d", utc_zone, now).is_err());
+    assert!(resolve_period(Some("0y"), None, "7d", &utc_zone, now).is_err());
 }

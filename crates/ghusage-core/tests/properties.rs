@@ -7,7 +7,6 @@
 
 mod common;
 
-use chrono::{DateTime, Duration, Utc};
 use common::*;
 use ghusage_core::coverage::{CoverageRecord, CoverageStatus, DataKind, summarize};
 use ghusage_core::metrics::{
@@ -19,6 +18,7 @@ use ghusage_core::model::{
     ReviewState, ReviewThread, Source, Visibility,
 };
 use ghusage_core::time::{Granularity, Period, Zone};
+use jiff::{SignedDuration, Timestamp};
 use proptest::prelude::*;
 use proptest::test_runner::{Config, FileFailurePersistence};
 use std::collections::{BTreeSet, HashSet};
@@ -49,7 +49,7 @@ const REPOS: [&str; 3] = ["R0", "R1", "R2"];
 const SPAN: i64 = 2 * 365 * 86_400;
 const SHAS: usize = 12;
 
-fn base() -> DateTime<Utc> {
+fn base() -> Timestamp {
     utc("2025-01-01T00:00:00Z")
 }
 
@@ -161,7 +161,7 @@ fn raw_event() -> impl Strategy<Value = RawEvent> {
         )
 }
 
-fn timestamp(secs: i64, snap: u8) -> DateTime<Utc> {
+fn timestamp(secs: i64, snap: u8) -> Timestamp {
     // Bias some instants onto hour/day boundaries, where off-by-one errors live.
     let s = match snap {
         0 => secs - secs % 86_400,
@@ -169,7 +169,7 @@ fn timestamp(secs: i64, snap: u8) -> DateTime<Utc> {
         2 => secs - secs % 1_800,
         _ => secs,
     };
-    base() + Duration::seconds(s)
+    base() + SignedDuration::from_secs(s)
 }
 
 fn build_event(i: usize, r: &RawEvent) -> ActivityEvent {
@@ -202,7 +202,7 @@ fn build_event(i: usize, r: &RawEvent) -> ActivityEvent {
     let m = &mut e.meta;
     if matches!(ty, CommitAuthored | PrCommit) {
         m.sha = Some(sha);
-        m.author_date = Some(at - Duration::seconds(r.author_shift));
+        m.author_date = Some(at - SignedDuration::from_secs(r.author_shift));
         m.is_merge_commit = Some(f & 1 == 1);
     }
     if ty == ReviewSubmitted {
@@ -300,11 +300,12 @@ fn opts_strategy() -> impl Strategy<Value = Options> {
     (0..SPAN, 1..SPAN, 0..ZONES.len(), any::<bool>(), 0..4u8).prop_map(
         |(start, len, z, author_basis, snap)| {
             let start_t = timestamp(start, snap);
-            let end_t = (start_t + Duration::seconds(len)).min(base() + Duration::seconds(SPAN));
+            let end_t = (start_t + SignedDuration::from_secs(len))
+                .min(base() + SignedDuration::from_secs(SPAN));
             let (s, e) = if start_t < end_t {
                 (start_t, end_t)
             } else {
-                (base(), base() + Duration::seconds(SPAN))
+                (base(), base() + SignedDuration::from_secs(SPAN))
             };
             Options {
                 period: Period::new(s, e).unwrap(),
@@ -422,7 +423,7 @@ fn countable(e: &ActivityEvent) -> bool {
             && e.meta.review_state == Some(ReviewState::Pending))
 }
 
-fn time_of(e: &ActivityEvent, basis: CommitDateBasis) -> DateTime<Utc> {
+fn time_of(e: &ActivityEvent, basis: CommitDateBasis) -> Timestamp {
     match (e.event_type, basis) {
         (EventType::CommitAuthored | EventType::PrCommit, CommitDateBasis::Author) => {
             e.meta.author_date.unwrap_or(e.occurred_at)
@@ -476,11 +477,11 @@ proptest! {
                     0 => {}
                     1 => {
                         copy.source = Source::Rest;
-                        copy.observed_at = utc("2027-01-01T00:00:00Z") + Duration::hours(k as i64);
+                        copy.observed_at = utc("2027-01-01T00:00:00Z") + SignedDuration::from_hours(k as i64);
                     }
                     _ => {
                         copy.source = Source::Search;
-                        copy.observed_at = utc(OBSERVED) + Duration::hours(k as i64 + 1);
+                        copy.observed_at = utc(OBSERVED) + SignedDuration::from_hours(k as i64 + 1);
                     }
                 }
                 events.push(copy);
@@ -501,10 +502,10 @@ proptest! {
         cuts in prop::collection::vec(any::<prop::sample::Index>(), 0..6),
     ) {
         let ds = w.dataset();
-        let len = (o.period.end - o.period.start).num_seconds();
-        let mut points: BTreeSet<DateTime<Utc>> = cuts
+        let len = (o.period.end - o.period.start).as_secs();
+        let mut points: BTreeSet<Timestamp> = cuts
             .iter()
-            .map(|c| o.period.start + Duration::seconds(c.index(len as usize) as i64))
+            .map(|c| o.period.start + SignedDuration::from_secs(c.index(len as usize) as i64))
             .filter(|t| *t > o.period.start)
             .collect();
         points.insert(o.period.start);
@@ -596,8 +597,8 @@ proptest! {
             zo.zone = Zone::parse(name).unwrap();
             let days = metrics::breakdown(&ds, &zo, Granularity::Day);
             prop_assert_eq!(sum_additive(days.iter().map(|x| &x.summary)), expected.clone(), "zone {}", name);
-            let covered_secs: i64 = days.iter().map(|d| (d.bucket.end - d.bucket.start).num_seconds()).sum();
-            prop_assert_eq!(covered_secs, (o.period.end - o.period.start).num_seconds());
+            let covered_secs: i64 = days.iter().map(|d| (d.bucket.end - d.bucket.start).as_secs()).sum();
+            prop_assert_eq!(covered_secs, (o.period.end - o.period.start).as_secs());
         }
     }
 
@@ -654,8 +655,8 @@ proptest! {
         at in any::<prop::sample::Index>(),
         kind in 0..3usize,
     ) {
-        let len = (o.period.end - o.period.start).num_seconds() as usize;
-        let t = o.period.start + Duration::seconds(at.index(len) as i64);
+        let len = (o.period.end - o.period.start).as_secs() as usize;
+        let t = o.period.start + SignedDuration::from_secs(at.index(len) as i64);
         let (pr_id, repo_id, _) = PRS[pr];
         let (ty, id) = match kind {
             0 => (EventType::ReviewSubmitted, EventId::review("added")),
@@ -695,7 +696,7 @@ proptest! {
     ) {
         let (pr_id, repo_id, author) = PRS[pr];
         let pr_is_mine = is_me(&actors()[author]);
-        let len = (o.period.end - o.period.start).num_seconds() as usize;
+        let len = (o.period.end - o.period.start).as_secs() as usize;
         let states = [
             ReviewState::Approved,
             ReviewState::ChangesRequested,
@@ -722,7 +723,7 @@ proptest! {
                 actor,
                 repo_id,
                 Some(pr_id),
-                o.period.start + Duration::seconds(at.index(len) as i64),
+                o.period.start + SignedDuration::from_secs(at.index(len) as i64),
             );
             e.meta.review_state = Some(state);
             events.push(e);
@@ -784,8 +785,8 @@ proptest! {
         merger in 0..6usize,
     ) {
         let zone = Zone::parse(ZONES[z]).unwrap();
-        let t1 = base() + Duration::seconds(created);
-        let t2 = t1 + Duration::seconds(delay);
+        let t1 = base() + SignedDuration::from_secs(created);
+        let t2 = t1 + SignedDuration::from_secs(delay);
         let mut pr = pull("PM", "R0", 1, me());
         pr.state = PrState::Merged;
         pr.created_at = t1;
@@ -799,7 +800,7 @@ proptest! {
         let start = zone.start_of_day(zone.local_date(t1));
         let creation = Options {
             period: Period::new(start, t2).unwrap(),
-            zone,
+            zone: zone.clone(),
             filter: Filter::default(),
             commit_basis: CommitDateBasis::Committer,
         };
@@ -808,7 +809,7 @@ proptest! {
         prop_assert_eq!(s.prs_merged, 0);
         // daily view: created on t1's local date, merged on t2's local date
         let mut days = creation.clone();
-        days.period = Period::new(start, zone.start_of_day(zone.local_date(t2) + Duration::days(1))).unwrap();
+        days.period = Period::new(start, zone.start_of_day(zone.local_date(t2) + SignedDuration::from_hours(24))).unwrap();
         for b in metrics::breakdown(&ds, &days, Granularity::Day) {
             prop_assert_eq!(b.summary.prs_created, u64::from(b.bucket.key == zone.local_date(t1)));
             prop_assert_eq!(b.summary.prs_merged, u64::from(b.bucket.key == zone.local_date(t2)));
@@ -828,8 +829,8 @@ const STATUSES: [CoverageStatus; 5] = [
     CoverageStatus::Unknown,
 ];
 
-fn hour(h: i64) -> DateTime<Utc> {
-    utc("2026-01-01T00:00:00Z") + Duration::hours(h)
+fn hour(h: i64) -> Timestamp {
+    utc("2026-01-01T00:00:00Z") + SignedDuration::from_hours(h)
 }
 
 #[derive(Debug, Clone)]
@@ -875,7 +876,7 @@ fn records(raw: &[RawRecord]) -> Vec<CoverageRecord> {
 
 /// Status of one instant: the latest-recorded record covering it, or
 /// "not yet synced" when nothing covers it.
-fn status_at(recs: &[CoverageRecord], t: DateTime<Utc>) -> CoverageStatus {
+fn status_at(recs: &[CoverageRecord], t: Timestamp) -> CoverageStatus {
     recs.iter()
         .filter(|r| r.kind == DataKind::Commits && r.start <= t && t < r.end)
         .max_by_key(|r| r.recorded_at)
@@ -936,7 +937,7 @@ proptest! {
             let mut t = seg.start;
             while t < seg.end {
                 prop_assert_eq!(seg.status, status_at(&recs, t));
-                t += Duration::hours(1);
+                t += SignedDuration::from_hours(1);
             }
         }
 
