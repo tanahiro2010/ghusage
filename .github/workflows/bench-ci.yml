@@ -100,11 +100,9 @@ jobs:
           tool: cargo-nextest
 
       - name: Run benchmark
-        env:
-          SCENARIO: ${{ inputs.scenario }}
         run: >-
           node scripts/ci/ci-speed-benchmark.mjs
-          --scenario "$SCENARIO"
+          --scenario "${{ inputs.scenario }}"
           --output "${{ runner.temp }}/ci-speed-${{ matrix.os }}.json"
 
       - name: Upload benchmark result
@@ -164,13 +162,10 @@ jobs:
           echo "CI_SPEED_RUST_CACHE_HIT=$RUST_CACHE_HIT" >> "$GITHUB_ENV"
 
       - name: Run package benchmark
-        env:
-          SCENARIO: ${{ inputs.scenario }}
-          PACKAGE: ${{ matrix.package }}
         run: >-
           node scripts/ci/ci-speed-benchmark.mjs
-          --scenario "$SCENARIO"
-          --package "$PACKAGE"
+          --scenario "${{ inputs.scenario }}"
+          --package "${{ matrix.package }}"
           --output "${{ runner.temp }}/ci-speed-${{ matrix.package }}.json"
 
       - name: Upload package result
