@@ -132,6 +132,16 @@ pub struct WriteBatch {
     pub cursors: Vec<(String, String)>,
 }
 
+/// A commit stored for an account, as [`Store::commits_in`] lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredCommit {
+    pub repository_id: String,
+    /// The SHA in lower case.
+    pub sha: String,
+    /// How the commit was found.
+    pub source: Source,
+}
+
 /// Lines added and deleted by one commit, as GitHub reported them at
 /// `observed_at`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -787,6 +797,111 @@ impl Store {
             )
             .map(|n| n > 0)
             .map_err(|e| classify(e.into()))
+    }
+
+    /// The commits of `account` with committer date in `period`, from every
+    /// source, without the commits listed inside pull requests.
+    pub fn commits_in(&self, account: &str, period: Period) -> Result<Vec<StoredCommit>> {
+        (|| {
+            let Some(account_id) = account_id(&self.conn, account)? else {
+                return Ok(Vec::new());
+            };
+            // Coarse filter on whole seconds, then the exact half-open check.
+            let mut stmt = self.conn.prepare_cached(
+                "SELECT e.event_id, e.repository_id, e.source, e.occurred_at, e.occurred_at_ns \
+                 FROM activity_events e \
+                 JOIN account_events ae ON ae.event_id = e.event_id \
+                 WHERE ae.account_id = ?1 AND e.event_type = ?2 \
+                 AND e.parent_pr_id IS NULL AND e.occurred_at BETWEEN ?3 AND ?4 \
+                 ORDER BY e.event_id",
+            )?;
+            let mut rows = stmt.query(params![
+                account_id,
+                EventType::CommitAuthored.as_str(),
+                secs(period.start),
+                secs(period.end),
+            ])?;
+            let mut out = Vec::new();
+            while let Some(r) = rows.next()? {
+                let at = time(r.get("occurred_at")?, r.get("occurred_at_ns")?)?;
+                if !period.contains(at) {
+                    continue;
+                }
+                let source: String = r.get("source")?;
+                // `commit:{repository}:{sha}`, with the SHA in lower case.
+                let event_id: String = r.get("event_id")?;
+                let Some((_, sha)) = event_id.rsplit_once(':') else {
+                    return Err(StorageError::Data(format!(
+                        "malformed commit event id {event_id:?}"
+                    )));
+                };
+                out.push(StoredCommit {
+                    repository_id: r.get("repository_id")?,
+                    sha: sha.to_owned(),
+                    source: Source::parse(&source).ok_or_else(|| {
+                        StorageError::Data(format!("unknown event source {source:?}"))
+                    })?,
+                });
+            }
+            Ok(out)
+        })()
+        .map_err(classify)
+    }
+
+    /// Removes the given commits (repository id and SHA) from `account` when
+    /// they were found by commit search or a default-branch listing; commits
+    /// known through pull requests stay. A repository left with no commits,
+    /// pull requests or issues of the account is removed from the account
+    /// too. Stored rows stay for other accounts. Returns the number of
+    /// commits removed.
+    pub fn remove_listed_commits(
+        &mut self,
+        account: &str,
+        commits: &[(String, String)],
+    ) -> Result<usize> {
+        (|| {
+            let tx = self.conn.transaction()?;
+            let Some(account_id) = account_id(&tx, account)? else {
+                return Ok(0);
+            };
+            let mut removed = 0;
+            let mut repos: Vec<&str> = Vec::new();
+            for (repo_id, sha) in commits {
+                removed += tx.execute(
+                    "DELETE FROM account_events WHERE account_id = ?1 AND event_id = ?2 \
+                     AND event_id IN (SELECT event_id FROM activity_events \
+                         WHERE event_id = ?2 AND source IN (?3, ?4))",
+                    params![
+                        account_id,
+                        EventId::commit(repo_id, sha).as_str(),
+                        Source::Search.as_str(),
+                        Source::Rest.as_str(),
+                    ],
+                )?;
+                repos.push(repo_id);
+            }
+            repos.sort_unstable();
+            repos.dedup();
+            for repo_id in repos {
+                tx.execute(
+                    "DELETE FROM account_repositories \
+                     WHERE account_id = ?1 AND repository_id = ?2 \
+                     AND NOT EXISTS (SELECT 1 FROM account_events ae \
+                         JOIN activity_events e ON e.event_id = ae.event_id \
+                         WHERE ae.account_id = ?1 AND e.repository_id = ?2) \
+                     AND NOT EXISTS (SELECT 1 FROM account_pull_requests ap \
+                         JOIN pull_requests p ON p.id = ap.pr_id \
+                         WHERE ap.account_id = ?1 AND p.repository_id = ?2) \
+                     AND NOT EXISTS (SELECT 1 FROM account_issues ai \
+                         JOIN issues i ON i.id = ai.issue_id \
+                         WHERE ai.account_id = ?1 AND i.repository_id = ?2)",
+                    params![account_id, repo_id],
+                )?;
+            }
+            tx.commit()?;
+            Ok(removed)
+        })()
+        .map_err(classify)
     }
 
     pub fn coverage(&self, account: &str) -> Result<Vec<CoverageRecord>> {

@@ -10,7 +10,7 @@ For the requested period, a sync fetches three kinds of data:
 
 | Data kind | How it is found | What is stored |
 |---|---|---|
-| `commits` | Commits whose author is your account, by committer date: GitHub commit search, plus the default-branch commit list of each of your repositories pushed to in the period and each repository with your commits or pull requests | Commits, plus your commits found inside synced pull requests |
+| `commits` | Commits whose author is your account, by committer date: GitHub commit search, plus the default-branch commit list of each of your repositories pushed to in the period and each repository you are related to with your commits or pull requests. Copies of your commits are left out | Commits, plus your commits found inside synced pull requests |
 | `pull_requests` | Issue search: pull requests that `involves:` you or are `reviewed-by:` you, updated in the period | Each pull request with all of its commits (including their line counts), reviews, review threads and their comments, conversation comments, timeline events, the CI results of its head commit, its current diff and how it was merged |
 | `issues` | Issue search: issues that `involves:` you, updated in the period | Each issue with its open/close/reopen history |
 
@@ -27,19 +27,32 @@ it has indexed. `ghusage` therefore also lists commits directly:
    missing range (`GET /user/repos`, newest push first, stopping at the first older
    repository). With `--user`, only the other user's own repositories are
    visible (`GET /users/{login}/repos`).
-2. It adds repositories in which commit search found your commits and
-   repositories of the pull requests found by the sync.
+2. It adds repositories of the pull requests found by the sync, and
+   repositories in which commit search found your commits if you are
+   related to them: repositories you own, repositories in the list of
+   step 1, and repositories with your pull requests or issues.
 3. For each of these repositories (forks excluded, and private ones
    excluded with `--public-only`) it lists your commits on the default
    branch in the range (`GET /repos/{owner}/{repo}/commits?author=...`).
+
+Commit search also finds your commits in repositories you are not known to
+be related to. Some of them are legitimate: with `--user`, for example, a
+repository where the other user pushes directly as a collaborator is not in
+their repository list. Others only contain a copy of your commits, such as
+someone else's project uploaded again as a new repository instead of forked
+(GitHub does not mark those as forks). The two cannot always be told apart,
+so search results in these repositories are kept, from search alone (their
+default branches are not listed), except copies: a commit whose SHA is also
+found in a repository you are related to is skipped.
 
 A commit found by search, by a listing and inside a pull request is stored
 once. This costs at least one request per repository, so the number of API
 requests grows with the number of repositories you were active in.
 Commits coverage is `complete` only when commit search and every listing
 succeeded. Commits coverage recorded by older versions, which relied on
-commit search alone, is not reused: the next sync fetches those ranges
-again.
+commit search alone or counted copies of your commits, is not reused: the
+next sync fetches those ranges again and removes the copies stored for
+them.
 
 ### Line counts
 
@@ -224,8 +237,9 @@ times, the most recent sync decides its status.
 
 "Complete" always refers to a stated scope. For commits, for example, the
 scope is "commits authored by you on the default branches of repositories you
-pushed to or contributed to (repository listing + commit search), plus
-commits of synced pull requests". The
+pushed to or contributed to (repository listing + commit search; other
+repositories by commit search alone, copies excluded), plus commits of
+synced pull requests". The
 scope strings are included in JSON output. See
 [Known limitations](../reference/limitations.md) for what lies outside these
 scopes.

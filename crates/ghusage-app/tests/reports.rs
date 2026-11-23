@@ -344,6 +344,13 @@ fn commit_coverage_from_search_alone_is_synced_again() {
         ranges_to_fetch(&old, DataKind::Commits, &opts),
         vec![opts.period]
     );
+    // Listing records written while search results from unrelated
+    // repositories were still taken are synced again too.
+    let unfiltered = rec(
+        DataKind::Commits,
+        "commits authored by me on the default branches of repositories me pushed to or contributed to (repository listing + commit search), plus commits of synced pull requests".into(),
+    );
+    assert_eq!(applicable_coverage(vec![unfiltered], false), vec![]);
 }
 
 #[test]
