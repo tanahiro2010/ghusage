@@ -308,7 +308,6 @@ fn check_header(path: &Path) -> Result<()> {
     Ok(())
 }
 
-
 const ASSOC_REPO: &str = "INSERT INTO account_repositories (account_id, repository_id) \
                           VALUES (?1, ?2) ON CONFLICT DO NOTHING";
 const ASSOC_PR: &str = "INSERT INTO account_pull_requests (account_id, pr_id) \
