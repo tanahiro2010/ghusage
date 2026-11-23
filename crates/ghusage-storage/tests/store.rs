@@ -1228,7 +1228,7 @@ fn read_only_cache_returns_an_error_and_keeps_data() {
     extra.events.push(commit_event("R1", "zzz999", t(6, 0)));
     match Store::open(&path) {
         Ok(mut s) => assert!(s.apply(&extra).is_err()),
-        Err(e) => assert!(!e.to_string().is_empty()),
+        Err(e) => assert_ne!(e.to_string(), ""),
     }
 
     set_mode(dir.path(), 0o755);
