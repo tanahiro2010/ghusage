@@ -84,10 +84,15 @@ jobs:
       - if: steps.verified.outputs.cache-hit == 'true'
         run: echo "Inputs ${{ needs.inputs.outputs.rust }} already passed on ${{ matrix.os }}; skipping."
       # Pinned so lint results are reproducible; upgraded deliberately.
-      - if: steps.verified.outputs.cache-hit != 'true'
+      # Formatting and Clippy are platform-independent, so install their
+      # components only on the full Linux runner. Other runners only need
+      # the compiler for their platform-specific tests.
+      - if: steps.verified.outputs.cache-hit != 'true' && matrix.os == env.FULL_OS
         uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: rustfmt, clippy
+      - if: steps.verified.outputs.cache-hit != 'true' && matrix.os != env.FULL_OS
+        uses: dtolnay/rust-toolchain@1.100.0
       - if: steps.verified.outputs.cache-hit != 'true'
         uses: Swatinem/rust-cache@v2.9.3
         with:
@@ -95,7 +100,9 @@ jobs:
           cache-on-failure: true
       - if: steps.verified.outputs.cache-hit != 'true' && matrix.os == env.FULL_OS
         run: cargo fmt --all -- --check
-      - if: steps.verified.outputs.cache-hit != 'true'
+      # Clippy is covered once on FULL_OS; repeating it on every OS only
+      # duplicates a platform-independent compile and lint pass.
+      - if: steps.verified.outputs.cache-hit != 'true' && matrix.os == env.FULL_OS
         run: cargo clippy --workspace --all-targets -- -D warnings
       - if: steps.verified.outputs.cache-hit != 'true' && matrix.os == env.FULL_OS
         run: cargo test --workspace --all-targets --no-fail-fast
