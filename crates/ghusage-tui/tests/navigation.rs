@@ -40,7 +40,7 @@ fn enter_opens_pr_detail_then_timeline_and_esc_goes_back() {
     assert_eq!(app.pr_report().unwrap().pr_id, id);
     app.handle_key(code(KeyCode::Enter));
     assert_eq!(app.screen, Screen::PrTimeline);
-    assert!(!app.visible(ListId::Timeline).is_empty());
+    assert_ne!(app.visible(ListId::Timeline), Vec::<usize>::new());
     app.handle_key(code(KeyCode::Esc));
     assert_eq!(app.screen, Screen::PrDetail);
     app.handle_key(code(KeyCode::Esc));
