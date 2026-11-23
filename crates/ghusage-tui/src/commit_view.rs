@@ -173,6 +173,12 @@ fn file_name(f: &ghusage_core::commit::CommitFile) -> String {
 }
 
 fn append_header(rows: &mut DiffRows, d: &CommitDetail, source: CommitSource, zone: &Zone) {
+    append_identity(rows, d);
+    append_fields(rows, d, source, zone);
+    append_message_and_files(rows, d);
+}
+
+fn append_identity(rows: &mut DiffRows, d: &CommitDetail) {
     let repo = sanitize_line(&d.repository);
     rows.push(
         RowKind::Title,
@@ -184,6 +190,10 @@ fn append_header(rows: &mut DiffRows, d: &CommitDetail, source: CommitSource, zo
         ),
     );
     rows.push(RowKind::Blank, "", String::new());
+}
+
+fn append_fields(rows: &mut DiffRows, d: &CommitDetail, source: CommitSource, zone: &Zone) {
+    let repo = sanitize_line(&d.repository);
     let parents = if d.parents.is_empty() {
         "none (root commit)".to_string()
     } else {
@@ -194,7 +204,6 @@ fn append_header(rows: &mut DiffRows, d: &CommitDetail, source: CommitSource, zo
             if d.is_merge() { " (merge commit)" } else { "" }
         )
     };
-    let totals = d.file_totals();
     let fields: Vec<(&'static str, String)> = vec![
         ("Repository", repo),
         ("SHA", sanitize_line(&d.sha)),
@@ -227,6 +236,10 @@ fn append_header(rows: &mut DiffRows, d: &CommitDetail, source: CommitSource, zo
     for (key, value) in fields {
         rows.push(RowKind::Field, key, value);
     }
+}
+
+fn append_message_and_files(rows: &mut DiffRows, d: &CommitDetail) {
+    let totals = d.file_totals();
     rows.push(RowKind::Blank, "", String::new());
     rows.push(RowKind::Heading, "", "Message".into());
     if d.message.trim().is_empty() {
