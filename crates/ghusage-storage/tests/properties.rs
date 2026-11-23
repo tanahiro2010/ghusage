@@ -233,7 +233,7 @@ fn build(f: &Fetch, index: usize, merged_before: bool) -> Built {
             user("me"),
             at(2 + k as u32, 11),
         );
-        e.entity_id = s.clone();
+        e.entity_id.clone_from(&s);
         e.meta.sha = Some(s.clone());
         e.meta.time_basis = Some("commit_date".into());
         events.push(e);

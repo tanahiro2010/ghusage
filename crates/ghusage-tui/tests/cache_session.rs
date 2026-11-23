@@ -23,7 +23,7 @@ fn seeded_dir() -> tempfile::TempDir {
             repositories: ds.repositories.values().cloned().collect(),
             pull_requests: ds.pull_requests.values().cloned().collect(),
             events: ds.events.clone(),
-            coverage: ds.coverage.clone(),
+            coverage: ds.coverage,
             ..WriteBatch::default()
         })
         .unwrap();

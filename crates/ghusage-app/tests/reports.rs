@@ -419,7 +419,7 @@ fn own_pull_request_commits_join_the_global_commit_set_once() {
         subject,
         true,
         batch.repositories.clone(),
-        batch.pull_requests.clone(),
+        batch.pull_requests,
         vec![],
         vec![],
         events,
@@ -589,7 +589,7 @@ fn assert_all_counts_zero(v: &serde_json::Value, path: &str) {
             serde_json::Value::Null => {}
             // Without commits there is nothing to describe.
             serde_json::Value::String(c) if p.ends_with(".diff_stats.coverage") => {
-                assert_eq!(c, "no_commits", "{p}")
+                assert_eq!(c, "no_commits", "{p}");
             }
             other => panic!("{p}: unexpected {other}"),
         }
@@ -736,7 +736,10 @@ fn keys(v: &serde_json::Value) -> Vec<String> {
 
 #[track_caller]
 fn assert_keys(v: &serde_json::Value, expected: &[&str]) {
-    let mut e: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
+    let mut e: Vec<String> = expected
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
     e.sort();
     assert_eq!(keys(v), e, "{v}");
 }

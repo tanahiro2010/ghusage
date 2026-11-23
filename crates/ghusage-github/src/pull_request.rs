@@ -152,7 +152,7 @@ struct GitActor {
 
 impl GitActor {
     /// The GitHub user linked to a git identity (`None` when unlinked).
-    fn user_actor(a: &Option<GitActor>) -> Option<Actor> {
+    fn user_actor(a: &Option<Self>) -> Option<Actor> {
         let user = a.as_ref()?.user.as_ref()?;
         let actor = Actor::new(
             user.id.clone(),
@@ -208,7 +208,7 @@ struct Named {
 }
 
 impl Named {
-    fn label(n: &Option<Named>) -> Option<String> {
+    fn label(n: &Option<Self>) -> Option<String> {
         let n = n.as_ref()?;
         n.login
             .clone()
@@ -659,7 +659,7 @@ async fn fetch_checks(
                 }
                 Err(e) if is_fatal(&e) => return Err(e),
                 Err(e) => {
-                    tracker.partial(Collection::Checks, format!("check runs not fetched: {e}"))
+                    tracker.partial(Collection::Checks, format!("check runs not fetched: {e}"));
                 }
             }
             true
@@ -930,7 +930,7 @@ pub(crate) async fn fetch(
                     actor,
                     id,
                     at,
-                    item.url.clone(),
+                    item.url,
                     meta,
                     Source::Graphql,
                 );
@@ -983,16 +983,16 @@ pub(crate) async fn fetch(
                 EventType::Unlabeled
             }
             "MilestonedEvent" => {
-                meta.target = item.milestone_title.clone();
+                meta.target.clone_from(&item.milestone_title);
                 EventType::Milestoned
             }
             "DemilestonedEvent" => {
-                meta.target = item.milestone_title.clone();
+                meta.target.clone_from(&item.milestone_title);
                 EventType::Demilestoned
             }
             "RenamedTitleEvent" => {
-                meta.previous_title = item.previous_title.clone();
-                meta.target = item.current_title.clone();
+                meta.previous_title.clone_from(&item.previous_title);
+                meta.target.clone_from(&item.current_title);
                 EventType::Renamed
             }
             "ReviewDismissedEvent" => {
@@ -1018,7 +1018,7 @@ pub(crate) async fn fetch(
             actor,
             id,
             at,
-            item.url.clone(),
+            item.url,
             meta,
             Source::Graphql,
         );
@@ -1037,8 +1037,7 @@ pub(crate) async fn fetch(
             EventId::pr_merged(&pr_id),
             pr.merged_by
                 .as_ref()
-                .map(GqlActor::actor)
-                .unwrap_or_else(Actor::unknown),
+                .map_or_else(Actor::unknown, GqlActor::actor),
             pr_id.clone(),
             m,
             Some(pr_url.clone()),
@@ -1158,11 +1157,8 @@ pub(crate) async fn fetch(
             is_resolved: th.is_resolved.unwrap_or(false),
             is_outdated: th.is_outdated.unwrap_or(false),
             resolved_by: th.resolved_by.as_ref().map(GqlActor::actor),
-            path: th.path.clone(),
-            comment_count: total
-                .map(|n| n as u32)
-                .unwrap_or(fetched)
-                .saturating_sub(pending),
+            path: th.path,
+            comment_count: total.map_or(fetched, |n| n as u32).saturating_sub(pending),
             first_comment_author: first_author,
         });
     }
@@ -1218,10 +1214,9 @@ pub(crate) async fn fetch(
             .or_else(|| r.started_at.as_deref().and_then(parse_time));
         // Queued runs have no time yet; they are not events.
         let Some(at) = at else { continue };
-        let actor = r
-            .app
-            .map(|(id, slug)| Actor::new(id, slug, Some("Bot")))
-            .unwrap_or_else(Actor::unknown);
+        let actor = r.app.map_or_else(Actor::unknown, |(id, slug)| {
+            Actor::new(id, slug, Some("Bot"))
+        });
         b.push(
             EventType::CheckRun,
             EventId::check_run(&node_id),
@@ -1257,8 +1252,7 @@ pub(crate) async fn fetch(
             EventId::commit_status(&node_id),
             s.creator
                 .as_ref()
-                .map(RestUser::actor)
-                .unwrap_or_else(Actor::unknown),
+                .map_or_else(Actor::unknown, RestUser::actor),
             node_id,
             at,
             None,
@@ -1309,12 +1303,14 @@ pub(crate) async fn fetch(
         .state
         .as_deref()
         .and_then(PrState::parse)
-        .unwrap_or(if merged_at.is_some() {
-            PrState::Merged
-        } else if pr.closed_at.is_some() {
-            PrState::Closed
-        } else {
-            PrState::Open
+        .unwrap_or_else(|| {
+            if merged_at.is_some() {
+                PrState::Merged
+            } else if pr.closed_at.is_some() {
+                PrState::Closed
+            } else {
+                PrState::Open
+            }
         });
     let pull_request = PullRequest {
         id: pr_id.clone(),

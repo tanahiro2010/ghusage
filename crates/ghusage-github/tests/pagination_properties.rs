@@ -114,10 +114,10 @@ async fn run_search(
                         ResponseTemplate::new(200)
                             .insert_header("content-type", "application/json")
                             .set_body_string(MALFORMED),
-                    )
+                    );
                 }
                 Failure::MissingData => {
-                    body = json!({ "total_count": total, "incomplete_results": false })
+                    body = json!({ "total_count": total, "incomplete_results": false });
                 }
                 Failure::Truncated => body["incomplete_results"] = json!(true),
             }

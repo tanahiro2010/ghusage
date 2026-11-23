@@ -411,10 +411,14 @@ async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<
             );
             return Ok((s, Period::new(period.start, until)?));
         }
-        let progress = progress::Progress::start(s.client.as_ref().map(|c| c.activity()));
+        let progress = progress::Progress::start(
+            s.client
+                .as_ref()
+                .map(ghusage_github::GitHubClient::activity),
+        );
         let synced = s
             .sync(period, false, g.concurrency as usize, &|p| {
-                progress.update(p)
+                progress.update(p);
             })
             .await;
         drop(progress);
@@ -617,10 +621,14 @@ async fn sync_cmd(
             reason.clone(),
         )));
     }
-    let progress = progress::Progress::start(s.client.as_ref().map(|c| c.activity()));
+    let progress = progress::Progress::start(
+        s.client
+            .as_ref()
+            .map(ghusage_github::GitHubClient::activity),
+    );
     let synced = s
         .sync(period, full, g.concurrency as usize, &|p| {
-            progress.update(p)
+            progress.update(p);
         })
         .await;
     let synced = match synced {
@@ -846,8 +854,10 @@ fn cache_cmd(g: &GlobalArgs, c: CacheCommand, zone: Zone) -> Result<i32> {
                     let style = style(g, std::io::stdout().is_terminal());
                     let mut o = format!(
                         "Cache: {}\n  size: {:.1} MiB, schema version {}\n  repositories {}, pull requests {}, issues {}, events {}\n",
-                        dir.map(|d| ghusage_app::paths::db_path(&d).display().to_string())
-                            .unwrap_or_else(|| "(in memory)".into()),
+                        dir.map_or_else(
+                            || "(in memory)".into(),
+                            |d| ghusage_app::paths::db_path(&d).display().to_string()
+                        ),
                         stats.file_size_bytes as f64 / (1024.0 * 1024.0),
                         stats.schema_version,
                         stats.repositories,
@@ -858,9 +868,10 @@ fn cache_cmd(g: &GlobalArgs, c: CacheCommand, zone: Zone) -> Result<i32> {
                     match &last {
                         Some(r) => o.push_str(&format!(
                             "  last sync: {} ({})\n",
-                            r.finished_at
-                                .map(|t| zone.format(t, "%Y-%m-%d %H:%M"))
-                                .unwrap_or_else(|| "not finished".into()),
+                            r.finished_at.map_or_else(
+                                || "not finished".into(),
+                                |t| zone.format(t, "%Y-%m-%d %H:%M")
+                            ),
                             r.status
                         )),
                         None => o.push_str("  last sync: never\n"),
@@ -887,9 +898,10 @@ async fn doctor_cmd(g: &GlobalArgs, zone: Zone) -> Result<i32> {
     let cfg = session_config(g);
     match session::open_store(&cfg) {
         Ok((store, dir)) => {
-            let path = dir
-                .map(|d| ghusage_app::paths::db_path(&d).display().to_string())
-                .unwrap_or_else(|| "(in memory)".into());
+            let path = dir.map_or_else(
+                || "(in memory)".into(),
+                |d| ghusage_app::paths::db_path(&d).display().to_string(),
+            );
             lines.push((true, format!("cache opened: {path}")));
             match store.integrity_check() {
                 Ok(p) if p.is_empty() => lines.push((true, "cache integrity: ok".into())),
@@ -903,9 +915,10 @@ async fn doctor_cmd(g: &GlobalArgs, zone: Zone) -> Result<i32> {
                     r.status != "failed",
                     format!(
                         "last sync: {} ({})",
-                        r.finished_at
-                            .map(|t| zone.format(t, "%Y-%m-%d %H:%M"))
-                            .unwrap_or_else(|| "not finished".into()),
+                        r.finished_at.map_or_else(
+                            || "not finished".into(),
+                            |t| zone.format(t, "%Y-%m-%d %H:%M")
+                        ),
                         r.status
                     ),
                 ));

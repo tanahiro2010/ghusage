@@ -31,9 +31,7 @@ impl GqlActor {
 }
 
 pub(crate) fn actor_of(a: &Option<GqlActor>) -> Actor {
-    a.as_ref()
-        .map(GqlActor::actor)
-        .unwrap_or_else(Actor::unknown)
+    a.as_ref().map_or_else(Actor::unknown, GqlActor::actor)
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -115,8 +113,7 @@ impl GqlRepository {
             visibility: self
                 .visibility
                 .as_deref()
-                .map(Visibility::parse)
-                .unwrap_or(Visibility::Unknown),
+                .map_or(Visibility::Unknown, Visibility::parse),
             is_fork: self.is_fork.unwrap_or(false),
             viewer_permission: self.viewer_permission.clone(),
             accessible: true,
@@ -140,15 +137,19 @@ pub(crate) fn failure(errors: &[GraphqlError], what: &str) -> ApiError {
             _ => {}
         }
     }
-    match errors.first() {
-        Some(e) => ApiError::Graphql(e.message()),
-        None => ApiError::InvalidResponse(format!("GraphQL response for {what} has no data")),
-    }
+    errors.first().map_or_else(
+        || ApiError::InvalidResponse(format!("GraphQL response for {what} has no data")),
+        |e| ApiError::Graphql(e.message()),
+    )
 }
 
 /// Short description of GraphQL errors for coverage notes.
 pub(crate) fn describe(errors: &[GraphqlError]) -> String {
-    let mut parts: Vec<String> = errors.iter().take(3).map(|e| e.message()).collect();
+    let mut parts: Vec<String> = errors
+        .iter()
+        .take(3)
+        .map(super::http::GraphqlError::message)
+        .collect();
     if errors.len() > 3 {
         parts.push(format!("and {} more", errors.len() - 3));
     }

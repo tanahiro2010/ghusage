@@ -95,7 +95,7 @@ pub(crate) fn migrate(
 fn backup(conn: &Connection, path: &Path, from: u32) -> Result<()> {
     let mut name = path
         .file_name()
-        .map(|n| n.to_os_string())
+        .map(std::ffi::OsStr::to_os_string)
         .unwrap_or_default();
     name.push(format!(".bak-v{from}"));
     let dest = path.with_file_name(name);

@@ -72,7 +72,7 @@ pub enum CommitError {
 
 impl CommitError {
     pub fn is_offline(&self) -> bool {
-        matches!(self, CommitError::Offline { .. })
+        matches!(self, Self::Offline { .. })
     }
 }
 
@@ -80,8 +80,8 @@ impl From<CommitError> for AppError {
     fn from(e: CommitError) -> Self {
         match e {
             CommitError::App(e) => e,
-            e @ CommitError::Offline { .. } => AppError::Other(e.to_string()),
-            e @ CommitError::NotPublic(_) => AppError::InvalidArgs(e.to_string()),
+            e @ CommitError::Offline { .. } => Self::Other(e.to_string()),
+            e @ CommitError::NotPublic(_) => Self::InvalidArgs(e.to_string()),
         }
     }
 }

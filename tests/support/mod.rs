@@ -507,7 +507,7 @@ pub fn pr_commit(
             "authoredDate": committed,
             "url": format!("https://github.com/{repo}/commit/{oid}"),
             "parents": { "totalCount": 1 },
-            "author": user.clone(),
+            "author": user,
             "committer": user
         }
     })
@@ -1036,8 +1036,10 @@ impl World {
         self.repos
             .iter()
             .find(|r| r.owner == owner && r.name == name)
-            .map(|r| r.gql.clone())
-            .unwrap_or_else(|| panic!("no repo fixture {owner}/{name}"))
+            .map_or_else(
+                || panic!("no repo fixture {owner}/{name}"),
+                |r| r.gql.clone(),
+            )
     }
 
     /// Mounts every endpoint the sync touches (default priority, so tests

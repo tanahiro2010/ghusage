@@ -35,28 +35,28 @@ pub enum AppError {
 impl From<ApiError> for AppError {
     fn from(e: ApiError) -> Self {
         if e.is_auth() {
-            AppError::AuthRejected(e)
+            Self::AuthRejected(e)
         } else {
-            AppError::Api(e)
+            Self::Api(e)
         }
     }
 }
 
 impl From<ghusage_core::time::TimeError> for AppError {
     fn from(e: ghusage_core::time::TimeError) -> Self {
-        AppError::InvalidArgs(e.to_string())
+        Self::InvalidArgs(e.to_string())
     }
 }
 
 impl AppError {
     pub fn exit_code(&self) -> i32 {
         match self {
-            AppError::InvalidArgs(_) => exit::INVALID_ARGS,
-            AppError::Auth(_) | AppError::AuthRejected(_) => exit::AUTH,
-            AppError::Api(_) => exit::API,
-            AppError::Storage(_) => exit::CACHE,
-            AppError::Incomplete(_) => exit::INCOMPLETE,
-            AppError::Other(_) => exit::GENERAL,
+            Self::InvalidArgs(_) => exit::INVALID_ARGS,
+            Self::Auth(_) | Self::AuthRejected(_) => exit::AUTH,
+            Self::Api(_) => exit::API,
+            Self::Storage(_) => exit::CACHE,
+            Self::Incomplete(_) => exit::INCOMPLETE,
+            Self::Other(_) => exit::GENERAL,
         }
     }
 }

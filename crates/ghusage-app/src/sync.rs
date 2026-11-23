@@ -942,14 +942,16 @@ async fn sync_commits(
                 done,
                 total,
             });
-            progress(SyncProgress::Detail(match &res {
-                Ok(listed) => format!(
-                    "commits in {}: {} found",
-                    repo.full_name(),
-                    listed.items.len()
-                ),
-                Err(_) => format!("commits in {}: failed", repo.full_name()),
-            }));
+            progress(SyncProgress::Detail(res.as_ref().map_or_else(
+                |_| format!("commits in {}: failed", repo.full_name()),
+                |listed| {
+                    format!(
+                        "commits in {}: {} found",
+                        repo.full_name(),
+                        listed.items.len()
+                    )
+                },
+            )));
             match res {
                 Ok(listed) => {
                     statuses.push(listed.status);
@@ -960,7 +962,7 @@ async fn sync_commits(
                 }
                 Err(e @ ApiError::Unauthorized) => return Err(e.into()),
                 Err(ApiError::NotFound(_) | ApiError::Forbidden(_)) => {
-                    inaccessible.push((repo.owner.clone(), repo.name.clone()));
+                    inaccessible.push((repo.owner.clone(), repo.name));
                 }
                 Err(e) => failed.push(format!("{}: {e}", repo.full_name())),
             }
@@ -1006,7 +1008,7 @@ async fn sync_commits(
             {
                 // Names, visibility and URL come from this fetch, so a
                 // renamed repository takes its new name.
-                repo.viewer_permission = known.viewer_permission.clone();
+                repo.viewer_permission.clone_from(&known.viewer_permission);
                 repo.accessible = true;
                 continue;
             }

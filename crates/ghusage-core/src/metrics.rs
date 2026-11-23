@@ -170,10 +170,10 @@ impl Dataset {
     }
 
     pub fn repo_name(&self, repository_id: &str) -> String {
-        self.repositories
-            .get(repository_id)
-            .map(|r| r.full_name())
-            .unwrap_or_else(|| format!("unknown:{repository_id}"))
+        self.repositories.get(repository_id).map_or_else(
+            || format!("unknown:{repository_id}"),
+            super::model::Repository::full_name,
+        )
     }
 
     fn pr_author_is_subject(&self, pr_id: Option<&str>) -> bool {
@@ -937,7 +937,7 @@ pub fn pr_rows(
             PrSort::Comments => r.comments as i64,
             PrSort::Reviews => r.reviews as i64,
             PrSort::Created => r.created_at.as_second(),
-            PrSort::Updated => r.last_activity.map_or(i64::MIN, |t| t.as_second()),
+            PrSort::Updated => r.last_activity.map_or(i64::MIN, jiff::Timestamp::as_second),
         };
         key(b)
             .cmp(&key(a))
@@ -1038,7 +1038,7 @@ impl Stats {
         if v.is_empty() {
             return None;
         }
-        v.sort_by(|a, b| a.total_cmp(b));
+        v.sort_by(f64::total_cmp);
         let n = v.len();
         let pct = |p: f64| {
             // Nearest-rank percentile.
@@ -1100,7 +1100,10 @@ pub fn intensity(ds: &Dataset, opts: &Options, participation: Participation) -> 
         threads_per_pr: col(&|r| r.threads as f64),
         active_days_per_pr: Stats::from_values(
             rows.iter()
-                .map(|r| days.get(r.pr_id.as_str()).map_or(0, |d| d.len()) as f64)
+                .map(|r| {
+                    days.get(r.pr_id.as_str())
+                        .map_or(0, std::collections::HashSet::len) as f64
+                })
                 .collect(),
         ),
     }
@@ -1603,10 +1606,10 @@ fn activity_row(ds: &Dataset, e: &ActivityEvent, basis: CommitDateBasis) -> Acti
         repository: ds.repo_name(&e.repository_id),
         pr_id: e.parent_pr_id.clone(),
         issue_id: issue.map(|i| i.id.clone()),
-        number: pr.map(|p| p.number).or(issue.map(|i| i.number)),
+        number: pr.map(|p| p.number).or_else(|| issue.map(|i| i.number)),
         title: pr
             .map(|p| p.title.clone())
-            .or(issue.map(|i| i.title.clone())),
+            .or_else(|| issue.map(|i| i.title.clone())),
         url: e.url.clone(),
     }
 }

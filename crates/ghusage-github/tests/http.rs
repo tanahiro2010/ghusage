@@ -260,7 +260,7 @@ async fn primary_rate_limit_beyond_max_wait_fails_immediately() {
     let err = client(&server).viewer().await.unwrap_err();
     match &err {
         ApiError::RateLimited { reset_at } => {
-            assert_eq!(reset_at.map(|r| r.as_second()), Some(reset));
+            assert_eq!(reset_at.map(jiff::Timestamp::as_second), Some(reset));
         }
         other => panic!("expected RateLimited, got {other:?}"),
     }

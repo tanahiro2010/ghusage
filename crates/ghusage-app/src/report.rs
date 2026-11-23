@@ -426,7 +426,7 @@ pub fn redact(ds: &Dataset) -> Dataset {
             if !owned {
                 repo.owner = "private".into();
             } else {
-                repo.owner = ds.subject.login.clone();
+                repo.owner.clone_from(&ds.subject.login);
             }
             // Keep ownership decisions identical after renaming.
             if owned {

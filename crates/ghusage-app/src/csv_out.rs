@@ -231,7 +231,7 @@ pub fn report_csv(r: &Report, kind: ReportKind) -> String {
                     p.discussion_participants.to_string(),
                     p.threads.to_string(),
                     ts(p.last_activity),
-                    opt(p.latest_ci.map(|c| c.as_str())),
+                    opt(p.latest_ci.map(ghusage_core::model::CheckOutcome::as_str)),
                     p.url.clone(),
                     overall.to_string(),
                 ])
@@ -259,7 +259,7 @@ pub fn report_csv(r: &Report, kind: ReportKind) -> String {
                         dir.to_string(),
                         x.submitted_at.to_string(),
                         text(&x.reviewer),
-                        opt(x.state.map(|s| s.as_str())),
+                        opt(x.state.map(ghusage_core::model::ReviewState::as_str)),
                         x.repository.clone(),
                         opt(x.pr_number),
                         opt(x.url.clone()),
