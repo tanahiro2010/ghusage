@@ -242,7 +242,7 @@ fn stored_data_reads_back_unchanged() {
         Some("cursor-1")
     );
     assert_eq!(s.cursor("alice", "missing").unwrap(), None);
-    assert!(s.integrity_check().unwrap().is_empty());
+    assert_eq!(s.integrity_check().unwrap(), Vec::<String>::new());
 }
 
 #[test]
@@ -668,7 +668,7 @@ fn force_push_keeps_old_commit_link_and_marks_its_event_removed() {
             .count(),
         2
     );
-    assert!(s.integrity_check().unwrap().is_empty());
+    assert_eq!(s.integrity_check().unwrap(), Vec::<String>::new());
 
     // An explicit non-current link also marks the event removed.
     let b = WriteBatch {
@@ -907,7 +907,7 @@ fn hostile_looking_text_is_stored_verbatim() {
     assert_eq!(ds.repositories["R9"].owner, evil);
     assert_eq!(s.find_pr(evil, "x\"y", 2).unwrap(), None);
     assert_eq!(s.stats().unwrap().events, 6);
-    assert!(s.integrity_check().unwrap().is_empty());
+    assert_eq!(s.integrity_check().unwrap(), Vec::<String>::new());
 }
 
 // ---------------------------------------------------------------------------
@@ -969,8 +969,8 @@ fn accounts_do_not_see_each_others_data() {
     let bob = s.load_dataset(&subject("bob"), false, None).unwrap();
     assert_eq!(bob.events.len(), 1);
     assert_eq!(bob.repositories.len(), 2);
-    assert!(bob.pull_requests.is_empty());
-    assert!(bob.coverage.is_empty());
+    assert_eq!(bob.pull_requests, std::collections::BTreeMap::new());
+    assert_eq!(bob.coverage, Vec::new());
 
     let alice = alice_dataset(&s);
     assert_eq!(alice.events.len(), 5);
@@ -985,7 +985,8 @@ fn accounts_do_not_see_each_others_data() {
     );
 
     let nobody = s.load_dataset(&subject("carol"), false, None).unwrap();
-    assert!(nobody.events.is_empty() && nobody.repositories.is_empty());
+    assert_eq!(nobody.events, Vec::new());
+    assert_eq!(nobody.repositories, std::collections::BTreeMap::new());
     // Shared repository rows are not duplicated.
     assert_eq!(s.stats().unwrap().repositories, 3);
 }
@@ -1005,7 +1006,8 @@ fn pull_request_dataset_contains_all_its_activity() {
     assert_eq!(ds.repositories.keys().collect::<Vec<_>>(), vec!["R1"]);
     assert_eq!(ds.coverage.len(), 1);
     let none = s.load_pr_dataset(&subject("alice"), true, "PR404").unwrap();
-    assert!(none.pull_requests.is_empty() && none.events.is_empty());
+    assert_eq!(none.pull_requests, std::collections::BTreeMap::new());
+    assert_eq!(none.events, Vec::new());
 }
 
 // ---------------------------------------------------------------------------
@@ -1083,7 +1085,7 @@ fn clearing_removes_data_but_keeps_schema() {
     assert_eq!(st.schema_version, Store::supported_schema_version());
     assert_eq!(s.meta("k").unwrap(), None);
     assert_eq!(s.last_sync_run("alice").unwrap(), None);
-    assert!(s.integrity_check().unwrap().is_empty());
+    assert_eq!(s.integrity_check().unwrap(), Vec::<String>::new());
     // Still usable afterwards.
     s.apply(&base_batch()).unwrap();
     assert_eq!(s.stats().unwrap().events, 5);
@@ -1105,7 +1107,7 @@ fn data_survives_reopening() {
     }
     let s = Store::open(&path).unwrap();
     assert_eq!(alice_dataset(&s).events.len(), 5);
-    assert!(s.integrity_check().unwrap().is_empty());
+    assert_eq!(s.integrity_check().unwrap(), Vec::<String>::new());
 }
 
 #[test]
@@ -1226,14 +1228,14 @@ fn read_only_cache_returns_an_error_and_keeps_data() {
     extra.events.push(commit_event("R1", "zzz999", t(6, 0)));
     match Store::open(&path) {
         Ok(mut s) => assert!(s.apply(&extra).is_err()),
-        Err(e) => assert!(!e.to_string().is_empty()),
+        Err(e) => assert_ne!(e.to_string(), ""),
     }
 
     set_mode(dir.path(), 0o755);
     set_mode(&path, 0o644);
     let s = Store::open(&path).unwrap();
     assert_eq!(s.stats().unwrap().events, 5);
-    assert!(s.integrity_check().unwrap().is_empty());
+    assert_eq!(s.integrity_check().unwrap(), Vec::<String>::new());
 }
 
 #[cfg(unix)]

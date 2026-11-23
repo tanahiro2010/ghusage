@@ -112,7 +112,7 @@ async fn empty_results_are_complete() {
         .search_commits(LOGIN, jan1(), false)
         .await
         .unwrap();
-    assert!(r.items.is_empty());
+    assert_eq!(r.items, Vec::new());
     assert_eq!(r.status, CoverageStatus::Complete);
     assert_eq!(r.reason, None);
 }

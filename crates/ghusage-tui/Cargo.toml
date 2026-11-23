@@ -6,6 +6,9 @@ rust-version.workspace = true
 repository.workspace = true
 license.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 jiff = { version = "1.0.2", features = ["serde"] }
 ghusage-app = { version = "0.1.6", path = "../ghusage-app" }

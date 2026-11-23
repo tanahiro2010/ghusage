@@ -6,6 +6,9 @@ rust-version.workspace = true
 repository.workspace = true
 license.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 jiff = { version = "1.0.2", features = ["serde"] }
 iana-time-zone = "0.1.65"

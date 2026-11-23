@@ -9,6 +9,98 @@ rust-version = "1.94"
 repository = "https://github.com/tanahiro2010/ghusage"
 license = "Apache-2.0"
 
+[workspace.lints.rust]
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "allow"
+unused_qualifications = "allow"
+elided_lifetimes_in_paths = "allow"
+missing_docs = "allow"
+missing_debug_implementations = "allow"
+let_underscore_drop = "allow"
+unused_lifetimes = "allow"
+single_use_lifetimes = "allow"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+
+# These are intentionally centralized here while the existing violations are
+# fixed in follow-up PRs. Removing an entry is part of that follow-up work.
+# Integration tests are separate crates, so this lint reports unused
+# dev-dependencies per test target instead of identifying real package-level
+# dependency mistakes. `cargo machete` provides the dedicated check.
+unused_crate_dependencies = "allow"
+
+[workspace.lints.clippy]
+# `all` is Clippy's default lint set; the broader groups are enabled explicitly.
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+# Existing violations are temporarily centralized here. Each entry is removed
+# when the corresponding lint is fixed in a follow-up PR.
+allow_attributes = "allow"
+allow_attributes_without_reason = "allow"
+cargo_common_metadata = "allow"
+use_self = "allow"
+must_use_candidate = "allow"
+missing_const_for_fn = "allow"
+missing_errors_doc = "allow"
+map_unwrap_or = "allow"
+cast_possible_truncation = "allow"
+too_many_lines = "allow"
+cast_possible_wrap = "allow"
+doc_markdown = "allow"
+needless_pass_by_value = "allow"
+option_if_let_else = "allow"
+redundant_closure_for_method_calls = "allow"
+format_push_string = "allow"
+cast_sign_loss = "allow"
+semicolon_if_nothing_returned = "allow"
+unreadable_literal = "allow"
+many_single_char_names = "allow"
+too_long_first_doc_paragraph = "allow"
+single_match_else = "allow"
+redundant_clone = "allow"
+or_fun_call = "allow"
+items_after_statements = "allow"
+assigning_clones = "allow"
+stable_sort_primitive = "allow"
+trivially_copy_pass_by_ref = "allow"
+enum_glob_use = "allow"
+return_self_not_must_use = "allow"
+default_trait_access = "allow"
+ref_option = "allow"
+missing_panics_doc = "allow"
+needless_raw_string_hashes = "allow"
+ignore_without_reason = "allow"
+useless_let_if_seq = "allow"
+similar_names = "allow"
+wildcard_imports = "allow"
+unnested_or_patterns = "allow"
+needless_collect = "allow"
+unnecessary_wraps = "allow"
+struct_excessive_bools = "allow"
+borrow_as_ptr = "allow"
+manual_assert = "allow"
+manual_midpoint = "allow"
+derive_partial_eq_without_eq = "allow"
+match_same_arms = "allow"
+float_cmp = "allow"
+equatable_if_let = "allow"
+implicit_clone = "allow"
+cast_lossless = "allow"
+if_not_else = "allow"
+uninlined_format_args = "allow"
+format_collect = "allow"
+ignored_unit_patterns = "allow"
+
+# These cannot be addressed in this workspace without changing third-party
+# dependency graphs or making a broader API/design decision.
+multiple_crate_versions = "allow" # Duplicate versions come from third-party dependencies.
+redundant_pub_crate = "allow" # Conflicts with the chosen `unreachable_pub` policy.
+future_not_send = "allow" # Existing single-task APIs intentionally borrow non-Send state.
+cast_precision_loss = "allow" # Exact integer-to-float conversion is impossible for all values.
+
 [package]
 name = "ghusage"
 description = "Know what you actually did on GitHub: commits, pull requests, reviews and the activity inside pull requests."
@@ -17,6 +109,9 @@ edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 license.workspace = true
+
+[lints]
+workspace = true
 
 [[bin]]
 name = "ghusage"

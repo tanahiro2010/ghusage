@@ -503,7 +503,7 @@ fn repository_detail_matches_the_repository_row() {
         .find(|x| x.repository_id == "R_priv")
         .unwrap();
     assert_eq!(row.summary, r.metrics);
-    assert!(r.commits.as_ref().unwrap().is_empty());
+    assert_eq!(r.commits.as_ref().unwrap(), &Vec::new());
     // PR_2 opened, the review received, my comment. The merge by someone
     // else is not my activity.
     let ids: Vec<&str> = r
@@ -914,7 +914,10 @@ fn json_output_matches_documented_schema() {
             );
             check_summary(&r["summary"]);
         }
-        assert!(!v["activity_breakdown"].as_array().unwrap().is_empty());
+        assert_ne!(
+            v["activity_breakdown"].as_array().unwrap(),
+            &Vec::<serde_json::Value>::new()
+        );
         for b in v["activity_breakdown"].as_array().unwrap() {
             assert_keys(b, &["bucket", "summary"]);
             assert_keys(&b["bucket"], &["key", "label", "start", "end"]);
@@ -1104,7 +1107,7 @@ fn json_output_matches_documented_schema() {
         ],
     );
     let timeline = d["timeline"].as_array().unwrap();
-    assert!(!timeline.is_empty());
+    assert_ne!(timeline, &Vec::<serde_json::Value>::new());
     for e in timeline {
         assert_keys(
             e,
