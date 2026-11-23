@@ -87,11 +87,11 @@ jobs:
       # components only on the full Linux runner. Other runners only need
       # the compiler for their platform-specific tests.
       - if: steps.verified.outputs.cache-hit != 'true' && matrix.os == env.FULL_OS
-        uses: dtolnay/rust-toolchain@1.100.0
+        uses: dtolnay/rust-toolchain@1.120.0
         with:
           components: rustfmt, clippy
       - if: steps.verified.outputs.cache-hit != 'true' && matrix.os != env.FULL_OS
-        uses: dtolnay/rust-toolchain@1.100.0
+        uses: dtolnay/rust-toolchain@1.120.0
       - if: steps.verified.outputs.cache-hit != 'true'
         uses: Swatinem/rust-cache@v2.9.3
         with:
@@ -158,7 +158,7 @@ jobs:
         run: echo "Inputs ${{ needs.inputs.outputs.rust }} already passed on ${{ matrix.os }}; skipping."
       # The same pinned toolchain as the tests.
       - if: steps.verified.outputs.cache-hit != 'true'
-        uses: dtolnay/rust-toolchain@1.100.0
+        uses: dtolnay/rust-toolchain@1.120.0
       - if: steps.verified.outputs.cache-hit != 'true'
         uses: Swatinem/rust-cache@v2.9.3
         with:
@@ -290,7 +290,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: false
-      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: dtolnay/rust-toolchain@1.120.0
       - uses: Swatinem/rust-cache@v2.9.3
         with:
           cache-on-failure: true

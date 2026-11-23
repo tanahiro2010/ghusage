@@ -49,7 +49,7 @@ jobs:
       - name: Report script tests
         run: node --test scripts/bench-report.test.mjs
       # Pinned like the main CI so both sides build with the same compiler.
-      - uses: dtolnay/rust-toolchain@1.100.0
+      - uses: dtolnay/rust-toolchain@1.120.0
       # Each checkout keeps its own target directory: Cargo decides freshness
       # from file times and workspace-relative paths, so a shared one could
       # reuse the other side's build of the workspace crates.
