@@ -6,8 +6,9 @@ mod common;
 use common::*;
 use ghusage_core::coverage::{CoverageRecord, CoverageStatus, DataKind, summarize};
 use ghusage_core::metrics::{
-    self, CommitDateBasis, Dataset, Filter, Ownership, Participation, PrSort, ReviewDirection,
-    Summary, VisibilityFilter, by_repository, pr_detail, pr_rows, review_rows, snapshot, summary,
+    self, CommitDateBasis, Dataset, Filter, Ownership, Participation, PrRow, PrSort, RepoSummary,
+    ReviewDirection, Summary, VisibilityFilter, by_repository, pr_detail, pr_rows, review_rows,
+    snapshot, summary,
 };
 use ghusage_core::model::{
     ActivityEvent, Actor, EventId, EventType, Issue, PrState, ReviewState, Source, Visibility,
@@ -112,8 +113,11 @@ fn empty_activity_reports_zero_everywhere() {
     // 2026-11-01 .. 2026-11-07 inclusive = 7 local days, each empty.
     assert_eq!(days.len(), 7);
     assert!(days.iter().all(|b| b.summary == Summary::default()));
-    assert!(by_repository(&ds, &opts).is_empty());
-    assert!(pr_rows(&ds, &opts, Participation::All, None, PrSort::Activity).is_empty());
+    assert_eq!(by_repository(&ds, &opts), [] as [RepoSummary; 0]);
+    assert_eq!(
+        pr_rows(&ds, &opts, Participation::All, None, PrSort::Activity),
+        [] as [PrRow; 0]
+    );
     assert_eq!(snapshot(&ds, &opts), metrics::Snapshot::default());
 }
 
@@ -1333,7 +1337,10 @@ fn ci_results_are_never_human_activity() {
     assert_eq!(s.active_prs, 0);
     assert_eq!(s.active_prs_all_participants, 0);
     assert_eq!(s.last_activity, None);
-    assert!(pr_rows(&ds, &opts, Participation::All, None, PrSort::Activity).is_empty());
+    assert_eq!(
+        pr_rows(&ds, &opts, Participation::All, None, PrSort::Activity),
+        [] as [PrRow; 0]
+    );
 }
 
 // ---------------------------------------------------------------------------
