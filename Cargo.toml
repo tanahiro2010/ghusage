@@ -24,8 +24,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"
-chrono = "0.4.45"
-chrono-tz = "0.10.4"
+jiff = { version = "1.0.2", features = ["serde"] }
 clap = { version = "4.6.9", features = ["derive", "env"] }
 ghusage-app = { version = "0.1.6", path = "crates/ghusage-app" }
 ghusage-core = { version = "0.1.6", path = "crates/ghusage-core" }
@@ -44,6 +43,7 @@ lto = "thin"
 codegen-units = 4
 
 [dev-dependencies]
+chrono = "0.4.45"
 assert_cmd = "2.2.2"
 criterion = "0.8.2"
 csv = "1.4.0"

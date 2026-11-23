@@ -3,7 +3,7 @@
 //! All functions are pure: the same dataset and options always produce the
 //! same result, independent of event order or duplicated input.
 
-use chrono::{DateTime, Duration, NaiveDate, Utc};
+use jiff::{SignedDuration, Timestamp, civil::Date};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -60,7 +60,7 @@ pub struct PrDiff {
     pub additions: u64,
     pub deletions: u64,
     pub changed_files: u64,
-    pub observed_at: DateTime<Utc>,
+    pub observed_at: Timestamp,
 }
 
 impl Dataset {
@@ -330,7 +330,7 @@ pub struct Options {
 }
 
 /// The instant an event is attributed to.
-pub fn event_time(e: &ActivityEvent, basis: CommitDateBasis) -> DateTime<Utc> {
+pub fn event_time(e: &ActivityEvent, basis: CommitDateBasis) -> Timestamp {
     match (e.event_type, basis) {
         (EventType::CommitAuthored | EventType::PrCommit, CommitDateBasis::Author) => {
             e.meta.author_date.unwrap_or(e.occurred_at)
@@ -460,7 +460,7 @@ pub struct Summary {
     pub ci: CiCounts,
     /// Distinct local dates with activity by the subject.
     pub active_days: u64,
-    pub last_activity: Option<DateTime<Utc>>,
+    pub last_activity: Option<Timestamp>,
     /// Lines added and deleted by the counted commits.
     pub diff_stats: DiffTotals,
 }
@@ -571,7 +571,7 @@ fn summarize_events<'a>(
     let mut reviewed: HashSet<&str> = HashSet::new();
     let mut active_self: HashSet<&str> = HashSet::new();
     let mut active_all: HashSet<&str> = HashSet::new();
-    let mut days: HashSet<NaiveDate> = HashSet::new();
+    let mut days: HashSet<Date> = HashSet::new();
 
     for e in events {
         let t = e.event_type;
@@ -703,7 +703,7 @@ fn thread_started_by_other(ds: &Dataset, e: &ActivityEvent) -> bool {
 
 /// Summary for the whole period.
 pub fn summary(ds: &Dataset, opts: &Options) -> Summary {
-    summarize_events(ds, selected(ds, opts), opts.zone, opts.commit_basis)
+    summarize_events(ds, selected(ds, opts), opts.zone.clone(), opts.commit_basis)
 }
 
 /// One calendar bucket and its summary.
@@ -716,12 +716,12 @@ pub struct BucketSummary {
 /// Per-day/week/month summaries. Buckets partition the period, so additive
 /// counts sum to the whole-period summary.
 pub fn breakdown(ds: &Dataset, opts: &Options, gran: Granularity) -> Vec<BucketSummary> {
-    let bs = buckets(opts.period, opts.zone, gran);
-    let mut per: BTreeMap<NaiveDate, Vec<&ActivityEvent>> = BTreeMap::new();
+    let bs = buckets(opts.period, &opts.zone, gran);
+    let mut per: BTreeMap<Date, Vec<&ActivityEvent>> = BTreeMap::new();
     for e in selected(ds, opts) {
         per.entry(bucket_key(
             event_time(e, opts.commit_basis),
-            opts.zone,
+            &opts.zone,
             gran,
         ))
         .or_default()
@@ -730,7 +730,8 @@ pub fn breakdown(ds: &Dataset, opts: &Options, gran: Granularity) -> Vec<BucketS
     bs.into_iter()
         .map(|b| {
             let events = per.remove(&b.key).unwrap_or_default();
-            let summary = summarize_events(ds, events.into_iter(), opts.zone, opts.commit_basis);
+            let summary =
+                summarize_events(ds, events.into_iter(), opts.zone.clone(), opts.commit_basis);
             BucketSummary { bucket: b, summary }
         })
         .collect()
@@ -756,7 +757,8 @@ pub fn by_repository(ds: &Dataset, opts: &Options) -> Vec<RepoSummary> {
     let mut out: Vec<RepoSummary> = per
         .into_iter()
         .map(|(id, events)| {
-            let summary = summarize_events(ds, events.into_iter(), opts.zone, opts.commit_basis);
+            let summary =
+                summarize_events(ds, events.into_iter(), opts.zone.clone(), opts.commit_basis);
             let repo = ds.repositories.get(id);
             RepoSummary {
                 repository_id: id.to_string(),
@@ -879,8 +881,8 @@ pub struct PrRow {
     pub author: String,
     pub state: PrState,
     pub is_draft: bool,
-    pub created_at: DateTime<Utc>,
-    pub merged_at: Option<DateTime<Utc>>,
+    pub created_at: Timestamp,
+    pub merged_at: Option<Timestamp>,
     /// Human events by anyone (automation excluded).
     pub events: u64,
     pub events_by_subject: u64,
@@ -892,7 +894,7 @@ pub struct PrRow {
     pub discussion_participants: u64,
     /// Review threads with an inline comment in the period.
     pub threads: u64,
-    pub last_activity: Option<DateTime<Utc>>,
+    pub last_activity: Option<Timestamp>,
     pub latest_ci: Option<CheckOutcome>,
     /// The pull request's base-to-head diff when last fetched: a snapshot of
     /// the pull request, not changes made in the period.
@@ -934,8 +936,8 @@ pub fn pr_rows(
             PrSort::Activity => r.events as i64,
             PrSort::Comments => r.comments as i64,
             PrSort::Reviews => r.reviews as i64,
-            PrSort::Created => r.created_at.timestamp(),
-            PrSort::Updated => r.last_activity.map_or(i64::MIN, |t| t.timestamp()),
+            PrSort::Created => r.created_at.as_second(),
+            PrSort::Updated => r.last_activity.map_or(i64::MIN, |t| t.as_second()),
         };
         key(b)
             .cmp(&key(a))
@@ -1076,7 +1078,7 @@ pub struct Intensity {
 
 pub fn intensity(ds: &Dataset, opts: &Options, participation: Participation) -> Intensity {
     let rows = pr_rows(ds, opts, participation, None, PrSort::Activity);
-    let mut days: HashMap<&str, HashSet<NaiveDate>> = HashMap::new();
+    let mut days: HashMap<&str, HashSet<Date>> = HashMap::new();
     for e in selected(ds, opts) {
         if let Some(pr) = e.parent_pr_id.as_deref()
             && !e.event_type.is_automation()
@@ -1140,9 +1142,9 @@ fn timing_of(pr: &PullRequest, all: &[&ActivityEvent]) -> PrTiming {
         events
             .iter()
             .find(|e| e.occurred_at > r.occurred_at && same_actor(&e.actor, &pr.author))
-            .map(|e| (e.occurred_at - r.occurred_at).num_seconds())
+            .map(|e| e.occurred_at.duration_since(r.occurred_at).as_secs_f64() as i64)
     });
-    let secs = |d: Duration| d.num_seconds();
+    let secs = |d: SignedDuration| d.as_secs_f64() as i64;
     PrTiming {
         time_to_first_review_secs: first_review.map(|r| secs(r.occurred_at - pr.created_at)),
         creation_to_merge_secs: pr.merged_at.map(|m| secs(m - pr.created_at)),
@@ -1327,8 +1329,8 @@ pub struct PrCommitRow {
     pub headline: Option<String>,
     /// The commit author's GitHub login, or `unknown`.
     pub author: String,
-    pub authored_at: Option<DateTime<Utc>>,
-    pub committed_at: DateTime<Utc>,
+    pub authored_at: Option<Timestamp>,
+    pub committed_at: Timestamp,
     pub is_merge_commit: bool,
     pub url: Option<String>,
     /// The commit was in the pull request earlier but no longer is (for
@@ -1381,7 +1383,7 @@ pub fn pr_commit_rows(ds: &Dataset, pr_id: &str) -> Vec<PrCommitRow> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewRow {
     pub event_id: String,
-    pub submitted_at: DateTime<Utc>,
+    pub submitted_at: Timestamp,
     pub reviewer: String,
     pub state: Option<ReviewState>,
     pub repository: String,
@@ -1484,7 +1486,7 @@ pub fn issue_rows(ds: &Dataset, opts: &Options) -> Vec<IssueRow> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommentRow {
     pub event_id: String,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     pub author: String,
     pub kind: EventType,
     pub written_by_subject: bool,
@@ -1533,7 +1535,7 @@ pub struct CommitRow {
     pub event_id: String,
     pub sha: Option<String>,
     /// The date the commit is attributed to (see [`CommitDateBasis`]).
-    pub committed_at: DateTime<Utc>,
+    pub committed_at: Timestamp,
     pub repository: String,
     pub is_merge_commit: bool,
     pub url: Option<String>,
@@ -1568,7 +1570,7 @@ pub fn commit_rows(ds: &Dataset, opts: &Options) -> Vec<CommitRow> {
 pub struct ActivityRow {
     pub event_id: String,
     /// The instant the event is attributed to (see [`event_time`]).
-    pub occurred_at: DateTime<Utc>,
+    pub occurred_at: Timestamp,
     pub event_type: EventType,
     pub actor: String,
     pub by_subject: bool,

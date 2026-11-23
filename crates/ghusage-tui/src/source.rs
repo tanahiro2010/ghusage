@@ -3,16 +3,16 @@
 
 use std::path::PathBuf;
 
-use chrono::{DateTime, Utc};
 use ghusage_app::session::Session;
 use ghusage_core::metrics::Dataset;
 use ghusage_core::time::Period;
+use jiff::Timestamp;
 
 /// The most recent synchronization recorded in the cache.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LastSync {
-    pub started_at: DateTime<Utc>,
-    pub finished_at: Option<DateTime<Utc>>,
+    pub started_at: Timestamp,
+    pub finished_at: Option<Timestamp>,
     pub status: String,
     pub message: Option<String>,
 }
@@ -28,7 +28,7 @@ pub struct SystemInfo {
     pub cached_pull_requests: Option<u64>,
     pub cached_repositories: Option<u64>,
     pub last_sync: Option<LastSync>,
-    pub synced_at: Option<DateTime<Utc>>,
+    pub synced_at: Option<Timestamp>,
     /// Set when the cache could not be inspected.
     pub error: Option<String>,
 }

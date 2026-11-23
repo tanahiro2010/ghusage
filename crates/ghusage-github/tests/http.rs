@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use chrono::Utc;
 use common::*;
 use ghusage_github::{ApiError, ClientConfig, GitHubClient};
 use serde_json::json;
@@ -242,7 +241,7 @@ async fn too_many_requests_gives_up_after_max_attempts() {
 #[tokio::test]
 async fn primary_rate_limit_beyond_max_wait_fails_immediately() {
     let server = MockServer::start().await;
-    let reset = Utc::now().timestamp() + 3600;
+    let reset = jiff::Timestamp::now().as_second() + 3600;
     Mock::given(path("/user"))
         .respond_with(
             ResponseTemplate::new(403)
@@ -261,7 +260,7 @@ async fn primary_rate_limit_beyond_max_wait_fails_immediately() {
     let err = client(&server).viewer().await.unwrap_err();
     match &err {
         ApiError::RateLimited { reset_at } => {
-            assert_eq!(reset_at.map(|r| r.timestamp()), Some(reset));
+            assert_eq!(reset_at.map(|r| r.as_second()), Some(reset));
         }
         other => panic!("expected RateLimited, got {other:?}"),
     }
@@ -272,7 +271,7 @@ async fn primary_rate_limit_beyond_max_wait_fails_immediately() {
 #[tokio::test]
 async fn primary_rate_limit_waits_for_reset_within_max_wait() {
     let server = MockServer::start().await;
-    let reset = Utc::now().timestamp();
+    let reset = jiff::Timestamp::now().as_second();
     Mock::given(path("/user"))
         .respond_with(Sequence::new(vec![
             ResponseTemplate::new(429)
@@ -577,7 +576,7 @@ async fn rate_limit_resources_are_reported() {
     let r = client(&server).rate_limit().await.unwrap();
     assert_eq!(r.core_remaining, 4999);
     assert_eq!(r.core_limit, 5000);
-    assert_eq!(r.core_reset.timestamp(), 1_700_000_000);
+    assert_eq!(r.core_reset.as_second(), 1_700_000_000);
     assert_eq!(r.search_limit, 30);
     assert_eq!(r.graphql_remaining, 4993);
 }

@@ -1,7 +1,6 @@
 //! Synthetic activity used by the UI tests.
 #![allow(dead_code)]
 
-use chrono::{DateTime, Duration, Utc};
 use ghusage_core::coverage::{CoverageRecord, CoverageStatus, DataKind};
 use ghusage_core::metrics::{Dataset, Filter};
 use ghusage_core::model::{
@@ -11,6 +10,7 @@ use ghusage_core::model::{
 use ghusage_core::time::{Period, Zone, resolve_period};
 use ghusage_tui::app::{App, AppConfig};
 use ghusage_tui::source::{DataSource, MemorySource};
+use jiff::{SignedDuration, Timestamp};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -18,11 +18,11 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 pub const MALICIOUS_TITLE: &str =
     "\u{1b}[31mred\u{1b}[0m \u{1b}]0;pwned\u{7}title\u{9b}2J\u{202e}evil\r\nnext";
 
-pub fn utc(s: &str) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+pub fn utc(s: &str) -> Timestamp {
+    s.parse().unwrap()
 }
 
-pub fn now() -> DateTime<Utc> {
+pub fn now() -> Timestamp {
     utc("2026-11-21T12:00:00Z")
 }
 
@@ -31,7 +31,7 @@ pub fn zone() -> Zone {
 }
 
 pub fn period_30d() -> Period {
-    resolve_period(Some("30d"), None, "30d", zone(), now()).unwrap()
+    resolve_period(Some("30d"), None, "30d", &zone(), now()).unwrap()
 }
 
 pub fn alice() -> Actor {
@@ -84,9 +84,11 @@ fn pr(
         state,
         is_draft: false,
         created_at: created,
-        updated_at: Some(created + Duration::days(1)),
-        closed_at: (state != PrState::Open).then(|| created + Duration::days(2)),
-        merged_at: (state == PrState::Merged).then(|| created + Duration::days(2)),
+        updated_at: Some(created + SignedDuration::from_secs(24 * 60 * 60)),
+        closed_at: (state != PrState::Open)
+            .then(|| created + SignedDuration::from_secs(2 * 24 * 60 * 60)),
+        merged_at: (state == PrState::Merged)
+            .then(|| created + SignedDuration::from_secs(2 * 24 * 60 * 60)),
         merged_by: (state == PrState::Merged).then(alice),
         head_sha: None,
         latest_ci: None,
@@ -101,7 +103,7 @@ pub fn event(
     actor: Actor,
     repo: &str,
     pr: Option<&str>,
-    at: DateTime<Utc>,
+    at: Timestamp,
     meta: EventMeta,
 ) -> ActivityEvent {
     ActivityEvent {
@@ -134,7 +136,7 @@ fn review(state: ReviewState) -> EventMeta {
     }
 }
 
-fn coverage(start: DateTime<Utc>, end: DateTime<Utc>) -> Vec<CoverageRecord> {
+fn coverage(start: Timestamp, end: Timestamp) -> Vec<CoverageRecord> {
     DataKind::ALL
         .iter()
         .map(|k| CoverageRecord {
@@ -317,7 +319,10 @@ pub fn dataset() -> Dataset {
         vec![],
         vec![],
         events,
-        coverage(p.start - Duration::days(400), p.end),
+        coverage(
+            p.start - SignedDuration::from_secs(400 * 24 * 60 * 60),
+            p.end,
+        ),
     )
 }
 

@@ -1,13 +1,13 @@
 //! CSV output. Each report kind maps to one flat table. Unknown values are
 //! empty cells; zero is written as `0`.
 
-use chrono::{DateTime, Utc};
 use ghusage_core::coverage::{self, CoverageStatus};
+use jiff::Timestamp;
 
 use crate::report::{PrReport, Report, ReportKind};
 
-fn ts(t: Option<DateTime<Utc>>) -> String {
-    t.map(|t| t.to_rfc3339()).unwrap_or_default()
+fn ts(t: Option<Timestamp>) -> String {
+    t.map(|t| t.to_string()).unwrap_or_default()
 }
 
 fn opt<T: ToString>(v: Option<T>) -> String {
@@ -104,8 +104,8 @@ pub fn report_csv(r: &Report, kind: ReportKind) -> String {
                 let cov = bucket_coverage(r, b.bucket.start, b.bucket.end);
                 w.write_record([
                     b.bucket.label.clone(),
-                    b.bucket.start.to_rfc3339(),
-                    b.bucket.end.to_rfc3339(),
+                    b.bucket.start.to_string(),
+                    b.bucket.end.to_string(),
                     s.commits.to_string(),
                     s.merge_commits.to_string(),
                     s.prs_created.to_string(),
@@ -220,7 +220,7 @@ pub fn report_csv(r: &Report, kind: ReportKind) -> String {
                     p.state.as_str().to_string(),
                     p.is_draft.to_string(),
                     text(&p.author),
-                    p.created_at.to_rfc3339(),
+                    p.created_at.to_string(),
                     ts(p.merged_at),
                     p.events.to_string(),
                     p.events_by_subject.to_string(),
@@ -257,7 +257,7 @@ pub fn report_csv(r: &Report, kind: ReportKind) -> String {
                 for x in rows {
                     w.write_record([
                         dir.to_string(),
-                        x.submitted_at.to_rfc3339(),
+                        x.submitted_at.to_string(),
                         text(&x.reviewer),
                         opt(x.state.map(|s| s.as_str())),
                         x.repository.clone(),
@@ -284,7 +284,7 @@ pub fn report_csv(r: &Report, kind: ReportKind) -> String {
             .ok();
             for c in r.comments.iter().flatten() {
                 w.write_record([
-                    c.created_at.to_rfc3339(),
+                    c.created_at.to_string(),
                     text(&c.author),
                     c.kind.as_str().to_string(),
                     c.written_by_subject.to_string(),
@@ -329,7 +329,7 @@ pub fn report_csv(r: &Report, kind: ReportKind) -> String {
     finish(w)
 }
 
-fn bucket_coverage(r: &Report, start: DateTime<Utc>, end: DateTime<Utc>) -> CoverageStatus {
+fn bucket_coverage(r: &Report, start: Timestamp, end: Timestamp) -> CoverageStatus {
     // Coverage of a bucket is derived from the period segments.
     CoverageStatus::combine(r.coverage.iter().map(|c| {
         let records: Vec<coverage::CoverageRecord> = c
@@ -364,7 +364,7 @@ pub fn pr_csv(r: &PrReport) -> String {
     .ok();
     for e in &r.timeline {
         w.write_record([
-            e.occurred_at.to_rfc3339(),
+            e.occurred_at.to_string(),
             text(&e.actor),
             format!("{:?}", e.actor_kind).to_ascii_lowercase(),
             e.event_type.as_str().to_string(),

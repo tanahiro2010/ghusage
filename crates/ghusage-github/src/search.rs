@@ -3,12 +3,12 @@
 
 use std::collections::HashSet;
 
-use chrono::{DateTime, TimeZone, Utc};
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::model::{
     ActivityEvent, Actor, EventId, EventMeta, EventType, Repository, Source, Visibility,
 };
 use ghusage_core::time::Period;
+use jiff::Timestamp;
 use reqwest::header::HeaderMap;
 use serde::Deserialize;
 use serde_json::Value;
@@ -33,11 +33,11 @@ struct Range {
 
 impl Range {
     fn of(period: Period) -> Self {
-        let lo = period.start.timestamp();
-        let hi = if period.end.timestamp_subsec_nanos() > 0 {
-            period.end.timestamp() + 1
+        let lo = period.start.as_second();
+        let hi = if period.end.subsec_nanosecond() > 0 {
+            period.end.as_second() + 1
         } else {
-            period.end.timestamp()
+            period.end.as_second()
         };
         Self {
             lo,
@@ -51,9 +51,8 @@ impl Range {
 }
 
 fn iso(secs: i64) -> String {
-    Utc.timestamp_opt(secs, 0)
-        .single()
-        .map(|t| t.format("%Y-%m-%dT%H:%M:%S+00:00").to_string())
+    Timestamp::from_second(secs)
+        .map(|t| t.strftime("%Y-%m-%dT%H:%M:%S%.f%:z").to_string())
         .unwrap_or_default()
 }
 
@@ -249,7 +248,7 @@ pub(crate) async fn commits(
     })
     .await?;
     let mut reasons = outcome.reasons;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let mut seen = HashSet::new();
     let mut records = Vec::new();
     let mut bad = 0usize;
@@ -289,7 +288,7 @@ pub(crate) async fn commits(
 pub(crate) fn commit_record(
     item: SearchCommit,
     repository: Repository,
-    now: DateTime<Utc>,
+    now: Timestamp,
     source: Source,
 ) -> Option<CommitRecord> {
     let sha = item.sha.clone()?;
@@ -435,8 +434,8 @@ mod tests {
     #[test]
     fn ranges_cover_whole_seconds_inclusively() {
         let p = Period::new(
-            Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
-            Utc.with_ymd_and_hms(2024, 1, 2, 0, 0, 0).unwrap(),
+            "2024-01-01T00:00:00Z".parse().unwrap(),
+            "2024-01-02T00:00:00Z".parse().unwrap(),
         )
         .unwrap();
         assert_eq!(

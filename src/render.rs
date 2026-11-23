@@ -1,7 +1,6 @@
 //! Human-readable table output. All text from GitHub is sanitized before
 //! it reaches the terminal.
 
-use chrono::{DateTime, Utc};
 use ghusage_app::commit::{CommitReport, CommitSource, PersonReport};
 use ghusage_app::report::{PrReport, Report, ReportKind};
 use ghusage_core::commit::DiffLineKind;
@@ -9,6 +8,7 @@ use ghusage_core::coverage::{CoverageStatus, CoverageSummary};
 use ghusage_core::metrics::{DiffCoverage, DiffTotals, Stats, Summary};
 use ghusage_core::sanitize::{display_width, sanitize_code_line, sanitize_line, truncate_width};
 use ghusage_core::time::Zone;
+use jiff::Timestamp;
 
 /// Output styling. Colors are only used on a terminal without NO_COLOR.
 #[derive(Debug, Clone, Copy)]
@@ -181,12 +181,12 @@ fn md_text(s: &str) -> String {
     out
 }
 
-fn t(zone: Zone, ts: Option<DateTime<Utc>>) -> String {
+fn t(zone: &Zone, ts: Option<Timestamp>) -> String {
     ts.map(|t| zone.format(t, "%Y-%m-%d %H:%M"))
         .unwrap_or_else(|| "-".into())
 }
 
-fn header(r: &Report, zone: Zone, title: &str, style: Style) -> String {
+fn header(r: &Report, zone: &Zone, title: &str, style: Style) -> String {
     let start = r
         .period
         .start
@@ -217,8 +217,8 @@ fn header(r: &Report, zone: Zone, title: &str, style: Style) -> String {
 /// Coverage footer: always shown so incomplete data is never silent.
 pub fn coverage_lines(
     cov: &[CoverageSummary],
-    synced: Option<DateTime<Utc>>,
-    zone: Zone,
+    synced: Option<Timestamp>,
+    zone: &Zone,
     style: Style,
 ) -> String {
     let mut out = String::new();
@@ -523,7 +523,7 @@ fn repo_table(r: &Report, limit: Option<usize>) -> Table {
             s.pr_internal_events.to_string(),
             line_cells(&s.diff_stats)[0].clone(),
             line_cells(&s.diff_stats)[1].clone(),
-            self::t(zone, s.last_activity),
+            self::t(&zone, s.last_activity),
         ]);
     }
     t
@@ -550,7 +550,7 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
     let mut out = String::new();
     match kind {
         ReportKind::Overview => {
-            out.push_str(&header(r, zone, "Overview", style));
+            out.push_str(&header(r, &zone, "Overview", style));
             out.push_str(&kv(&summary_lines(&r.metrics, r.snapshot.open_prs)));
             if !r.repositories.is_empty() {
                 out.push('\n');
@@ -568,7 +568,7 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
                 ghusage_core::time::Granularity::Month => "Monthly",
                 ghusage_core::time::Granularity::Year => "Yearly",
             };
-            out.push_str(&header(r, zone, title, style));
+            out.push_str(&header(r, &zone, title, style));
             out.push_str(&breakdown_table(r, true).render(style));
             out.push_str(
                 &style.dim(&line_note(
@@ -580,7 +580,7 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
             );
         }
         ReportKind::Repositories => {
-            out.push_str(&header(r, zone, "Repositories", style));
+            out.push_str(&header(r, &zone, "Repositories", style));
             let t = repo_table(r, None);
             if t.is_empty() {
                 out.push_str("No repository activity in this period.\n");
@@ -593,7 +593,7 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
             }
         }
         ReportKind::PullRequests { .. } => {
-            out.push_str(&header(r, zone, "Pull requests", style));
+            out.push_str(&header(r, &zone, "Pull requests", style));
             let mut t = Table::new(&[
                 "Repository",
                 "#",
@@ -704,7 +704,7 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
             }
         }
         ReportKind::Reviews => {
-            out.push_str(&header(r, zone, "Reviews", style));
+            out.push_str(&header(r, &zone, "Reviews", style));
             let s = &r.metrics;
             out.push_str(&kv(&[
                 (
@@ -760,7 +760,7 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
             }
         }
         ReportKind::Comments => {
-            out.push_str(&header(r, zone, "Comments", style));
+            out.push_str(&header(r, &zone, "Comments", style));
             out.push_str(&kv(&summary_lines(&r.metrics, r.snapshot.open_prs)[8..11]));
             let rows = r.comments.as_deref().unwrap_or(&[]);
             if !rows.is_empty() {
@@ -791,7 +791,7 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
             }
         }
         ReportKind::Issues => {
-            out.push_str(&header(r, zone, "Issues", style));
+            out.push_str(&header(r, &zone, "Issues", style));
             let s = &r.metrics;
             out.push_str(&kv(&[
                 (
@@ -837,7 +837,7 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
         }
     }
     out.push('\n');
-    out.push_str(&coverage_lines(&r.coverage, r.synced_at, zone, style));
+    out.push_str(&coverage_lines(&r.coverage, r.synced_at, &zone, style));
     out
 }
 
@@ -868,12 +868,12 @@ pub fn pr(r: &PrReport, timeline: bool, style: Style) -> String {
     out.push_str(&kv(&[
         ("Author", sanitize_line(&r.author)),
         ("State (current)", state),
-        ("Created", t(zone, Some(r.created_at))),
+        ("Created", t(&zone, Some(r.created_at))),
         (
             "Merged",
             match (&r.merged_at, &r.merged_by) {
-                (Some(m), Some(b)) => format!("{} by {}", t(zone, Some(*m)), sanitize_line(b)),
-                (Some(m), None) => format!("{} (merger unknown)", t(zone, Some(*m))),
+                (Some(m), Some(b)) => format!("{} by {}", t(&zone, Some(*m)), sanitize_line(b)),
+                (Some(m), None) => format!("{} (merger unknown)", t(&zone, Some(*m))),
                 _ => "-".into(),
             },
         ),
@@ -902,7 +902,7 @@ pub fn pr(r: &PrReport, timeline: bool, style: Style) -> String {
                     } else {
                         "files"
                     },
-                    t(zone, Some(d.observed_at))
+                    t(&zone, Some(d.observed_at))
                 ),
                 None => "unknown (sync the pull request again to fetch it)".into(),
             },
@@ -993,12 +993,12 @@ pub fn pr(r: &PrReport, timeline: bool, style: Style) -> String {
     out.push_str(&style.dim(&format!(
         "Coverage: {}  (synced: {})\n",
         r.coverage.as_str(),
-        t(zone, r.synced_at)
+        t(&zone, r.synced_at)
     )));
     out
 }
 
-fn person(p: &PersonReport, zone: Zone) -> String {
+fn person(p: &PersonReport, zone: &Zone) -> String {
     let who = match (&p.name, &p.login) {
         (Some(n), Some(l)) => format!("{n} ({l})"),
         (Some(n), None) => n.clone(),
@@ -1035,8 +1035,8 @@ pub fn commit(r: &CommitReport, zone: Zone, style: Style) -> String {
     };
     out.push_str(&kv(&[
         ("SHA", sanitize_line(&r.sha)),
-        ("Author", person(&r.author, zone)),
-        ("Committer", person(&r.committer, zone)),
+        ("Author", person(&r.author, &zone)),
+        ("Committer", person(&r.committer, &zone)),
         ("Parents", sanitize_line(&parents)),
         (
             "Changes",

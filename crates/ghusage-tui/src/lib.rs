@@ -95,7 +95,7 @@ fn run_here(opts: TuiOptions) -> Result<(), TuiError> {
         Box::new(SessionSource::new(session)),
         AppConfig {
             period: opts.period,
-            zone: opts.zone,
+            zone: opts.zone.clone(),
             filter: opts.filter.clone(),
             background_sync: opts.background_sync,
         },
@@ -141,7 +141,7 @@ where
             match commit_fetch::spawn(
                 opts.session.clone(),
                 opts.background_sync,
-                opts.zone,
+                opts.zone.clone(),
                 commit_tx.clone(),
             ) {
                 Ok(tx) => commit_loader = Some(tx),

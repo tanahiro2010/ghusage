@@ -2,7 +2,6 @@
 
 use std::collections::HashSet;
 
-use chrono::{DateTime, Duration, TimeZone, Utc};
 use ghusage_core::coverage::{CoverageRecord, CoverageStatus, DataKind};
 use ghusage_core::model::{
     ActivityEvent, Actor, ActorKind, CheckOutcome, Collection, EventId, EventMeta, EventType,
@@ -10,9 +9,12 @@ use ghusage_core::model::{
 };
 use ghusage_core::time::Period;
 use ghusage_storage::{PrCommitLink, PrSnapshot, StorageError, Store, SyncLock, WriteBatch};
+use jiff::{SignedDuration, Timestamp};
 
-fn t(day: u32, hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 3, day, hour, 0, 0).unwrap()
+fn t(day: u32, hour: u32) -> Timestamp {
+    format!("2026-03-{day:02}T{hour:02}:00:00Z")
+        .parse()
+        .unwrap()
 }
 
 fn user(login: &str) -> Actor {
@@ -67,7 +69,7 @@ fn event(
     ty: EventType,
     repo_id: &str,
     pr: Option<&str>,
-    at: DateTime<Utc>,
+    at: Timestamp,
 ) -> ActivityEvent {
     ActivityEvent {
         event_id: id.clone(),
@@ -85,7 +87,7 @@ fn event(
     }
 }
 
-fn commit_event(repo_id: &str, sha: &str, at: DateTime<Utc>) -> ActivityEvent {
+fn commit_event(repo_id: &str, sha: &str, at: Timestamp) -> ActivityEvent {
     let mut e = event(
         EventId::commit(repo_id, sha),
         EventType::CommitAuthored,
@@ -99,7 +101,7 @@ fn commit_event(repo_id: &str, sha: &str, at: DateTime<Utc>) -> ActivityEvent {
     e
 }
 
-fn pr_commit_event(pr_id: &str, repo_id: &str, sha: &str, at: DateTime<Utc>) -> ActivityEvent {
+fn pr_commit_event(pr_id: &str, repo_id: &str, sha: &str, at: Timestamp) -> ActivityEvent {
     let mut e = event(
         EventId::pr_commit(pr_id, sha),
         EventType::PrCommit,
@@ -113,7 +115,7 @@ fn pr_commit_event(pr_id: &str, repo_id: &str, sha: &str, at: DateTime<Utc>) -> 
     e
 }
 
-fn comment_event(pr_id: &str, comment: &str, at: DateTime<Utc>) -> ActivityEvent {
+fn comment_event(pr_id: &str, comment: &str, at: Timestamp) -> ActivityEvent {
     event(
         EventId::comment(comment),
         EventType::ConversationComment,
@@ -246,9 +248,9 @@ fn stored_data_reads_back_unchanged() {
 #[test]
 fn sub_second_timestamps_round_trip_exactly() {
     let mut s = store_with_base();
-    let precise = t(4, 1) + Duration::nanoseconds(123_456_789);
+    let precise = t(4, 1) + SignedDuration::from_nanos(123_456_789);
     let mut e = commit_event("R1", "bbb222", precise);
-    e.meta.author_date = Some(precise - Duration::milliseconds(1500));
+    e.meta.author_date = Some(precise - SignedDuration::from_millis(1500));
     e.observed_at = precise;
     let mut b = WriteBatch {
         account: "alice".into(),
@@ -402,12 +404,7 @@ fn repository_can_be_marked_inaccessible_keeping_its_data() {
 // ---------------------------------------------------------------------------
 // Removal observations
 
-fn snapshot(
-    pr_id: &str,
-    at: DateTime<Utc>,
-    colls: &[Collection],
-    present: &[EventId],
-) -> PrSnapshot {
+fn snapshot(pr_id: &str, at: Timestamp, colls: &[Collection], present: &[EventId]) -> PrSnapshot {
     PrSnapshot {
         pr_id: pr_id.into(),
         observed_at: at,
@@ -476,12 +473,7 @@ fn comment_missing_from_complete_resync_is_marked_removed_then_restored() {
     assert!(!event_by_id(&alice_dataset(&s), &c1).is_removed());
 }
 
-fn check_run_event(
-    node: &str,
-    sha: &str,
-    outcome: CheckOutcome,
-    at: DateTime<Utc>,
-) -> ActivityEvent {
+fn check_run_event(node: &str, sha: &str, outcome: CheckOutcome, at: Timestamp) -> ActivityEvent {
     let mut e = event(
         EventId::check_run(node),
         EventType::CheckRun,
@@ -503,7 +495,7 @@ fn check_run_event(
 
 /// A resync of PR1 whose head commit is `head`, with the checks of that
 /// head fetched completely.
-fn checks_resync(head: &str, at: DateTime<Utc>, runs: Vec<ActivityEvent>) -> WriteBatch {
+fn checks_resync(head: &str, at: Timestamp, runs: Vec<ActivityEvent>) -> WriteBatch {
     let mut p = pr("PR1", "R1", 1);
     p.head_sha = Some(head.into());
     let present: Vec<EventId> = runs.iter().map(|e| e.event_id.clone()).collect();
@@ -703,7 +695,7 @@ fn count_rows(path: &std::path::Path, sql: &str) -> i64 {
 
 fn march() -> ghusage_core::metrics::Options {
     ghusage_core::metrics::Options {
-        period: Period::new(t(1, 0), Utc.with_ymd_and_hms(2026, 4, 1, 0, 0, 0).unwrap()).unwrap(),
+        period: Period::new(t(1, 0), "2026-04-01T00:00:00Z".parse().unwrap()).unwrap(),
         zone: ghusage_core::time::Zone::utc(),
         filter: ghusage_core::metrics::Filter::default(),
         commit_basis: ghusage_core::metrics::CommitDateBasis::Committer,
@@ -954,7 +946,7 @@ fn range_selects_by_event_time_or_commit_author_date() {
             .iter()
             .any(|e| e.event_id == EventId::commit("R1", "aaa111"))
     );
-    let just_after = Period::new(t(1, 10), t(1, 10) + Duration::nanoseconds(1)).unwrap();
+    let just_after = Period::new(t(1, 10), t(1, 10) + SignedDuration::from_nanos(1)).unwrap();
     let ds = s
         .load_dataset(&subject("alice"), true, Some(just_after))
         .unwrap();
@@ -1469,7 +1461,7 @@ fn commit_statistics_are_stored_and_unknown_ones_stay_absent() {
 fn pull_request_diff_keeps_the_latest_observation() {
     use ghusage_core::metrics::PrDiff;
     let mut s = store_with_base();
-    let diff = |additions: u64, at: DateTime<Utc>| PrDiff {
+    let diff = |additions: u64, at: Timestamp| PrDiff {
         additions,
         deletions: 1,
         changed_files: 2,

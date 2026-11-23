@@ -85,7 +85,7 @@ impl Loader {
             self.runtime = Some(rt);
         }
         let rt = self.runtime.as_ref().expect("set above");
-        let (cfg, online, zone) = (&self.cfg, self.online, self.zone);
+        let (cfg, online, zone) = (&self.cfg, self.online, self.zone.clone());
         let session = &mut self.session;
         rt.block_on(async {
             if session.is_none() {

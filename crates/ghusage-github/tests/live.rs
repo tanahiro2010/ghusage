@@ -46,8 +46,8 @@ async fn live_pull_request_of_a_public_repository() {
 async fn live_search_and_metadata() {
     let Some(c) = live_client() else { return };
     let viewer = c.viewer().await.unwrap();
-    let end = chrono::Utc::now();
-    let period = Period::new(end - chrono::Duration::days(7), end).unwrap();
+    let end = jiff::Timestamp::now();
+    let period = Period::new(end - jiff::SignedDuration::from_secs(7 * 24 * 60 * 60), end).unwrap();
     let commits = c.search_commits(&viewer.login, period, true).await.unwrap();
     eprintln!(
         "commits={} status={:?}",

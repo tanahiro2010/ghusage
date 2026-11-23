@@ -7,8 +7,7 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-chrono = "0.4.45"
-chrono-tz = "0.10.4"
+jiff = { version = "1.0.2", features = ["serde"] }
 ghusage-app = { version = "0.1.6", path = "../ghusage-app" }
 ghusage-core = { version = "0.1.6", path = "../ghusage-core" }
 ghusage-github = { version = "0.1.6", path = "../ghusage-github" }

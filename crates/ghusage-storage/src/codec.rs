@@ -4,37 +4,36 @@
 //! `*_ns` column holding the sub-second nanoseconds, so values round-trip
 //! exactly while the seconds column stays directly comparable and indexable.
 
-use chrono::{DateTime, Utc};
 use ghusage_core::model::{Actor, ActorKind};
+use jiff::Timestamp;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::{Result, StorageError};
 
-pub(crate) fn secs(dt: DateTime<Utc>) -> i64 {
-    dt.timestamp()
+pub(crate) fn secs(dt: Timestamp) -> i64 {
+    dt.as_second()
 }
 
-pub(crate) fn nanos(dt: DateTime<Utc>) -> i64 {
-    i64::from(dt.timestamp_subsec_nanos())
+pub(crate) fn nanos(dt: Timestamp) -> i64 {
+    i64::from(dt.subsec_nanosecond())
 }
 
-pub(crate) fn opt_secs(dt: Option<DateTime<Utc>>) -> Option<i64> {
+pub(crate) fn opt_secs(dt: Option<Timestamp>) -> Option<i64> {
     dt.map(secs)
 }
 
-pub(crate) fn opt_nanos(dt: Option<DateTime<Utc>>) -> Option<i64> {
+pub(crate) fn opt_nanos(dt: Option<Timestamp>) -> Option<i64> {
     dt.map(nanos)
 }
 
-pub(crate) fn time(s: i64, ns: i64) -> Result<DateTime<Utc>> {
-    u32::try_from(ns)
-        .ok()
-        .and_then(|ns| DateTime::from_timestamp(s, ns))
-        .ok_or_else(|| StorageError::Data(format!("invalid stored timestamp {s}.{ns}")))
+pub(crate) fn time(s: i64, ns: i64) -> Result<Timestamp> {
+    let nanos = i128::from(s) * 1_000_000_000 + i128::from(ns);
+    Timestamp::from_nanosecond(nanos)
+        .map_err(|_| StorageError::Data(format!("invalid stored timestamp {s}.{ns}")))
 }
 
-pub(crate) fn opt_time(s: Option<i64>, ns: Option<i64>) -> Result<Option<DateTime<Utc>>> {
+pub(crate) fn opt_time(s: Option<i64>, ns: Option<i64>) -> Result<Option<Timestamp>> {
     s.map(|s| time(s, ns.unwrap_or(0))).transpose()
 }
 

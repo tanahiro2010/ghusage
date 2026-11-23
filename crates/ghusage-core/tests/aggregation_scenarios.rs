@@ -1126,7 +1126,7 @@ fn spring_forward_day_has_23_hours_and_keeps_its_events() {
     let days = metrics::breakdown(&ds, &opts, Granularity::Day);
     let hours: Vec<i64> = days
         .iter()
-        .map(|b| (b.bucket.end - b.bucket.start).num_hours())
+        .map(|b| (b.bucket.end - b.bucket.start).as_hours())
         .collect();
     assert_eq!(hours, vec![24, 23, 24]);
     let per: Vec<u64> = days.iter().map(|b| b.summary.commits).collect();
@@ -1152,7 +1152,7 @@ fn fall_back_day_has_25_hours_and_keeps_its_events() {
     let days = metrics::breakdown(&ds, &opts, Granularity::Day);
     let hours: Vec<i64> = days
         .iter()
-        .map(|b| (b.bucket.end - b.bucket.start).num_hours())
+        .map(|b| (b.bucket.end - b.bucket.start).as_hours())
         .collect();
     assert_eq!(hours, vec![25, 24]);
     let per: Vec<u64> = days.iter().map(|b| b.summary.commits).collect();
@@ -1727,7 +1727,7 @@ fn hundred_thousand_events_aggregate_to_expected_totals() {
     let mut events = Vec::with_capacity(100_000);
     for i in 0..100_000u32 {
         // one event every 5 minutes: 100,000 * 300 s ≈ 347 days, all in 2026
-        let at = start + chrono::Duration::seconds(i64::from(i) * 300);
+        let at = start + jiff::SignedDuration::from_secs(i64::from(i) * 300);
         let pr = format!("P{}", i % 1000);
         let e = match i % 5 {
             // 2 of every 5: the user's commits -> 40,000

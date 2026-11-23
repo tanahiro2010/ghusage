@@ -3,13 +3,13 @@
 
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
 use ghusage_core::coverage::{self, DataKind};
 use ghusage_core::metrics::Dataset;
 use ghusage_core::model::Subject;
 use ghusage_core::time::Period;
 use ghusage_github::{ClientConfig, Credentials, GitHubClient, TokenSource};
 use ghusage_storage::{Store, SyncLock};
+use jiff::Timestamp;
 
 use crate::error::{AppError, Result};
 use crate::paths;
@@ -158,7 +158,7 @@ impl Session {
 
     /// End of the longest leading part of `period` that every data kind has
     /// completely synced, or `None` when even its start is missing.
-    pub fn synced_until(&self, period: Period) -> Result<Option<DateTime<Utc>>> {
+    pub fn synced_until(&self, period: Period) -> Result<Option<Timestamp>> {
         let records = self.coverage()?;
         let mut until = period.end;
         for k in DataKind::ALL {
@@ -185,7 +185,7 @@ impl Session {
             Some(dir) => Some(SyncLock::acquire(dir)?),
             None => None,
         };
-        let mut opts = SyncOptions::new(period, Utc::now());
+        let mut opts = SyncOptions::new(period, Timestamp::now());
         opts.full = full;
         opts.public_only = self.config.public_only;
         opts.concurrency = concurrency;
@@ -242,7 +242,7 @@ impl Session {
         Ok(ds)
     }
 
-    pub fn last_synced_at(&self) -> Result<Option<DateTime<Utc>>> {
+    pub fn last_synced_at(&self) -> Result<Option<Timestamp>> {
         Ok(self
             .store
             .last_sync_run(&self.subject.login)?

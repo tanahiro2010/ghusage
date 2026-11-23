@@ -2,9 +2,9 @@
 
 use std::collections::HashSet;
 
-use chrono::Utc;
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::model::{ActivityEvent, EventId, EventMeta, EventType, Issue, Source};
+use jiff::Timestamp;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -134,7 +134,7 @@ pub(crate) async fn fetch(
         }
     }
 
-    let now = Utc::now();
+    let now = Timestamp::now();
     let mut events = vec![ActivityEvent {
         event_id: EventId::issue_created(&id),
         event_type: EventType::IssueOpened,
