@@ -8,9 +8,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use ghusage_app::session::{ApiActivity, ApiActivitySnapshot};
 use ghusage_app::sync::SyncProgress;
 use ghusage_core::coverage::DataKind;
-use ghusage_github::{Activity, ActivitySnapshot};
 
 const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const TICK: Duration = Duration::from_millis(100);
@@ -62,7 +62,7 @@ impl State {
 /// The lines of one frame: status, requests in flight, latest step.
 fn frame(
     state: &State,
-    activity: Option<&ActivitySnapshot>,
+    activity: Option<&ApiActivitySnapshot>,
     tick: usize,
     elapsed: Duration,
     width: usize,
@@ -142,12 +142,12 @@ pub(crate) struct Progress {
 }
 
 /// Sync progress plus, when known, the client's requests in flight.
-type Shared = (Mutex<State>, Condvar, Option<Arc<Activity>>);
+type Shared = (Mutex<State>, Condvar, Option<ApiActivity>);
 
 impl Progress {
     /// Starts drawing on stderr if it is a terminal; otherwise does nothing.
     /// `activity` adds the requests in flight.
-    pub(crate) fn start(activity: Option<Arc<Activity>>) -> Self {
+    pub(crate) fn start(activity: Option<ApiActivity>) -> Self {
         if !std::io::stderr().is_terminal() {
             return Self {
                 shared: None,
@@ -205,7 +205,7 @@ fn paint(shared: &Shared) {
         if started.elapsed() < Duration::from_millis(300) {
             continue;
         }
-        let snapshot = activity.as_ref().map(|a| a.snapshot());
+        let snapshot = activity.as_ref().map(ApiActivity::snapshot);
         let lines = frame(
             &st,
             snapshot.as_ref(),
@@ -283,12 +283,12 @@ mod tests {
     fn frame_lists_requests_in_flight_and_counts_the_rest() {
         let st = State::default();
         let running = (0..6)
-            .map(|i| ghusage_github::InFlight {
+            .map(|i| ghusage_app::session::ApiInFlight {
                 label: format!("search commits p{}", i + 2),
                 elapsed: Duration::from_millis(1200),
             })
             .collect();
-        let a = ActivitySnapshot {
+        let a = ApiActivitySnapshot {
             running,
             limit: 8,
             done: 41,

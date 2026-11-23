@@ -7,15 +7,14 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use ghusage_app::report::{self, QueryContext, ReportKind};
-use ghusage_app::session::{self, Session, SessionConfig};
-use ghusage_app::{AppError, Result, csv_out, exit};
+use ghusage_app::session::{Session, SessionConfig};
+use ghusage_app::{AppError, Result, commands, csv_out, exit};
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::metrics::{
     CommitDateBasis, Filter, Ownership, Participation, PrSort, VisibilityFilter,
 };
 use ghusage_core::model::{EventType, PrState};
 use ghusage_core::time::{Granularity, Period, Zone, resolve_period};
-use ghusage_github::ClientConfig;
 use jiff::{SignedDuration, Timestamp};
 
 use cli::{AuthCommand, CacheCommand, Cli, Command, Format, GlobalArgs};
@@ -80,49 +79,8 @@ fn session_config(g: &GlobalArgs) -> SessionConfig {
         user: g.user.clone(),
         token_file: g.token_file.clone(),
         public_only: g.public_only,
-        client: client_config(g),
+        client: ghusage_app::session::client_config(g.concurrency as usize),
     }
-}
-
-/// Client settings. `GHUSAGE_API_URL` and `GHUSAGE_GRAPHQL_URL` point the
-/// client at another API endpoint (for example GitHub Enterprise Server).
-fn client_config(g: &GlobalArgs) -> ClientConfig {
-    let mut c = ClientConfig {
-        concurrency: g.concurrency as usize,
-        ..ClientConfig::default()
-    };
-    if let Some(url) = std::env::var("GHUSAGE_API_URL")
-        .ok()
-        .filter(|v| !v.is_empty())
-    {
-        c.api_base = url.trim_end_matches('/').to_string();
-        // GitHub Enterprise Server serves REST at /api/v3 and GraphQL at
-        // /api/graphql; github.com-style bases append /graphql.
-        c.graphql_url = match c.api_base.strip_suffix("/api/v3") {
-            Some(host) => format!("{host}/api/graphql"),
-            None => format!("{}/graphql", c.api_base),
-        };
-    }
-    if let Some(url) = std::env::var("GHUSAGE_GRAPHQL_URL")
-        .ok()
-        .filter(|v| !v.is_empty())
-    {
-        c.graphql_url = url;
-    }
-    if let Some(ms) = std::env::var("GHUSAGE_BACKOFF_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-    {
-        c.backoff_base = std::time::Duration::from_millis(ms);
-    }
-    if let Some(ms) = std::env::var("GHUSAGE_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|ms| *ms > 0)
-    {
-        c.request_timeout = std::time::Duration::from_millis(ms);
-    }
-    c
 }
 
 fn filter(g: &GlobalArgs) -> Filter {
@@ -386,7 +344,7 @@ async fn run(cli: Cli) -> Result<i32> {
 /// at that sync instead of fetching the last few minutes again.
 async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<(Session, Period)> {
     let mut s = Session::open(session_config(g)).await?;
-    if let Some(reason) = &s.offline_reason {
+    if let Some(reason) = &s.offline_state().reason {
         eprintln!(
             "warning: GitHub is not reachable ({}); showing cached data",
             clean(reason)
@@ -411,11 +369,7 @@ async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<
             );
             return Ok((s, Period::new(period.start, until)?));
         }
-        let progress = progress::Progress::start(
-            s.client
-                .as_ref()
-                .map(ghusage_github::GitHubClient::activity),
-        );
+        let progress = progress::Progress::start(s.api_activity());
         let synced = s
             .sync(period, false, g.concurrency as usize, &|p| {
                 progress.update(p);
@@ -507,54 +461,28 @@ async fn pr_cmd(g: &GlobalArgs, a: &cli::PrArgs, zone: Zone) -> Result<i32> {
         }
     }
     let mut s = Session::open(session_config(g)).await?;
-    if let Some(reason) = &s.offline_reason {
+    if let Some(reason) = &s.offline_state().reason {
         eprintln!(
             "warning: GitHub is not reachable ({}); showing cached data",
             clean(reason)
         );
     }
-    // A single pull request is always refreshed when online. GitHub resolves
-    // old URLs of renamed repositories, so the fetched id is authoritative.
-    let mut fetched_id = None;
-    if let Some(client) = &s.client {
-        let bundle = client
-            .fetch_pull_request(&owner, &name, number)
-            .await
-            .map_err(AppError::from);
-        match bundle {
-            Ok(b) => {
-                fetched_id = Some(b.pull_request.id.clone());
-                let involved = ghusage_app::sync::involves(&s.subject, &b);
-                let mut batch = ghusage_app::sync::pr_batch(&s.subject, b);
-                if !involved {
-                    // Viewing someone else's pull request must not add it
-                    // to your own activity.
-                    batch.account =
-                        format!("{}{}", s.subject.login, ghusage_app::sync::VIEWED_SUFFIX);
-                    batch
-                        .events
-                        .retain(|e| e.event_type != EventType::CommitAuthored);
-                }
-                s.store.apply(&batch)?;
-            }
-            Err(e @ AppError::AuthRejected(_)) => return Err(e),
-            Err(e) => {
-                if s.store.find_pr(&owner, &name, number)?.is_none() {
-                    return Err(e);
-                }
+    let loaded = s.load_pr(&owner, &name, number).await;
+    let loaded = match loaded {
+        Ok(result) => {
+            if let Some(error) = result.refresh_error.as_deref() {
                 eprintln!(
                     "warning: could not refresh pull request, showing cached data: {}",
-                    clean(&e)
+                    clean(&error)
                 );
             }
+            result
         }
-    }
-    let pr_id = match fetched_id {
-        Some(id) => Some(id),
-        None => s.store.find_pr(&owner, &name, number)?,
+        Err(e) => return Err(e),
     };
+    let pr_id = loaded.pr_id;
     let Some(pr_id) = pr_id else {
-        let hint = if s.client.is_none() {
+        let hint = if s.is_offline() {
             "run without --offline to fetch it; if the repository was renamed, use its current URL"
         } else {
             "it could not be fetched from GitHub"
@@ -585,7 +513,7 @@ async fn commit_cmd(g: &GlobalArgs, a: &cli::CommitArgs, zone: Zone) -> Result<i
         )));
     };
     let mut s = Session::open(session_config(g)).await?;
-    if let Some(reason) = &s.offline_reason {
+    if let Some(reason) = &s.offline_state().reason {
         eprintln!(
             "warning: GitHub is not reachable ({}); showing cached data",
             clean(reason)
@@ -616,16 +544,10 @@ async fn sync_cmd(
     }
     let period = period(g, cmd, &zone)?;
     let mut s = Session::open(session_config(g)).await?;
-    if let Some(reason) = &s.offline_reason {
-        return Err(AppError::Api(ghusage_github::ApiError::Network(
-            reason.clone(),
-        )));
+    if let Some(error) = s.offline_error() {
+        return Err(error);
     }
-    let progress = progress::Progress::start(
-        s.client
-            .as_ref()
-            .map(ghusage_github::GitHubClient::activity),
-    );
+    let progress = progress::Progress::start(s.api_activity());
     let synced = s
         .sync(period, full, g.concurrency as usize, &|p| {
             progress.update(p);
@@ -636,9 +558,10 @@ async fn sync_cmd(
             let counts = s.fetch_line_counts(period, &|p| progress.update(p)).await;
             counts.map(|c| {
                 r.diff_stats = Some(c);
-                if let Some(client) = &s.client {
-                    r.api = client.stats();
-                }
+                let stats = s.api_stats();
+                r.api.requests = stats.requests;
+                r.api.retries = stats.retries;
+                r.api.total_api_time_ms = stats.total_api_time_ms;
                 r
             })
         }
@@ -664,7 +587,7 @@ async fn sync_cmd(
         _ => {
             let mut o = format!(
                 "Synced {} for {} → {}\n  commits found: {}\n  pull requests found: {} (fetched {}, unchanged {})\n  issues found: {} (fetched {}, unchanged {})\n  API requests: {} (retries {}, {} ms)\n",
-                ghusage_core::sanitize::sanitize_line(&s.subject.login),
+                ghusage_core::sanitize::sanitize_line(&s.identity().login),
                 zone.format(period.start, "%Y-%m-%d %H:%M"),
                 zone.format(period.end, "%Y-%m-%d %H:%M"),
                 r.commits_found,
@@ -743,11 +666,7 @@ async fn tui_cmd(g: &GlobalArgs, cmd: &Command, zone: Zone) -> Result<i32> {
 }
 
 async fn auth_status_cmd(g: &GlobalArgs) -> Result<i32> {
-    let creds = session::credentials(g.token_file.as_deref())?;
-    let source = creds.source.describe();
-    let client = ghusage_github::GitHubClient::new(Some(creds), session_config(g).client)?;
-    let viewer = client.viewer().await?;
-    let rate = client.rate_limit().await.ok();
+    let status = commands::auth_status(&session_config(g)).await?;
     match g.format {
         Format::Json => {
             #[derive(serde::Serialize)]
@@ -757,27 +676,27 @@ async fn auth_status_cmd(g: &GlobalArgs) -> Result<i32> {
                 login: String,
                 id: String,
                 scopes: Option<Vec<String>>,
-                rate_limit: Option<ghusage_github::RateLimitInfo>,
+                rate_limit: Option<commands::RateLimit>,
             }
             print_stdout(&to_json(&Out {
                 authenticated: true,
-                source,
-                login: viewer.login,
-                id: viewer.id,
-                scopes: viewer.scopes,
-                rate_limit: rate,
+                source: status.source,
+                login: status.login,
+                id: status.id,
+                scopes: status.scopes,
+                rate_limit: status.rate_limit,
             })?)?;
         }
         _ => {
             let mut o = format!(
                 "Logged in as {} (credentials from {})\n",
-                ghusage_core::sanitize::sanitize_line(&viewer.login),
-                source
+                ghusage_core::sanitize::sanitize_line(&status.login),
+                status.source
             );
-            if let Some(scopes) = viewer.scopes {
+            if let Some(scopes) = status.scopes {
                 o.push_str(&format!("  token scopes: {}\n", scopes.join(", ")));
             }
-            if let Some(r) = rate {
+            if let Some(r) = status.rate_limit {
                 o.push_str(&format!(
                     "  rate limit: core {}/{} (resets {}), search {}/{}, graphql {}/{}\n",
                     r.core_remaining,
@@ -797,56 +716,31 @@ async fn auth_status_cmd(g: &GlobalArgs) -> Result<i32> {
 
 fn cache_cmd(g: &GlobalArgs, c: CacheCommand, zone: Zone) -> Result<i32> {
     let cfg = session_config(g);
-    let (mut store, dir) = session::open_store(&cfg)?;
     match c {
         CacheCommand::Clear => {
-            // Never clear underneath a running sync.
-            let _lock = match &dir {
-                Some(d) => Some(ghusage_storage::SyncLock::acquire(d)?),
-                None => None,
-            };
-            store.clear()?;
+            commands::clear_cache(&cfg)?;
             print_stdout("Cache cleared. Credentials were not changed.\n")?;
-            Ok(exit::SUCCESS)
         }
         CacheCommand::Status => {
-            let stats = store.stats()?;
-            let login = store.meta(ghusage_app::sync::META_VIEWER_LOGIN)?;
-            let account = g.user.clone().or(login);
-            let last = match &account {
-                Some(a) => store.last_sync_run(a)?,
-                None => None,
-            };
-            let now = Timestamp::now();
-            let p30 = Period::new(now - SignedDuration::from_secs(30 * 24 * 60 * 60), now)?;
-            let coverage = match &account {
-                Some(a) => {
-                    let recs = store.coverage(a)?;
-                    ghusage_core::coverage::DataKind::ALL
-                        .iter()
-                        .map(|k| ghusage_core::coverage::summarize(&recs, *k, p30.start, p30.end))
-                        .collect()
-                }
-                None => Vec::new(),
-            };
+            let status = commands::cache_status(&cfg, g.user.as_deref(), Timestamp::now())?;
             match g.format {
                 Format::Json => {
                     let v = serde_json::json!({
-                        "path": dir.map(|d| ghusage_app::paths::db_path(&d)),
-                        "file_size_bytes": stats.file_size_bytes,
-                        "schema_version": stats.schema_version,
-                        "account": account,
-                        "repositories": stats.repositories,
-                        "pull_requests": stats.pull_requests,
-                        "issues": stats.issues,
-                        "events": stats.events,
-                        "last_sync": last.as_ref().map(|r| serde_json::json!({
+                        "path": status.path,
+                        "file_size_bytes": status.file_size_bytes,
+                        "schema_version": status.schema_version,
+                        "account": status.account,
+                        "repositories": status.repositories,
+                        "pull_requests": status.pull_requests,
+                        "issues": status.issues,
+                        "events": status.events,
+                        "last_sync": status.last_sync.as_ref().map(|r| serde_json::json!({
                             "started_at": r.started_at,
                             "finished_at": r.finished_at,
                             "status": r.status,
                             "message": r.message,
                         })),
-                        "coverage_last_30_days": coverage,
+                        "coverage_last_30_days": status.coverage_last_30_days,
                     });
                     print_stdout(&to_json(&v)?)?;
                 }
@@ -854,18 +748,18 @@ fn cache_cmd(g: &GlobalArgs, c: CacheCommand, zone: Zone) -> Result<i32> {
                     let style = style(g, std::io::stdout().is_terminal());
                     let mut o = format!(
                         "Cache: {}\n  size: {:.1} MiB, schema version {}\n  repositories {}, pull requests {}, issues {}, events {}\n",
-                        dir.map_or_else(
+                        status.path.as_ref().map_or_else(
                             || "(in memory)".into(),
-                            |d| ghusage_app::paths::db_path(&d).display().to_string()
+                            |path| path.display().to_string()
                         ),
-                        stats.file_size_bytes as f64 / (1024.0 * 1024.0),
-                        stats.schema_version,
-                        stats.repositories,
-                        stats.pull_requests,
-                        stats.issues,
-                        stats.events
+                        status.file_size_bytes as f64 / (1024.0 * 1024.0),
+                        status.schema_version,
+                        status.repositories,
+                        status.pull_requests,
+                        status.issues,
+                        status.events
                     );
-                    match &last {
+                    match &status.last_sync {
                         Some(r) => o.push_str(&format!(
                             "  last sync: {} ({})\n",
                             r.finished_at.map_or_else(
@@ -876,11 +770,11 @@ fn cache_cmd(g: &GlobalArgs, c: CacheCommand, zone: Zone) -> Result<i32> {
                         )),
                         None => o.push_str("  last sync: never\n"),
                     }
-                    if !coverage.is_empty() {
+                    if !status.coverage_last_30_days.is_empty() {
                         o.push_str("Last 30 days:\n");
                         o.push_str(&render::coverage_lines(
-                            &coverage,
-                            last.and_then(|r| r.finished_at),
+                            &status.coverage_last_30_days,
+                            status.last_sync.as_ref().and_then(|r| r.finished_at),
                             &zone,
                             style,
                         ));
@@ -888,100 +782,35 @@ fn cache_cmd(g: &GlobalArgs, c: CacheCommand, zone: Zone) -> Result<i32> {
                     print_stdout(&o)?;
                 }
             }
-            Ok(exit::SUCCESS)
         }
     }
+    Ok(exit::SUCCESS)
 }
 
 async fn doctor_cmd(g: &GlobalArgs, zone: Zone) -> Result<i32> {
-    let mut lines: Vec<(bool, String)> = Vec::new();
-    let cfg = session_config(g);
-    match session::open_store(&cfg) {
-        Ok((store, dir)) => {
-            let path = dir.map_or_else(
-                || "(in memory)".into(),
-                |d| ghusage_app::paths::db_path(&d).display().to_string(),
-            );
-            lines.push((true, format!("cache opened: {path}")));
-            match store.integrity_check() {
-                Ok(p) if p.is_empty() => lines.push((true, "cache integrity: ok".into())),
-                Ok(p) => lines.push((false, format!("cache integrity problems: {}", p.join("; ")))),
-                Err(e) => lines.push((false, format!("cache integrity check failed: {e}"))),
-            }
-            if let Ok(Some(login)) = store.meta(ghusage_app::sync::META_VIEWER_LOGIN)
-                && let Ok(Some(r)) = store.last_sync_run(&login)
-            {
-                lines.push((
-                    r.status != "failed",
-                    format!(
-                        "last sync: {} ({})",
-                        r.finished_at.map_or_else(
-                            || "not finished".into(),
-                            |t| zone.format(t, "%Y-%m-%d %H:%M")
-                        ),
-                        r.status
-                    ),
-                ));
-            }
-        }
-        Err(e) => lines.push((false, format!("cache: {e}"))),
-    }
-    if g.offline {
-        lines.push((true, "offline: GitHub checks skipped".into()));
-    } else {
-        match session::credentials(g.token_file.as_deref()) {
-            Ok(c) => {
-                lines.push((true, format!("credentials found: {}", c.source.describe())));
-                match ghusage_github::GitHubClient::new(Some(c), cfg.client.clone()) {
-                    Ok(client) => {
-                        match client.viewer().await {
-                            Ok(v) => lines.push((
-                                true,
-                                format!(
-                                    "authenticated as {}",
-                                    ghusage_core::sanitize::sanitize_line(&v.login)
-                                ),
-                            )),
-                            Err(e) => lines.push((false, format!("authentication: {e}"))),
-                        }
-                        match client.rate_limit().await {
-                            Ok(r) => lines.push((
-                                r.core_remaining > 0,
-                                format!(
-                                    "rate limit: core {}/{}, search {}/{}, graphql {}/{}",
-                                    r.core_remaining,
-                                    r.core_limit,
-                                    r.search_remaining,
-                                    r.search_limit,
-                                    r.graphql_remaining,
-                                    r.graphql_limit
-                                ),
-                            )),
-                            Err(e) => lines.push((false, format!("rate limit: {e}"))),
-                        }
-                    }
-                    Err(e) => lines.push((false, format!("client: {e}"))),
-                }
-            }
-            Err(e) => lines.push((false, format!("credentials: {e}"))),
-        }
-    }
-    let ok = lines.iter().all(|(ok, _)| *ok);
+    let report = commands::doctor(&session_config(g), zone).await?;
     match g.format {
         Format::Json => {
             let v = serde_json::json!({
-                "ok": ok,
-                "checks": lines.iter().map(|(ok, m)| serde_json::json!({"ok": ok, "message": m})).collect::<Vec<_>>(),
+                "ok": report.ok,
+                "checks": report.checks.iter().map(|check| serde_json::json!({
+                    "ok": check.state != commands::DoctorState::Failed,
+                    "message": check.message,
+                })).collect::<Vec<_>>(),
             });
             print_stdout(&to_json(&v)?)?;
         }
         _ => {
             let mut o = String::new();
-            for (ok, m) in &lines {
-                o.push_str(&format!("{} {m}\n", if *ok { "ok  " } else { "FAIL" }));
+            for check in &report.checks {
+                let label = match check.state {
+                    commands::DoctorState::Passed | commands::DoctorState::Skipped => "ok  ",
+                    commands::DoctorState::Failed => "FAIL",
+                };
+                o.push_str(&format!("{label} {}\n", check.message));
             }
             print_stdout(&o)?;
         }
     }
-    Ok(if ok { exit::SUCCESS } else { exit::GENERAL })
+    Ok(report.exit_code)
 }

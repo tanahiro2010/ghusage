@@ -4,7 +4,6 @@
 //! use. Commit content never affects any count.
 
 use ghusage_core::commit::{CommitDetail, CommitPerson, FileStatus};
-use ghusage_core::model::Visibility;
 use jiff::Timestamp;
 use serde::Serialize;
 
@@ -93,57 +92,7 @@ pub async fn load(
     session: &mut Session,
     target: &CommitTarget,
 ) -> Result<LoadedCommit, CommitError> {
-    let public_only = session.config.public_only;
-    let cached = session
-        .store
-        .commit_detail(&target.repository(), &target.sha)
-        .map_err(AppError::from)?;
-    if let Some(detail) = cached {
-        if public_only && !detail.visibility.is_public() {
-            return Err(CommitError::NotPublic(target.repository()));
-        }
-        return Ok(LoadedCommit {
-            detail,
-            source: CommitSource::Cache,
-        });
-    }
-    let Some(client) = &session.client else {
-        return Err(CommitError::Offline {
-            target: target.label(),
-            reason: session
-                .offline_reason
-                .clone()
-                .unwrap_or_else(|| "offline mode".into()),
-        });
-    };
-    let known = session
-        .store
-        .repository_by_name(&target.owner, &target.name)
-        .map_err(AppError::from)?;
-    let (repository, visibility) = match known {
-        Some(r) => (r.full_name(), r.visibility),
-        None => match client.repository(&target.owner, &target.name).await {
-            Ok(r) => (r.full_name(), r.visibility),
-            Err(e) if public_only => return Err(AppError::from(e).into()),
-            Err(_) => (target.repository(), Visibility::Unknown),
-        },
-    };
-    if public_only && !visibility.is_public() {
-        return Err(CommitError::NotPublic(target.repository()));
-    }
-    let mut detail = client
-        .fetch_commit(&target.owner, &target.name, &target.sha)
-        .await
-        .map_err(AppError::from)?;
-    detail.repository = repository;
-    detail.visibility = visibility;
-    if let Err(e) = session.store.put_commit_detail(&detail) {
-        tracing::warn!(error = %e, "could not store the commit in the cache");
-    }
-    Ok(LoadedCommit {
-        detail,
-        source: CommitSource::Github,
-    })
+    session.load_commit(target).await
 }
 
 /// A person of a commit in reports.

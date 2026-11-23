@@ -16,7 +16,111 @@ fn name_repos(names: &[String]) -> String {
     }
     s
 }
-
+#[allow(clippy::too_many_arguments)]
+async fn persist_commit_range(
+    sh: &Shared<'_, '_>,
+    range: Period,
+    mut found: BTreeMap<EventId, CommitRecord>,
+    unconfirmed: Vec<CommitRecord>,
+    cached: &[ghusage_storage::StoredCommit],
+    related: &Related<'_>,
+    known_repos: &mut HashMap<String, Repository>,
+    mut statuses: Vec<CoverageStatus>,
+    mut reasons: Vec<String>,
+    inaccessible: Vec<(String, String)>,
+    failed: Vec<String>,
+) -> Result<()> {
+    let (client, subject, opts, progress) = (sh.client, sh.subject, sh.opts, sh.progress);
+    let known = &*known_repos;
+    let mut related_shas: HashSet<String> = found
+        .values()
+        .filter_map(commit_sha)
+        .map(str::to_owned)
+        .collect();
+    related_shas.extend(
+        cached
+            .iter()
+            .filter(|c| related.contains_id(&c.repository_id, known))
+            .map(|c| c.sha.clone()),
+    );
+    let mut copies = 0;
+    for c in unconfirmed {
+        if commit_sha(&c).is_some_and(|sha| related_shas.contains(sha)) {
+            copies += 1;
+        } else {
+            found.entry(c.event.event_id.clone()).or_insert(c);
+        }
+    }
+    if copies > 0 {
+        progress(SyncProgress::Detail(format!(
+            "skipping {copies} commit(s) found by search that copy commits of related repositories"
+        )));
+    }
+    let stale_copies: Vec<(String, String)> = cached
+        .iter()
+        .filter(|c| matches!(c.source, Source::Search | Source::Rest))
+        .filter(|c| !related.contains_id(&c.repository_id, known))
+        .filter(|c| related_shas.contains(&c.sha))
+        .map(|c| (c.repository_id.clone(), c.sha.clone()))
+        .collect();
+    if !inaccessible.is_empty() {
+        for (owner, name) in &inaccessible {
+            sh.store
+                .borrow_mut()
+                .set_repository_accessible(owner, name, false)?;
+        }
+        let names: Vec<String> = inaccessible.iter().map(|(o, n)| format!("{o}/{n}")).collect();
+        statuses.push(CoverageStatus::Partial);
+        reasons.push(format!(
+            "{} repositories not accessible: {}",
+            names.len(),
+            name_repos(&names)
+        ));
+    }
+    if !failed.is_empty() {
+        statuses.push(CoverageStatus::Partial);
+        reasons.push(format!(
+            "listing commits failed for {} repositories: {}",
+            failed.len(),
+            name_repos(&failed)
+        ));
+    }
+    sh.report.borrow_mut().commits_found += found.len() as u64;
+    let mut batch = WriteBatch {
+        account: subject.login.clone(),
+        ..Default::default()
+    };
+    add_commits(&mut batch, found.into_values().collect());
+    for repo in &mut batch.repositories {
+        if let Some(known) = known_repos.get(&repo.id)
+            && known.viewer_permission.is_some()
+        {
+            repo.viewer_permission.clone_from(&known.viewer_permission);
+            repo.accessible = true;
+            continue;
+        }
+        if repo.viewer_permission.is_none() {
+            match client.repository(&repo.owner, &repo.name).await {
+                Ok(full) => *repo = full,
+                Err(e @ ApiError::Unauthorized) => return Err(e.into()),
+                Err(_) => {}
+            }
+        }
+        known_repos.insert(repo.id.clone(), repo.clone());
+    }
+    let status = CoverageStatus::combine(statuses);
+    let reason = (!reasons.is_empty()).then(|| reasons.join("; "));
+    let rec = record(DataKind::Commits, range, status, reason, subject, opts);
+    batch.coverage.push(rec.clone());
+    if !stale_copies.is_empty() {
+        sh.store
+            .borrow_mut()
+            .remove_listed_commits(&subject.login, &stale_copies)?;
+    }
+    sh.store.borrow_mut().apply(&batch)?;
+    sh.report.borrow_mut().coverage.push(rec);
+    Ok(())
+}
 /// Finds a repository by owner and name among known ones.
 fn find_repo<'a>(
     repos: &'a HashMap<String, Repository>,
@@ -176,7 +280,38 @@ async fn sync_commits(
     for range in ranges {
         let range = *range;
         let fetched = searches.next().expect("one commit search per range");
-        // Search results in repositories not known to be related are used as
+        sync_commit_range(
+            sh,
+            range,
+            fetched,
+            &pushed,
+            &pr_repo_ids,
+            cached_prs,
+            listing_failure.as_ref(),
+            &unresolved,
+            &related,
+            known_repos,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn sync_commit_range(
+    sh: &Shared<'_, '_>,
+    range: Period,
+    fetched: ghusage_github::Fetched<Vec<CommitRecord>>,
+    pushed: &[PushedRepository],
+    pr_repo_ids: &HashSet<String>,
+    cached_prs: &[CachedPr],
+    listing_failure: Option<&String>,
+    unresolved: &[String],
+    related: &Related<'_>,
+    known_repos: &mut HashMap<String, Repository>,
+) -> Result<()> {
+    let (client, subject, opts, progress) = (sh.client, sh.subject, sh.opts, sh.progress);
+            // Search results in repositories not known to be related are used as
         // they are: listing their default branches could fail or take long
         // for a huge copy, and could not tell copies apart either.
         let (items, unconfirmed): (Vec<CommitRecord>, Vec<CommitRecord>) = fetched
@@ -186,7 +321,7 @@ async fn sync_commits(
         let cached = sh.store.borrow().commits_in(&subject.login, range)?;
         let mut statuses = vec![fetched.status];
         let mut reasons: Vec<String> = fetched.reason.into_iter().collect();
-        if let Some(f) = &listing_failure {
+        if let Some(f) = listing_failure {
             statuses.push(CoverageStatus::Partial);
             reasons.push(f.clone());
         }
@@ -194,13 +329,13 @@ async fn sync_commits(
             statuses.push(CoverageStatus::Partial);
             reasons.push(format!(
                 "could not look up pull request repositories: {}",
-                name_repos(&unresolved)
+                name_repos(unresolved)
             ));
         }
 
         // Candidate repositories for this range.
         let mut candidates: BTreeMap<String, Repository> = BTreeMap::new();
-        for p in &pushed {
+        for p in pushed {
             if p.pushed_at.is_some_and(|t| t >= range.start) {
                 candidates.insert(p.repository.id.clone(), p.repository.clone());
             }
@@ -283,105 +418,19 @@ async fn sync_commits(
         }
         drop(stream);
 
-        // So far `found` holds only commits of related repositories. A
-        // commit found elsewhere with one of their SHAs is a copy.
-        let known = &*known_repos;
-        let mut related_shas: HashSet<String> = found
-            .values()
-            .filter_map(commit_sha)
-            .map(str::to_owned)
-            .collect();
-        related_shas.extend(
-            cached
-                .iter()
-                .filter(|c| related.contains_id(&c.repository_id, known))
-                .map(|c| c.sha.clone()),
-        );
-        let mut copies = 0;
-        for c in unconfirmed {
-            if commit_sha(&c).is_some_and(|sha| related_shas.contains(sha)) {
-                copies += 1;
-            } else {
-                found.entry(c.event.event_id.clone()).or_insert(c);
-            }
-        }
-        if copies > 0 {
-            progress(SyncProgress::Detail(format!(
-                "skipping {copies} commit(s) found by search that copy commits of related repositories"
-            )));
-        }
-        // Copies stored by earlier versions.
-        let stale_copies: Vec<(String, String)> = cached
-            .iter()
-            .filter(|c| matches!(c.source, Source::Search | Source::Rest))
-            .filter(|c| !related.contains_id(&c.repository_id, known))
-            .filter(|c| related_shas.contains(&c.sha))
-            .map(|c| (c.repository_id.clone(), c.sha.clone()))
-            .collect();
-        if !inaccessible.is_empty() {
-            for (owner, name) in &inaccessible {
-                sh.store
-                    .borrow_mut()
-                    .set_repository_accessible(owner, name, false)?;
-            }
-            let names: Vec<String> = inaccessible
-                .iter()
-                .map(|(o, n)| format!("{o}/{n}"))
-                .collect();
-            statuses.push(CoverageStatus::Partial);
-            reasons.push(format!(
-                "{} repositories not accessible: {}",
-                names.len(),
-                name_repos(&names)
-            ));
-        }
-        if !failed.is_empty() {
-            statuses.push(CoverageStatus::Partial);
-            reasons.push(format!(
-                "listing commits failed for {} repositories: {}",
-                failed.len(),
-                name_repos(&failed)
-            ));
-        }
-
-        sh.report.borrow_mut().commits_found += found.len() as u64;
-        let mut batch = WriteBatch {
-            account: subject.login.clone(),
-            ..Default::default()
-        };
-        add_commits(&mut batch, found.into_values().collect());
-        // Commit search does not report the viewer's permission, which
-        // ownership depends on; complete repository metadata once.
-        for repo in &mut batch.repositories {
-            if let Some(known) = known_repos.get(&repo.id)
-                && known.viewer_permission.is_some()
-            {
-                // Names, visibility and URL come from this fetch, so a
-                // renamed repository takes its new name.
-                repo.viewer_permission.clone_from(&known.viewer_permission);
-                repo.accessible = true;
-                continue;
-            }
-            if repo.viewer_permission.is_none() {
-                match client.repository(&repo.owner, &repo.name).await {
-                    Ok(full) => *repo = full,
-                    Err(e @ ApiError::Unauthorized) => return Err(e.into()),
-                    Err(_) => {}
-                }
-            }
-            known_repos.insert(repo.id.clone(), repo.clone());
-        }
-        let status = CoverageStatus::combine(statuses);
-        let reason = (!reasons.is_empty()).then(|| reasons.join("; "));
-        let rec = record(DataKind::Commits, range, status, reason, subject, opts);
-        batch.coverage.push(rec.clone());
-        if !stale_copies.is_empty() {
-            sh.store
-                .borrow_mut()
-                .remove_listed_commits(&subject.login, &stale_copies)?;
-        }
-        sh.store.borrow_mut().apply(&batch)?;
-        sh.report.borrow_mut().coverage.push(rec);
-    }
+        persist_commit_range(
+            sh,
+            range,
+            found,
+            unconfirmed,
+            &cached,
+            related,
+            known_repos,
+            statuses,
+            reasons,
+            inaccessible,
+            failed,
+        )
+    .await?;
     Ok(())
 }

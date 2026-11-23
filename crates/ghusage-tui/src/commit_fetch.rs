@@ -123,7 +123,7 @@ async fn open_session(cfg: &SessionConfig, online: bool) -> Result<Session, Stri
             let mut c = cfg.clone();
             c.offline = true;
             let mut s = Session::open(c).await.map_err(|e| e.to_string())?;
-            s.offline_reason = Some(e.to_string());
+            s.mark_offline(e.to_string());
             Ok(s)
         }
         Err(e) => Err(e.to_string()),
