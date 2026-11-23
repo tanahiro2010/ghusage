@@ -272,6 +272,13 @@ jobs:
           npm ci
           # The static-site toolchain is dev-only; see docs/SECURITY.md.
           npm audit --audit-level=high --omit=dev
+      - name: Report documentation development dependency advisories
+        working-directory: docs
+        continue-on-error: true
+        run: |
+          # Keep visibility into the complete build toolchain while the
+          # documented VitePress 1 exceptions remain accepted.
+          npm audit --audit-level=high
       - name: Audit npm launcher dependencies
         working-directory: npm/ghusage
         run: npm audit --audit-level=high --package-lock=false

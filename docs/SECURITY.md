@@ -10,6 +10,7 @@ following development-only advisories reported by `npm audit`:
 - `esbuild` moderate severity advisory
 - `vitepress` moderate severity advisory
 
-The documentation CI still runs `npm audit` for production dependencies with
-`--omit=dev`. These development-only exceptions must be revisited when the
-VitePress 2 release is stable.
+The documentation CI gates production dependencies with `npm audit` and
+`--omit=dev`, and also runs a non-blocking full audit so new development-only
+findings remain visible in the workflow log. These exceptions must be
+revisited when the VitePress 2 release is stable.
