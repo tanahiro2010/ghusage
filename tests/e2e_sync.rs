@@ -588,7 +588,7 @@ async fn pr_timeline_is_sorted_deterministic_and_filterable() {
         .iter()
         .map(|e| e["event_type"].as_str().unwrap())
         .collect();
-    assert!(!types.is_empty());
+    assert_ne!(types, Vec::<&str>::new());
     assert!(types.iter().all(|t| *t == "review_submitted"), "{types:?}");
     let reviews: Vec<String> = timeline_ids(&f);
     for id in ["review:PRR_A1", "review:PRR_A2", "review:PRR_A4"] {
