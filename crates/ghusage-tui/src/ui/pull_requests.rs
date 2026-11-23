@@ -100,6 +100,41 @@ fn draw_pr_detail(f: &mut Frame, app: &App, area: Rect) {
         (Some(m), None) => format!("{} (merger unknown)", ts(z, Some(*m))),
         _ => "-".into(),
     };
+    let lines = pr_detail_lines(r, z, w, app, area, state, merged);
+    let focus_commits = app.pr_pane == PrPane::Commits;
+    let h = area.height;
+    let wanted = (r.commit_list.len() as u16).saturating_add(3).max(4);
+    let list_h = if h >= 12 {
+        let cap = if focus_commits { h - 4 } else { h / 2 };
+        wanted.min(cap).max(4)
+    } else if focus_commits {
+        h
+    } else {
+        0
+    };
+    let [info_area, list_area] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(list_h)]).areas(area);
+    if info_area.height > 0 {
+        f.render_widget(
+            Paragraph::new(lines).block(block("PR Detail".into(), !focus_commits)),
+            info_area,
+
+        );
+    }
+    if list_area.height > 0 {
+        draw_pr_commits(f, app, r, list_area, focus_commits);
+    }
+}
+
+fn pr_detail_lines(
+    r: &ghusage_app::report::PrReport,
+    z: &Zone,
+    w: usize,
+    app: &App,
+    area: Rect,
+    state: String,
+    merged: String,
+) -> Vec<Line<'static>> {
     let lines = vec![
         Line::styled(
             fit(
@@ -211,28 +246,7 @@ fn draw_pr_detail(f: &mut Frame, app: &App, area: Rect) {
             dim(),
         ),
     ];
-    let focus_commits = app.pr_pane == PrPane::Commits;
-    let h = area.height;
-    let wanted = (r.commit_list.len() as u16).saturating_add(3).max(4);
-    let list_h = if h >= 12 {
-        let cap = if focus_commits { h - 4 } else { h / 2 };
-        wanted.min(cap).max(4)
-    } else if focus_commits {
-        h
-    } else {
-        0
-    };
-    let [info_area, list_area] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(list_h)]).areas(area);
-    if info_area.height > 0 {
-        f.render_widget(
-            Paragraph::new(lines).block(block("PR Detail".into(), !focus_commits)),
-            info_area,
-        );
-    }
-    if list_area.height > 0 {
-        draw_pr_commits(f, app, r, list_area, focus_commits);
-    }
+    lines
 }
 
 fn draw_pr_commits(

@@ -96,8 +96,19 @@ fn draw_scope_detail(f: &mut Frame, app: &App, area: Rect) {
     }
     let z = &app.zone;
     let t = match app.detail_tab {
-        DetailTab::Activity => {
-            let rows_all = r.activity.as_deref().unwrap_or(&[]);
+        DetailTab::Activity => detail_activity_table(r, &vis, list_area, z),
+        DetailTab::Commits => detail_commits_table(r, &vis, list_area, z),
+        DetailTab::PullRequests => detail_pullrequests_table(r, &vis, list_area, z),
+        DetailTab::Reviews => detail_reviews_table(app, &vis, list_area, z),
+        DetailTab::Comments => detail_comments_table(r, &vis, list_area, z),
+        DetailTab::Issues => detail_issues_table(r, &vis, list_area),
+    }
+    .block(block(title, true));
+    stateful_table(f, app, list_area, list, t, true);
+}
+
+fn detail_activity_table<'a>(r: &'a Report, vis: &[usize], list_area: Rect, z: &Zone) -> Table<'a> {
+let rows_all = r.activity.as_deref().unwrap_or(&[]);
             let flex = flex_width(list_area, &[11, 20, 18]);
             let where_w = (flex * 2 / 5).max(8);
             let title_w = flex.saturating_sub(where_w + 1).max(8);
@@ -129,9 +140,10 @@ fn draw_scope_detail(f: &mut Frame, app: &App, area: Rect) {
                 ],
                 &["Time", "Actor", "Event", "Where", "Title"],
             )
-        }
-        DetailTab::Commits => {
-            let rows_all = r.commits.as_deref().unwrap_or(&[]);
+}
+
+fn detail_commits_table<'a>(r: &'a Report, vis: &[usize], list_area: Rect, z: &Zone) -> Table<'a> {
+let rows_all = r.commits.as_deref().unwrap_or(&[]);
             let repo_w = flex_width(list_area, &[16, 12, 5]);
             let rows: Vec<Row> = vis
                 .iter()
@@ -156,9 +168,10 @@ fn draw_scope_detail(f: &mut Frame, app: &App, area: Rect) {
                 ],
                 &["Committed", "SHA", "Repository", "Merge"],
             )
-        }
-        DetailTab::PullRequests => {
-            let rows_all = r.pull_requests.as_deref().unwrap_or(&[]);
+}
+
+fn detail_pullrequests_table<'a>(r: &'a Report, vis: &[usize], list_area: Rect, z: &Zone) -> Table<'a> {
+let rows_all = r.pull_requests.as_deref().unwrap_or(&[]);
             let fixed = [9, 6, 5, 7, 8, 11];
             let flex = flex_width(list_area, &fixed);
             let pr_w = (flex * 2 / 5).max(8);
@@ -202,9 +215,10 @@ fn draw_scope_detail(f: &mut Frame, app: &App, area: Rect) {
                     "State", "PR", "Title", "Events", "Yours", "Reviews", "Comments", "Last",
                 ],
             )
-        }
-        DetailTab::Reviews => {
-            let rows_all = app.detail_reviews();
+}
+
+fn detail_reviews_table<'a>(app: &App, vis: &[usize], list_area: Rect, z: &Zone) -> Table<'a> {
+let rows_all = app.detail_reviews();
             let flex = flex_width(list_area, &[9, 11, 18, 18]);
             let pr_w = (flex * 2 / 5).max(8);
             let rows: Vec<Row> = vis
@@ -248,9 +262,10 @@ fn draw_scope_detail(f: &mut Frame, app: &App, area: Rect) {
                 ],
                 &["Direction", "Submitted", "Reviewer", "State", "PR", "Title"],
             )
-        }
-        DetailTab::Comments => {
-            let rows_all = r.comments.as_deref().unwrap_or(&[]);
+}
+
+fn detail_comments_table<'a>(r: &'a Report, vis: &[usize], list_area: Rect, z: &Zone) -> Table<'a> {
+let rows_all = r.comments.as_deref().unwrap_or(&[]);
             let pr_w = flex_width(list_area, &[11, 20, 15, 9]);
             let rows: Vec<Row> = vis
                 .iter()
@@ -289,14 +304,11 @@ fn draw_scope_detail(f: &mut Frame, app: &App, area: Rect) {
                 ],
                 &["Time", "Author", "Kind", "Direction", "PR"],
             )
-        }
-        DetailTab::Issues => {
-            let rows_all = r.issues.as_deref().unwrap_or(&[]);
-            issue_table(rows_all, &vis, list_area)
-        }
-    }
-    .block(block(title, true));
-    stateful_table(f, app, list_area, list, t, true);
+}
+
+fn detail_issues_table<'a>(r: &'a Report, vis: &[usize], list_area: Rect) -> Table<'a> {
+let rows_all = r.issues.as_deref().unwrap_or(&[]);
+            issue_table(rows_all, vis, list_area)
 }
 
 // ----- System ----------------------------------------------------------------
