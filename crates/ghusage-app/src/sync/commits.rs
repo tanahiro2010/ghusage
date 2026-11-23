@@ -62,6 +62,40 @@ impl Related<'_> {
     }
 }
 
+/// Resolves repositories referenced by pull requests into repository ids.
+async fn resolve_pr_repositories(
+    client: &GitHubClient,
+    known_repos: &mut HashMap<String, Repository>,
+    pushed: &[PushedRepository],
+    pr_repos: &[(String, String)],
+) -> Result<(HashSet<String>, Vec<String>)> {
+    let mut ids = HashSet::new();
+    let mut unresolved = Vec::new();
+    for (owner, name) in pr_repos {
+        let local = find_repo(known_repos, owner, name).cloned().or_else(|| {
+            pushed
+                .iter()
+                .map(|p| &p.repository)
+                .find(|r| r.owner.eq_ignore_ascii_case(owner) && r.name.eq_ignore_ascii_case(name))
+                .cloned()
+        });
+        if let Some(repo) = local {
+            ids.insert(repo.id.clone());
+            known_repos.entry(repo.id.clone()).or_insert(repo);
+            continue;
+        }
+        match client.repository(owner, name).await {
+            Ok(repo) => {
+                ids.insert(repo.id.clone());
+                known_repos.insert(repo.id.clone(), repo);
+            }
+            Err(ApiError::Unauthorized) => return Err(ApiError::Unauthorized.into()),
+            Err(_) => unresolved.push(format!("{owner}/{name}")),
+        }
+    }
+    Ok((ids, unresolved))
+}
+
 /// The lowercase SHA of a commit, from its event id (`commit:{repo}:{sha}`).
 fn commit_sha(c: &CommitRecord) -> Option<&str> {
     c.event
@@ -118,30 +152,8 @@ async fn sync_commits(
     // just means no pull request repositories.
     let pr_repos = pr_repos.await.unwrap_or_default();
     // Repositories of pull requests found by this sync.
-    let mut pr_repo_ids: HashSet<String> = HashSet::new();
-    let mut unresolved: Vec<String> = Vec::new();
-    for (owner, name) in &pr_repos {
-        let local = find_repo(known_repos, owner, name).cloned().or_else(|| {
-            pushed
-                .iter()
-                .map(|p| &p.repository)
-                .find(|r| r.owner.eq_ignore_ascii_case(owner) && r.name.eq_ignore_ascii_case(name))
-                .cloned()
-        });
-        if let Some(r) = local {
-            pr_repo_ids.insert(r.id.clone());
-            known_repos.entry(r.id.clone()).or_insert(r);
-            continue;
-        }
-        match client.repository(owner, name).await {
-            Ok(full) => {
-                pr_repo_ids.insert(full.id.clone());
-                known_repos.insert(full.id.clone(), full);
-            }
-            Err(e @ ApiError::Unauthorized) => return Err(e.into()),
-            Err(_) => unresolved.push(format!("{owner}/{name}")),
-        }
-    }
+    let (pr_repo_ids, unresolved) =
+        resolve_pr_repositories(client, known_repos, &pushed, &pr_repos).await?;
     // A failed issue search fails the whole sync elsewhere too.
     let issue_repos = issue_repos.await.unwrap_or_default();
     let related = Related {

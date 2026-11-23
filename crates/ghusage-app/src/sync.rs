@@ -16,6 +16,7 @@ use ghusage_core::model::{
 use ghusage_core::time::Period;
 use ghusage_github::{
     ApiError, ApiStats, CommitRecord, CommitRef, GitHubClient, IssueKind, IssueRef, PrBundle,
+    PushedRepository,
 };
 use ghusage_storage::{CommitStats, PrCommitLink, PrSnapshot, Store, WriteBatch};
 use jiff::{SignedDuration, Timestamp};
