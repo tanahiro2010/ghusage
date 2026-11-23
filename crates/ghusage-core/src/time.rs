@@ -22,10 +22,10 @@ impl Zone {
         if let Some(name) = explicit {
             return Self::parse(name);
         }
-        if let Ok(tz) = std::env::var("TZ") {
-            if let Ok(z) = Self::parse(tz.trim_start_matches(':')) {
-                return Ok(z);
-            }
+        if let Ok(tz) = std::env::var("TZ")
+            && let Ok(z) = Self::parse(tz.trim_start_matches(':'))
+        {
+            return Ok(z);
         }
         if let Ok(name) = iana_time_zone::get_timezone()
             && let Ok(z) = Self::parse(&name)
