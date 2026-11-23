@@ -720,7 +720,6 @@ fn cache_cmd(g: &GlobalArgs, c: CacheCommand, zone: Zone) -> Result<i32> {
         CacheCommand::Clear => {
             commands::clear_cache(&cfg)?;
             print_stdout("Cache cleared. Credentials were not changed.\n")?;
-            Ok(exit::SUCCESS)
         }
         CacheCommand::Status => {
             let status = commands::cache_status(&cfg, g.user.as_deref(), Timestamp::now())?;
@@ -783,9 +782,9 @@ fn cache_cmd(g: &GlobalArgs, c: CacheCommand, zone: Zone) -> Result<i32> {
                     print_stdout(&o)?;
                 }
             }
-            Ok(exit::SUCCESS)
         }
     }
+    Ok(exit::SUCCESS)
 }
 
 async fn doctor_cmd(g: &GlobalArgs, zone: Zone) -> Result<i32> {
