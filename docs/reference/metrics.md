@@ -82,15 +82,16 @@ period, identified by repository and SHA.
 
 - Sources: commits whose author is your account on the default branches of
   repositories you pushed to or contributed to (found by listing each
-  repository's commits and by GitHub commit search; search results count
-  only in repositories you are related to), plus your commits found
+  repository's commits and by GitHub commit search; copies of commits found
+  in repositories you are related to are left out), plus your commits found
   inside pull requests `ghusage` has synced. A commit found in several ways
   counts once. See [how commits are found](../guide/syncing.md#how-commits-are-found).
 - A commit is yours when GitHub links its author to your account (usually by
   the commit email). Commits with an author email that is not linked to your
   account are not attributed to you.
-- The same SHA in two repositories (for example a fork and its upstream)
-  counts as two commits.
+- The same SHA in two repositories counts as two commits, unless one of
+  them is a copy in a repository you are not known to be related to (see
+  [how commits are found](../guide/syncing.md#how-commits-are-found)).
 - Commits that were later removed from a pull request by a force push still
   count: you made them.
 - Placed in time by committer date (default) or author date

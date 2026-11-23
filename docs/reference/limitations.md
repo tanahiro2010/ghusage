@@ -30,16 +30,15 @@ before relying on the numbers.
   commits of its upstream repository, so forks are skipped (commit search
   skips them as well). Your commits in a fork are counted only when they are
   part of a synced pull request.
-- **Copies of your commits in unrelated repositories are not counted.**
-  Commit search also finds your commits in repositories that only copied
-  them, for example a project uploaded again as a new repository instead of
-  forked. Search results count only in repositories you are related to:
-  ones you own, ones in your repository list, and ones with your pull
-  requests or issues. Your commits in a repository you are related to only
-  in another way (you starred or forked it, or, with `--user`, the other
-  user collaborates on it without pull requests or issues there) are
-  therefore not counted. When the repository list fails, every search
-  result is kept and commits coverage is `partial`.
+- **Other repositories rely on commit search, and copies are told apart
+  only by SHA.** Commit search also finds your commits in repositories you
+  are not known to be related to (you are related to repositories you own,
+  repositories in your repository list, and repositories with your pull
+  requests or issues). Their default branches are not listed, so commits
+  that search misses there are not found. A commit whose SHA is also found
+  in a repository you are related to is a copy and is skipped. A copy with
+  another SHA, such as a cherry-pick or a rebased copy in someone else's
+  repository, cannot be told apart from your own work and is counted.
 - **Repositories you cannot read.** When the commit list of a repository is
   refused (for example HTTP 403 because of organization SSO, or 404 after
   access was removed), commits coverage is `partial` and names the
