@@ -429,7 +429,6 @@ async fn user_option_analyzes_another_account_only() {
 #[tokio::test(flavor = "multi_thread")]
 async fn user_option_counts_direct_collaborator_commits_found_by_search() {
     let server = serve(&World::base()).await;
-    mount_bob(&server).await;
 
     // Bob is a collaborator on acme/collab and pushes directly to its
     // default branch. GitHub does not include that repository in
@@ -450,9 +449,13 @@ async fn user_option_counts_direct_collaborator_commits_found_by_search() {
             ),
             search_commit(&collab, &sha(51), bob, "2024-03-06T10:00:00Z", 1),
         ])))
-        .with_priority(2)
+        // Mounted before `mount_bob` at its priority, so this response wins
+        // over its commit search (the first mock mounted wins a tie, and a
+        // lower number is a higher priority).
+        .with_priority(1)
         .mount(&server)
         .await;
+    mount_bob(&server).await;
 
     let env = Env::new(&server);
     let r = env.sync(&["--user", "bob"]).await;
