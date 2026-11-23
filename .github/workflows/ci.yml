@@ -62,10 +62,9 @@ jobs:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-latest]
     env:
       VERIFIED_KEY: ci-verified-test-${{ matrix.os }}-${{ needs.inputs.outputs.rust }}
-      # One runner covers what does not depend on the platform: formatting,
-      # and the heavy 100k-event checks (benchmarks in test mode, terminal
-      # UI responsiveness), which mean little in an unoptimized build. The
-      # benchmark workflow measures performance in release builds.
+      # One runner covers formatting and the platform-independent 100k-event
+      # checks. The benchmark workflow measures benchmark targets separately
+      # in release builds.
       FULL_OS: ubuntu-latest
       # The default MSVC linker is slow to link the many test binaries.
       CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld.exe
@@ -105,13 +104,16 @@ jobs:
       - if: steps.verified.outputs.cache-hit != 'true' && matrix.os == env.FULL_OS
         run: cargo clippy --workspace --all-targets -- -D warnings
       - if: steps.verified.outputs.cache-hit != 'true' && matrix.os == env.FULL_OS
-        run: cargo test --workspace --all-targets --no-fail-fast
+        name: cargo test (workspace tests)
+        # Bench targets run in bench.yml with release optimizations. Keeping
+        # CI focused on test targets avoids rebuilding and executing the same
+        # benchmark binaries here while preserving the full test suite.
+        run: cargo test --workspace --lib --bins --tests --no-fail-fast
       - if: steps.verified.outputs.cache-hit != 'true' && matrix.os != env.FULL_OS
-        name: Compile workspace for the target platform
-        run: cargo build --workspace --bins --locked
-      - if: steps.verified.outputs.cache-hit != 'true' && matrix.os != env.FULL_OS
-        name: Smoke test the target-platform binary
-        run: cargo run --locked -- --version
+        name: cargo test (without the platform-independent 100k-event checks)
+        run: >-
+          cargo test --workspace --lib --bins --tests --no-fail-fast
+          -- --skip first_render_and_interaction_latency_on_100k_events
       # Reached only when every step above passed.
       - name: Remember that these inputs passed
         if: steps.verified.outputs.cache-hit != 'true'
