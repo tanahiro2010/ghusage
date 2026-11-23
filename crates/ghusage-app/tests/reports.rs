@@ -503,7 +503,7 @@ fn repository_detail_matches_the_repository_row() {
         .find(|x| x.repository_id == "R_priv")
         .unwrap();
     assert_eq!(row.summary, r.metrics);
-    assert!(r.commits.as_ref().unwrap().is_empty());
+    assert_eq!(r.commits.as_ref().unwrap(), &Vec::new());
     // PR_2 opened, the review received, my comment. The merge by someone
     // else is not my activity.
     let ids: Vec<&str> = r

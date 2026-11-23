@@ -143,7 +143,7 @@ fn search_filters_lists_incrementally() {
     // Search while typing, then Esc cancels.
     app.handle_key(key('/'));
     press(&mut app, "zzz");
-    assert!(app.visible(ListId::Repositories).is_empty());
+    assert_eq!(app.visible(ListId::Repositories), Vec::<usize>::new());
     assert!(screen_text(&app, 120, 20).contains("No matches"));
     app.handle_key(code(KeyCode::Esc));
     assert!(!app.search_mode);
@@ -169,7 +169,7 @@ fn search_matches_pull_request_titles_and_reviewers() {
     app.handle_key(code(KeyCode::Backspace));
     app.handle_key(code(KeyCode::Backspace));
     press(&mut app, "nobody");
-    assert!(app.visible(ListId::ReviewsReceived).is_empty());
+    assert_eq!(app.visible(ListId::ReviewsReceived), Vec::<usize>::new());
 }
 
 #[test]

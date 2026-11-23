@@ -408,7 +408,10 @@ async fn close_without_merge_is_marked_as_not_merged() {
         .await
         .unwrap();
     assert_eq!(b.pull_request.state, PrState::Closed);
-    assert!(of_type(&b, EventType::PrMerged).is_empty());
+    assert_eq!(
+        of_type(&b, EventType::PrMerged),
+        Vec::<&ghusage_core::model::ActivityEvent>::new()
+    );
     let closes = of_type(&b, EventType::PrClosed);
     assert_eq!(closes.len(), 2);
     assert!(closes.iter().all(|e| e.meta.via_merge == Some(false)));
@@ -694,10 +697,13 @@ async fn head_commit_without_statuses_needs_no_rest_request() {
         .await
         .unwrap();
     assert_eq!(b.status, CoverageStatus::Complete, "{:?}", b.notes);
-    assert!(rest_paths(&server).await.is_empty());
+    assert_eq!(rest_paths(&server).await, Vec::<String>::new());
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
     assert_eq!(of_type(&b, EventType::CheckRun).len(), 2);
-    assert!(of_type(&b, EventType::CommitStatus).is_empty());
+    assert_eq!(
+        of_type(&b, EventType::CommitStatus),
+        Vec::<&ghusage_core::model::ActivityEvent>::new()
+    );
 }
 
 /// Fetches the rich pull request with a modified head commit and returns
@@ -1984,7 +1990,10 @@ async fn pull_request_commits_reviews_and_threads_beyond_100_are_paginated() {
     assert!(b.current_commit_shas.contains(&oid(3)));
     // 100 + 20 submitted reviews; none has a body, so no summaries.
     assert_eq!(of_type(&b, EventType::ReviewSubmitted).len(), 120);
-    assert!(of_type(&b, EventType::ReviewSummary).is_empty());
+    assert_eq!(
+        of_type(&b, EventType::ReviewSummary),
+        Vec::<&ghusage_core::model::ActivityEvent>::new()
+    );
     // 50 + 50 + 10 threads with one inline comment each.
     assert_eq!(b.threads.len(), 110);
     assert_eq!(
@@ -2176,7 +2185,7 @@ async fn pull_request_diff_and_commit_line_counts_are_kept() {
 async fn without_counts_from_github_nothing_is_assumed() {
     let b = fetch_rich().await;
     assert_eq!(b.diff, None);
-    assert!(b.commit_stats.is_empty());
+    assert_eq!(b.commit_stats, Vec::new());
 }
 
 #[tokio::test]

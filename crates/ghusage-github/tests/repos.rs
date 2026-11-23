@@ -334,7 +334,7 @@ async fn empty_repository_has_no_commits() {
         .default_branch_commits(&widget_repo(), LOGIN, jan())
         .await
         .unwrap();
-    assert!(r.items.is_empty());
+    assert_eq!(r.items, Vec::new());
     assert_eq!(r.status, CoverageStatus::Complete);
 }
 
