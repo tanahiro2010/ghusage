@@ -386,7 +386,7 @@ async fn run(cli: Cli) -> Result<i32> {
 /// at that sync instead of fetching the last few minutes again.
 async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<(Session, Period)> {
     let mut s = Session::open(session_config(g)).await?;
-    if let Some(reason) = &s.offline_reason {
+    if let Some(reason) = &s.offline_state().reason {
         eprintln!(
             "warning: GitHub is not reachable ({}); showing cached data",
             clean(reason)
@@ -411,11 +411,7 @@ async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<
             );
             return Ok((s, Period::new(period.start, until)?));
         }
-        let progress = progress::Progress::start(
-            s.client
-                .as_ref()
-                .map(ghusage_github::GitHubClient::activity),
-        );
+        let progress = progress::Progress::start(s.api_activity());
         let synced = s
             .sync(period, false, g.concurrency as usize, &|p| {
                 progress.update(p);
@@ -507,54 +503,28 @@ async fn pr_cmd(g: &GlobalArgs, a: &cli::PrArgs, zone: Zone) -> Result<i32> {
         }
     }
     let mut s = Session::open(session_config(g)).await?;
-    if let Some(reason) = &s.offline_reason {
+    if let Some(reason) = &s.offline_state().reason {
         eprintln!(
             "warning: GitHub is not reachable ({}); showing cached data",
             clean(reason)
         );
     }
-    // A single pull request is always refreshed when online. GitHub resolves
-    // old URLs of renamed repositories, so the fetched id is authoritative.
-    let mut fetched_id = None;
-    if let Some(client) = &s.client {
-        let bundle = client
-            .fetch_pull_request(&owner, &name, number)
-            .await
-            .map_err(AppError::from);
-        match bundle {
-            Ok(b) => {
-                fetched_id = Some(b.pull_request.id.clone());
-                let involved = ghusage_app::sync::involves(&s.subject, &b);
-                let mut batch = ghusage_app::sync::pr_batch(&s.subject, b);
-                if !involved {
-                    // Viewing someone else's pull request must not add it
-                    // to your own activity.
-                    batch.account =
-                        format!("{}{}", s.subject.login, ghusage_app::sync::VIEWED_SUFFIX);
-                    batch
-                        .events
-                        .retain(|e| e.event_type != EventType::CommitAuthored);
-                }
-                s.store.apply(&batch)?;
-            }
-            Err(e @ AppError::AuthRejected(_)) => return Err(e),
-            Err(e) => {
-                if s.store.find_pr(&owner, &name, number)?.is_none() {
-                    return Err(e);
-                }
+    let loaded = s.load_pr(&owner, &name, number).await;
+    let loaded = match loaded {
+        Ok(result) => {
+            if let Some(error) = result.refresh_error.as_deref() {
                 eprintln!(
                     "warning: could not refresh pull request, showing cached data: {}",
-                    clean(&e)
+                    clean(&error)
                 );
             }
+            result
         }
-    }
-    let pr_id = match fetched_id {
-        Some(id) => Some(id),
-        None => s.store.find_pr(&owner, &name, number)?,
+        Err(e) => return Err(e),
     };
+    let pr_id = loaded.pr_id;
     let Some(pr_id) = pr_id else {
-        let hint = if s.client.is_none() {
+        let hint = if s.is_offline() {
             "run without --offline to fetch it; if the repository was renamed, use its current URL"
         } else {
             "it could not be fetched from GitHub"
@@ -585,7 +555,7 @@ async fn commit_cmd(g: &GlobalArgs, a: &cli::CommitArgs, zone: Zone) -> Result<i
         )));
     };
     let mut s = Session::open(session_config(g)).await?;
-    if let Some(reason) = &s.offline_reason {
+    if let Some(reason) = &s.offline_state().reason {
         eprintln!(
             "warning: GitHub is not reachable ({}); showing cached data",
             clean(reason)
@@ -616,16 +586,12 @@ async fn sync_cmd(
     }
     let period = period(g, cmd, &zone)?;
     let mut s = Session::open(session_config(g)).await?;
-    if let Some(reason) = &s.offline_reason {
+    if let Some(reason) = &s.offline_state().reason {
         return Err(AppError::Api(ghusage_github::ApiError::Network(
             reason.clone(),
         )));
     }
-    let progress = progress::Progress::start(
-        s.client
-            .as_ref()
-            .map(ghusage_github::GitHubClient::activity),
-    );
+    let progress = progress::Progress::start(s.api_activity());
     let synced = s
         .sync(period, full, g.concurrency as usize, &|p| {
             progress.update(p);
@@ -636,9 +602,10 @@ async fn sync_cmd(
             let counts = s.fetch_line_counts(period, &|p| progress.update(p)).await;
             counts.map(|c| {
                 r.diff_stats = Some(c);
-                if let Some(client) = &s.client {
-                    r.api = client.stats();
-                }
+                let stats = s.api_stats();
+                r.api.requests = stats.requests;
+                r.api.retries = stats.retries;
+                r.api.total_api_time_ms = stats.total_api_time_ms;
                 r
             })
         }
@@ -664,7 +631,7 @@ async fn sync_cmd(
         _ => {
             let mut o = format!(
                 "Synced {} for {} → {}\n  commits found: {}\n  pull requests found: {} (fetched {}, unchanged {})\n  issues found: {} (fetched {}, unchanged {})\n  API requests: {} (retries {}, {} ms)\n",
-                ghusage_core::sanitize::sanitize_line(&s.subject.login),
+                ghusage_core::sanitize::sanitize_line(&s.identity().login),
                 zone.format(period.start, "%Y-%m-%d %H:%M"),
                 zone.format(period.end, "%Y-%m-%d %H:%M"),
                 r.commits_found,

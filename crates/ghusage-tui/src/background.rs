@@ -88,7 +88,7 @@ fn sync_blocking(
     rt.block_on(async {
         let mut session = Session::open(cfg).await.map_err(|e| e.to_string())?;
         let _ = tx.send(SyncMsg::Started {
-            auth: session.token_source.as_ref().map(|s| s.describe()),
+            auth: session.token_source_description(),
         });
         let progress = |p: SyncProgress| {
             let _ = tx.send(SyncMsg::Progress(describe_progress(&p)));
@@ -97,9 +97,7 @@ fn sync_blocking(
             .sync(period, false, concurrency.max(1), &progress)
             .await
             .map_err(|e| e.to_string())?;
-        if let Some(client) = &session.client
-            && let Ok(r) = client.rate_limit().await
-        {
+        if let Some(r) = session.rate_limit().await.map_err(|e| e.to_string())? {
             let _ = tx.send(SyncMsg::RateLimit(format!(
                 "core {}/{} (resets {}), graphql {}/{}, search {}/{}",
                 r.core_remaining,

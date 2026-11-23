@@ -99,37 +99,27 @@ impl DataSource for SessionSource {
     }
 
     fn system_info(&self) -> SystemInfo {
-        let s = &self.session;
+        let identity = self.session.identity();
+        let cache = self.session.cache_info();
         let mut info = SystemInfo {
-            login: s.subject.login.clone(),
-            subject_is_viewer: s.subject_is_viewer,
-            data_dir: s.data_dir.clone(),
+            login: identity.login,
+            subject_is_viewer: identity.is_viewer,
+            data_dir: cache.data_dir,
             ..SystemInfo::default()
         };
-        let mut errors = Vec::new();
-        match s.store.stats() {
-            Ok(st) => {
-                info.cache_size_bytes = Some(st.file_size_bytes);
-                info.cached_events = Some(st.events);
-                info.cached_pull_requests = Some(st.pull_requests);
-                info.cached_repositories = Some(st.repositories);
-            }
-            Err(e) => errors.push(e.to_string()),
-        }
-        match s.store.last_sync_run(&s.subject.login) {
-            Ok(run) => {
-                info.last_sync = run.map(|r| LastSync {
-                    started_at: r.started_at,
-                    finished_at: r.finished_at,
-                    status: r.status,
-                    message: r.message,
-                });
-                info.synced_at = info.last_sync.as_ref().and_then(|r| r.finished_at);
-            }
-            Err(e) => errors.push(e.to_string()),
-        }
-        if !errors.is_empty() {
-            info.error = Some(errors.join("; "));
+        info.cache_size_bytes = cache.file_size_bytes;
+        info.cached_events = cache.cached_events;
+        info.cached_pull_requests = cache.cached_pull_requests;
+        info.cached_repositories = cache.cached_repositories;
+        info.last_sync = cache.last_sync.map(|r| LastSync {
+            started_at: r.started_at,
+            finished_at: r.finished_at,
+            status: r.status,
+            message: r.message,
+        });
+        info.synced_at = info.last_sync.as_ref().and_then(|r| r.finished_at);
+        if !cache.errors.is_empty() {
+            info.error = Some(cache.errors.join("; "));
         }
         info
     }

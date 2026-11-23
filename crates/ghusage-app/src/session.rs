@@ -2,10 +2,12 @@
 //! The CLI and the TUI both go through this type.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
 use ghusage_core::coverage::{self, DataKind};
 use ghusage_core::metrics::Dataset;
-use ghusage_core::model::Subject;
+use ghusage_core::model::{EventType, Subject, Visibility};
 use ghusage_core::time::Period;
 use ghusage_github::{ClientConfig, Credentials, GitHubClient, TokenSource};
 use ghusage_storage::{Store, SyncLock};
@@ -30,15 +32,87 @@ pub struct SessionConfig {
 }
 
 pub struct Session {
-    pub store: Store,
-    pub data_dir: Option<PathBuf>,
-    pub subject: Subject,
-    pub subject_is_viewer: bool,
-    pub client: Option<GitHubClient>,
-    pub token_source: Option<TokenSource>,
-    pub config: SessionConfig,
+    store: Store,
+    data_dir: Option<PathBuf>,
+    subject: Subject,
+    subject_is_viewer: bool,
+    client: Option<GitHubClient>,
+    token_source: Option<TokenSource>,
+    config: SessionConfig,
     /// Set when GitHub could not be reached and cached data is used instead.
-    pub offline_reason: Option<String>,
+    offline_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionIdentity {
+    pub login: String,
+    pub is_viewer: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OfflineState {
+    pub offline: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheInfo {
+    pub data_dir: Option<PathBuf>,
+    pub file_size_bytes: Option<u64>,
+    pub cached_events: Option<u64>,
+    pub cached_pull_requests: Option<u64>,
+    pub cached_repositories: Option<u64>,
+    pub last_sync: Option<ghusage_storage::SyncRun>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiInFlight {
+    pub label: String,
+    pub elapsed: Duration,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ApiActivitySnapshot {
+    pub running: Vec<ApiInFlight>,
+    pub limit: usize,
+    pub done: u64,
+}
+
+#[derive(Clone)]
+pub struct ApiActivity(Arc<ghusage_github::Activity>);
+
+impl ApiActivity {
+    pub fn snapshot(&self) -> ApiActivitySnapshot {
+        let snapshot = self.0.snapshot();
+        ApiActivitySnapshot {
+            running: snapshot
+                .running
+                .into_iter()
+                .map(|request| ApiInFlight {
+                    label: request.label,
+                    elapsed: request.elapsed,
+                })
+                .collect(),
+            limit: snapshot.limit,
+            done: snapshot.done,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApiStats {
+    pub requests: u64,
+    pub retries: u64,
+    pub total_api_time_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrLoadResult {
+    pub pr_id: Option<String>,
+    pub refreshed: bool,
+    pub refresh_error: Option<String>,
+    pub offline: bool,
 }
 
 /// Resolves credentials from the environment and `gh`.
@@ -136,6 +210,188 @@ impl Session {
 
     pub fn is_offline(&self) -> bool {
         self.client.is_none()
+    }
+
+    pub fn identity(&self) -> SessionIdentity {
+        SessionIdentity {
+            login: self.subject.login.clone(),
+            is_viewer: self.subject_is_viewer,
+        }
+    }
+
+    pub fn offline_state(&self) -> OfflineState {
+        OfflineState {
+            offline: self.is_offline(),
+            reason: self.offline_reason.clone(),
+        }
+    }
+
+    pub fn token_source_description(&self) -> Option<String> {
+        self.token_source.as_ref().map(|source| source.describe())
+    }
+
+    pub fn api_activity(&self) -> Option<ApiActivity> {
+        self.client
+            .as_ref()
+            .map(|client| ApiActivity(client.activity()))
+    }
+
+    pub fn api_stats(&self) -> ApiStats {
+        self.client.as_ref().map_or(
+            ApiStats {
+                requests: 0,
+                retries: 0,
+                total_api_time_ms: 0,
+            },
+            |client| {
+                let stats = client.stats();
+                ApiStats {
+                    requests: stats.requests,
+                    retries: stats.retries,
+                    total_api_time_ms: stats.total_api_time_ms,
+                }
+            },
+        )
+    }
+
+    pub async fn rate_limit(&self) -> Result<Option<ghusage_github::RateLimitInfo>> {
+        let Some(client) = &self.client else {
+            return Ok(None);
+        };
+        Ok(client.rate_limit().await.ok())
+    }
+
+    pub fn cache_info(&self) -> CacheInfo {
+        let mut info = CacheInfo {
+            data_dir: self.data_dir.clone(),
+            file_size_bytes: None,
+            cached_events: None,
+            cached_pull_requests: None,
+            cached_repositories: None,
+            last_sync: None,
+            errors: Vec::new(),
+        };
+        match self.store.stats() {
+            Ok(stats) => {
+                info.file_size_bytes = Some(stats.file_size_bytes);
+                info.cached_events = Some(stats.events);
+                info.cached_pull_requests = Some(stats.pull_requests);
+                info.cached_repositories = Some(stats.repositories);
+            }
+            Err(error) => info.errors.push(error.to_string()),
+        }
+        match self.store.last_sync_run(&self.subject.login) {
+            Ok(last_sync) => info.last_sync = last_sync,
+            Err(error) => info.errors.push(error.to_string()),
+        }
+        info
+    }
+
+    pub async fn load_pr(&mut self, owner: &str, name: &str, number: u64) -> Result<PrLoadResult> {
+        if let Some(client) = &self.client {
+            let fetched = client.fetch_pull_request(owner, name, number).await;
+            match fetched {
+                Ok(bundle) => {
+                    let pr_id = bundle.pull_request.id.clone();
+                    let involved = sync::involves(&self.subject, &bundle);
+                    let mut batch = sync::pr_batch(&self.subject, bundle);
+                    if !involved {
+                        batch.account = format!("{}{}", self.subject.login, sync::VIEWED_SUFFIX);
+                        batch
+                            .events
+                            .retain(|event| event.event_type != EventType::CommitAuthored);
+                    }
+                    self.store.apply(&batch)?;
+                    return Ok(PrLoadResult {
+                        pr_id: Some(pr_id),
+                        refreshed: true,
+                        refresh_error: None,
+                        offline: false,
+                    });
+                }
+                Err(error) if error.is_auth() => return Err(error.into()),
+                Err(error) => {
+                    let cached = self.store.find_pr(owner, name, number)?;
+                    if cached.is_none() {
+                        return Err(error.into());
+                    }
+                    return Ok(PrLoadResult {
+                        pr_id: cached,
+                        refreshed: false,
+                        refresh_error: Some(error.to_string()),
+                        offline: false,
+                    });
+                }
+            }
+        }
+        Ok(PrLoadResult {
+            pr_id: self.store.find_pr(owner, name, number)?,
+            refreshed: false,
+            refresh_error: None,
+            offline: true,
+        })
+    }
+
+    pub(crate) async fn load_commit(
+        &mut self,
+        target: &crate::commit::CommitTarget,
+    ) -> std::result::Result<crate::commit::LoadedCommit, crate::commit::CommitError> {
+        let public_only = self.config.public_only;
+        let cached = self
+            .store
+            .commit_detail(&target.repository(), &target.sha)
+            .map_err(AppError::from)?;
+        if let Some(detail) = cached {
+            if public_only && !detail.visibility.is_public() {
+                return Err(crate::commit::CommitError::NotPublic(target.repository()));
+            }
+            return Ok(crate::commit::LoadedCommit {
+                detail,
+                source: crate::commit::CommitSource::Cache,
+            });
+        }
+        let Some(client) = &self.client else {
+            return Err(crate::commit::CommitError::Offline {
+                target: target.label(),
+                reason: self
+                    .offline_reason
+                    .clone()
+                    .unwrap_or_else(|| "offline mode".into()),
+            });
+        };
+        let known = self
+            .store
+            .repository_by_name(&target.owner, &target.name)
+            .map_err(AppError::from)?;
+        let (repository, visibility) = match known {
+            Some(r) => (r.full_name(), r.visibility),
+            None => match client.repository(&target.owner, &target.name).await {
+                Ok(r) => (r.full_name(), r.visibility),
+                Err(e) if public_only => return Err(AppError::from(e).into()),
+                Err(_) => (target.repository(), Visibility::Unknown),
+            },
+        };
+        if public_only && !visibility.is_public() {
+            return Err(crate::commit::CommitError::NotPublic(target.repository()));
+        }
+        let mut detail = client
+            .fetch_commit(&target.owner, &target.name, &target.sha)
+            .await
+            .map_err(AppError::from)?;
+        detail.repository = repository;
+        detail.visibility = visibility;
+        if let Err(error) = self.store.put_commit_detail(&detail) {
+            tracing::warn!(error = %error, "could not store the commit in the cache");
+        }
+        Ok(crate::commit::LoadedCommit {
+            detail,
+            source: crate::commit::CommitSource::Github,
+        })
+    }
+
+    pub fn mark_offline(&mut self, reason: String) {
+        self.client = None;
+        self.offline_reason = Some(reason);
     }
 
     /// Coverage records that apply to this session's mode.
