@@ -113,10 +113,10 @@ fn empty_activity_reports_zero_everywhere() {
     // 2026-11-01 .. 2026-11-07 inclusive = 7 local days, each empty.
     assert_eq!(days.len(), 7);
     assert!(days.iter().all(|b| b.summary == Summary::default()));
-    assert_eq!(by_repository(&ds, &opts), [] as [RepoSummary; 0]);
+    assert_eq!(by_repository(&ds, &opts), Vec::<RepoSummary>::new());
     assert_eq!(
         pr_rows(&ds, &opts, Participation::All, None, PrSort::Activity),
-        [] as [PrRow; 0]
+        Vec::<PrRow>::new()
     );
     assert_eq!(snapshot(&ds, &opts), metrics::Snapshot::default());
 }
@@ -1339,7 +1339,7 @@ fn ci_results_are_never_human_activity() {
     assert_eq!(s.last_activity, None);
     assert_eq!(
         pr_rows(&ds, &opts, Participation::All, None, PrSort::Activity),
-        [] as [PrRow; 0]
+        Vec::<PrRow>::new()
     );
 }
 
