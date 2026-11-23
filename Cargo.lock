@@ -1167,7 +1167,6 @@ dependencies = [
 name = "ghusage"
 version = "0.1.6"
 dependencies = [
- "anyhow",
  "assert_cmd",
  "chrono",
  "clap",
@@ -1186,7 +1185,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
- "tracing",
  "tracing-subscriber",
  "wiremock",
 ]
@@ -1266,7 +1264,6 @@ version = "0.1.6"
 dependencies = [
  "ghusage-app",
  "ghusage-core",
- "ghusage-github",
  "ghusage-storage",
  "jiff",
  "ratatui",
@@ -1274,7 +1271,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
- "unicode-width",
 ]
 
 [[package]]

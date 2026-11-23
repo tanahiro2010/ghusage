@@ -10,11 +10,9 @@ license.workspace = true
 jiff = { version = "1.0.2", features = ["serde"] }
 ghusage-app = { version = "0.1.6", path = "../ghusage-app" }
 ghusage-core = { version = "0.1.6", path = "../ghusage-core" }
-ghusage-github = { version = "0.1.6", path = "../ghusage-github" }
 ratatui = "0.30"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync"] }
-unicode-width = "0.2.3"
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.4.6"
