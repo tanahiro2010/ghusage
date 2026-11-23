@@ -30,7 +30,8 @@ impl JiffZone {
         // Jiff's default compatible disambiguation advances through a gap and
         // selects the earlier occurrence in a fold, matching the existing
         // start_of_day contract.
-        date.to_zoned_datetime(self.0.clone()).map(|zdt| zdt.timestamp())
+        date.to_zoned_datetime(self.0.clone())
+            .map(|zdt| zdt.timestamp())
     }
 
     fn format(&self, instant: Timestamp, format: &str) -> String {
