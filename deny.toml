@@ -1,12 +1,13 @@
 [advisories]
 version = 2
 ignore = [
-  # chrono and chrono-tz are retained temporarily while the timezone model is
-  # migrated to jiff. See issue #15 for the tracked replacement work.
   "RUSTSEC-2026-0543",
   "RUSTSEC-2026-0555",
 ]
-unmaintained = "all"
+# cargo-deny 0.22 accepts all/workspace/transitive/none. Keep direct
+# workspace dependencies strict while allowing transitive unmaintained crates
+# to remain visible as warnings during dependency maintenance.
+unmaintained = "workspace"
 yanked = "deny"
 
 [licenses]
