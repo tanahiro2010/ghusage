@@ -136,7 +136,7 @@ fn terminal_width() -> usize {
 }
 
 /// Draws the progress until it is dropped or the sync finishes.
-pub struct Progress {
+pub(crate) struct Progress {
     shared: Option<Arc<Shared>>,
     painter: Option<JoinHandle<()>>,
 }
@@ -147,7 +147,7 @@ type Shared = (Mutex<State>, Condvar, Option<Arc<Activity>>);
 impl Progress {
     /// Starts drawing on stderr if it is a terminal; otherwise does nothing.
     /// `activity` adds the requests in flight.
-    pub fn start(activity: Option<Arc<Activity>>) -> Self {
+    pub(crate) fn start(activity: Option<Arc<Activity>>) -> Self {
         if !std::io::stderr().is_terminal() {
             return Self {
                 shared: None,
@@ -163,7 +163,7 @@ impl Progress {
         }
     }
 
-    pub fn update(&self, p: SyncProgress) {
+    pub(crate) fn update(&self, p: SyncProgress) {
         if let Some(shared) = &self.shared {
             let (lock, cv, _) = &**shared;
             if let Ok(mut st) = lock.lock() {

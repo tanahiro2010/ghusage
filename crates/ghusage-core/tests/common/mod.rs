@@ -10,40 +10,40 @@ use ghusage_core::model::{
 use ghusage_core::time::{Period, Zone};
 use jiff::{Timestamp, civil::Date};
 
-pub fn utc(s: &str) -> Timestamp {
+pub(crate) fn utc(s: &str) -> Timestamp {
     s.parse()
         .unwrap_or_else(|e| panic!("bad timestamp {s}: {e}"))
 }
 
-pub fn date(s: &str) -> Date {
+pub(crate) fn date(s: &str) -> Date {
     s.parse().unwrap()
 }
 
-pub fn zone(name: &str) -> Zone {
+pub(crate) fn zone(name: &str) -> Zone {
     Zone::parse(name).unwrap()
 }
 
 /// The analyzed user.
-pub fn subject() -> Subject {
+pub(crate) fn subject() -> Subject {
     Subject {
         id: Some("U_me".into()),
         login: "me".into(),
     }
 }
 
-pub fn me() -> Actor {
+pub(crate) fn me() -> Actor {
     Actor::new(Some("U_me".into()), Some("me".into()), Some("User"))
 }
 
-pub fn user(login: &str) -> Actor {
+pub(crate) fn user(login: &str) -> Actor {
     Actor::new(Some(format!("U_{login}")), Some(login.into()), Some("User"))
 }
 
-pub fn bot(login: &str) -> Actor {
+pub(crate) fn bot(login: &str) -> Actor {
     Actor::new(Some(format!("B_{login}")), Some(login.into()), Some("Bot"))
 }
 
-pub fn repo(id: &str, owner: &str, name: &str, visibility: Visibility) -> Repository {
+pub(crate) fn repo(id: &str, owner: &str, name: &str, visibility: Visibility) -> Repository {
     Repository {
         id: id.into(),
         owner: owner.into(),
@@ -61,7 +61,7 @@ pub fn repo(id: &str, owner: &str, name: &str, visibility: Visibility) -> Reposi
     }
 }
 
-pub fn pull(id: &str, repository_id: &str, number: u64, author: Actor) -> PullRequest {
+pub(crate) fn pull(id: &str, repository_id: &str, number: u64, author: Actor) -> PullRequest {
     PullRequest {
         id: id.into(),
         repository_id: repository_id.into(),
@@ -83,7 +83,7 @@ pub fn pull(id: &str, repository_id: &str, number: u64, author: Actor) -> PullRe
     }
 }
 
-pub fn thread(id: &str, pr_id: &str, started_by: Option<Actor>) -> ReviewThread {
+pub(crate) fn thread(id: &str, pr_id: &str, started_by: Option<Actor>) -> ReviewThread {
     ReviewThread {
         id: id.into(),
         pr_id: pr_id.into(),
@@ -96,7 +96,7 @@ pub fn thread(id: &str, pr_id: &str, started_by: Option<Actor>) -> ReviewThread 
     }
 }
 
-pub fn issue(id: &str, repository_id: &str, number: u64, author: Actor) -> Issue {
+pub(crate) fn issue(id: &str, repository_id: &str, number: u64, author: Actor) -> Issue {
     Issue {
         id: id.into(),
         repository_id: repository_id.into(),
@@ -110,10 +110,10 @@ pub fn issue(id: &str, repository_id: &str, number: u64, author: Actor) -> Issue
     }
 }
 
-pub const OBSERVED: &str = "2027-06-01T00:00:00Z";
+pub(crate) const OBSERVED: &str = "2027-06-01T00:00:00Z";
 
 /// A bare event; `entity_id` mirrors the event id.
-pub fn event(
+pub(crate) fn event(
     id: EventId,
     event_type: EventType,
     actor: Actor,
@@ -137,12 +137,12 @@ pub fn event(
     }
 }
 
-pub fn with_meta(mut e: ActivityEvent, f: impl FnOnce(&mut EventMeta)) -> ActivityEvent {
+pub(crate) fn with_meta(mut e: ActivityEvent, f: impl FnOnce(&mut EventMeta)) -> ActivityEvent {
     f(&mut e.meta);
     e
 }
 
-pub fn commit(repository_id: &str, sha: &str, actor: Actor, at: &str) -> ActivityEvent {
+pub(crate) fn commit(repository_id: &str, sha: &str, actor: Actor, at: &str) -> ActivityEvent {
     with_meta(
         event(
             EventId::commit(repository_id, sha),
@@ -156,7 +156,7 @@ pub fn commit(repository_id: &str, sha: &str, actor: Actor, at: &str) -> Activit
     )
 }
 
-pub fn pr_commit(
+pub(crate) fn pr_commit(
     repository_id: &str,
     pr_id: &str,
     sha: &str,
@@ -179,7 +179,7 @@ pub fn pr_commit(
     )
 }
 
-pub fn dataset(
+pub(crate) fn dataset(
     repositories: Vec<Repository>,
     pull_requests: Vec<PullRequest>,
     threads: Vec<ReviewThread>,
@@ -197,7 +197,7 @@ pub fn dataset(
     )
 }
 
-pub fn options(start: &str, end: &str, zone: Zone) -> Options {
+pub(crate) fn options(start: &str, end: &str, zone: Zone) -> Options {
     Options {
         period: Period::new(utc(start), utc(end)).unwrap(),
         zone,
@@ -207,7 +207,7 @@ pub fn options(start: &str, end: &str, zone: Zone) -> Options {
 }
 
 /// Period covering whole local days `[first, last_exclusive)` in `zone`.
-pub fn local_days(first: &str, last_exclusive: &str, zone: Zone) -> Options {
+pub(crate) fn local_days(first: &str, last_exclusive: &str, zone: Zone) -> Options {
     Options {
         period: Period::new(
             zone.start_of_day(date(first)),

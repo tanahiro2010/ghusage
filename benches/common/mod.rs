@@ -8,9 +8,9 @@ use ghusage_core::model::*;
 use ghusage_core::time::{Period, Zone};
 use jiff::{SignedDuration, Timestamp};
 
-pub const EVENTS: usize = 100_000;
+pub(crate) const EVENTS: usize = 100_000;
 
-pub fn actor(i: usize) -> Actor {
+pub(crate) fn actor(i: usize) -> Actor {
     if i.is_multiple_of(3) {
         Actor::new(Some("U_me".into()), Some("me".into()), Some("User"))
     } else {
@@ -23,7 +23,7 @@ pub fn actor(i: usize) -> Actor {
 }
 
 /// 100k events over one year across 40 repositories and 2,000 pull requests.
-pub fn data() -> (Vec<Repository>, Vec<PullRequest>, Vec<ActivityEvent>) {
+pub(crate) fn data() -> (Vec<Repository>, Vec<PullRequest>, Vec<ActivityEvent>) {
     let start: Timestamp = "2025-11-21T00:00:00Z".parse().unwrap();
     let repos: Vec<Repository> = (0..40)
         .map(|i: u32| Repository {
@@ -99,14 +99,14 @@ pub fn data() -> (Vec<Repository>, Vec<PullRequest>, Vec<ActivityEvent>) {
     (repos, prs, events)
 }
 
-pub fn subject() -> Subject {
+pub(crate) fn subject() -> Subject {
     Subject {
         id: Some("U_me".into()),
         login: "me".into(),
     }
 }
 
-pub fn ctx(days: i64) -> QueryContext {
+pub(crate) fn ctx(days: i64) -> QueryContext {
     let end: Timestamp = "2026-11-21T00:00:00Z".parse().unwrap();
     QueryContext {
         period: Period::new(end - SignedDuration::from_secs(days * 24 * 60 * 60), end).unwrap(),

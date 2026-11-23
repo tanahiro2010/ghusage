@@ -21,7 +21,7 @@ pub(crate) struct GqlActor {
 }
 
 impl GqlActor {
-    pub fn actor(&self) -> Actor {
+    pub(crate) fn actor(&self) -> Actor {
         Actor::new(
             self.id.clone(),
             self.login.clone(),
@@ -53,7 +53,7 @@ pub(crate) struct Connection {
 impl Connection {
     /// Parses each non-null node; returns the parsed nodes and the number of
     /// nodes that could not be parsed.
-    pub fn parse_nodes<T: DeserializeOwned>(&self) -> (Vec<T>, usize) {
+    pub(crate) fn parse_nodes<T: DeserializeOwned>(&self) -> (Vec<T>, usize) {
         let mut out = Vec::new();
         let mut bad = 0;
         for n in self.nodes.iter().flatten() {
@@ -71,7 +71,7 @@ impl Connection {
 
     /// Cursor of the next page, `Ok(None)` when this was the last page and
     /// `Err(())` when more pages exist but no cursor was given.
-    pub fn next_cursor(&self) -> Result<Option<String>, ()> {
+    pub(crate) fn next_cursor(&self) -> Result<Option<String>, ()> {
         match &self.page_info {
             Some(p) if p.has_next_page => p.end_cursor.clone().map(Some).ok_or(()),
             Some(_) => Ok(None),
@@ -99,7 +99,7 @@ pub(crate) struct GqlRepository {
 }
 
 impl GqlRepository {
-    pub fn to_repository(&self) -> Result<Repository, ApiError> {
+    pub(crate) fn to_repository(&self) -> Result<Repository, ApiError> {
         let missing = |f: &str| ApiError::InvalidResponse(format!("repository is missing `{f}`"));
         let id = self.id.clone().ok_or_else(|| missing("id"))?;
         let name = self.name.clone().ok_or_else(|| missing("name"))?;

@@ -113,7 +113,7 @@ pub(crate) enum PrConnection {
 }
 
 impl PrConnection {
-    pub fn field(self) -> &'static str {
+    pub(crate) fn field(self) -> &'static str {
         match self {
             Self::Commits => "commits",
             Self::Reviews => "reviews",
@@ -123,7 +123,7 @@ impl PrConnection {
         }
     }
 
-    pub fn page_query(self) -> String {
+    pub(crate) fn page_query(self) -> String {
         let (name, args, nodes, fragments): (&str, String, &str, Vec<&str>) = match self {
             Self::Commits => (
                 "PullRequestCommitsPage",
