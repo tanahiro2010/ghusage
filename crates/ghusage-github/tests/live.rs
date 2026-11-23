@@ -37,7 +37,7 @@ async fn live_pull_request_of_a_public_repository() {
             .iter()
             .any(|e| e.event_type == EventType::ReviewSubmitted)
     );
-    assert!(!b.current_commit_shas.is_empty());
+    assert_ne!(b.current_commit_shas, Vec::<String>::new());
     eprintln!("{:?}", c.stats());
 }
 
