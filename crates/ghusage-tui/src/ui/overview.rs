@@ -8,7 +8,12 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Min(3),
     ])
     .areas(area);
+    draw_overview_summary(f, app, r, metrics_area);
+    draw_overview_activity(f, r, chart_area);
+    draw_overview_repositories(f, app, r, repos_area);
+}
 
+fn draw_overview_summary(f: &mut Frame, app: &App, r: &Report, area: Rect) {
     let s = &r.metrics;
     let rows = vec![
         (
@@ -72,8 +77,10 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
         "Summary".into(),
         app.overview_pane == OverviewPane::Summary,
     ));
-    f.render_widget(t, metrics_area);
+        f.render_widget(t, area);
+}
 
+fn draw_overview_activity(f: &mut Frame, r: &Report, area: Rect) {
     // Activity timeline: one bar per day, newest on the right.
     let values: Vec<u64> = r
         .activity_breakdown
@@ -81,7 +88,7 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
         .map(|b| activity(&b.summary))
         .collect();
     let total: u64 = values.iter().sum();
-    let inner_w = chart_area.width.saturating_sub(2) as usize;
+    let inner_w = area.width.saturating_sub(2) as usize;
     let shown = &values[values.len().saturating_sub(inner_w)..];
     let first = r
         .activity_breakdown
@@ -100,7 +107,7 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     if total == 0 {
         empty(
             f,
-            chart_area,
+            area,
             "Activity per day".into(),
             &["No activity in this period. Press t to change the time range or r to refresh."],
         );
@@ -110,21 +117,25 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
                 .block(block(fit(&title, inner_w.saturating_sub(4)), false))
                 .data(shown)
                 .style(Style::new().fg(Color::Cyan)),
-            chart_area,
+            area,
         );
     }
 
+
+}
+
+fn draw_overview_repositories(f: &mut Frame, app: &App, r: &Report, area: Rect) {
     let focused = app.overview_pane == OverviewPane::Repositories;
     let title = "Top repositories (Tab to focus, Enter for detail)".to_string();
     if r.repositories.is_empty() {
         return empty(
             f,
-            repos_area,
+            area,
             title,
             &["No repository activity in this period."],
         );
     }
-    let name_w = flex_width(repos_area, &[16, 7, 5, 7, 8]);
+    let name_w = flex_width(area, &[16, 7, 5, 7, 8]);
     let rows: Vec<Row> = r
         .repositories
         .iter()
@@ -160,5 +171,5 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
         ],
     )
     .block(block(title, focused));
-    stateful_table(f, app, repos_area, ListId::OverviewRepos, t, focused);
+    stateful_table(f, app, area, ListId::OverviewRepos, t, focused);
 }
