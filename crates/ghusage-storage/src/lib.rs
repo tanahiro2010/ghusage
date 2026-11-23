@@ -67,11 +67,11 @@ impl StorageError {
     /// file or its directory.
     pub fn is_read_only(&self) -> bool {
         match self {
-            StorageError::Sqlite(e) => matches!(
+            Self::Sqlite(e) => matches!(
                 e.sqlite_error_code(),
                 Some(ErrorCode::ReadOnly | ErrorCode::CannotOpen | ErrorCode::PermissionDenied)
             ),
-            StorageError::Io(e) => e.kind() == std::io::ErrorKind::PermissionDenied,
+            Self::Io(e) => e.kind() == std::io::ErrorKind::PermissionDenied,
             _ => false,
         }
     }
@@ -244,7 +244,7 @@ fn immutable_uri(path: &Path) -> Result<String> {
         match b {
             b'\\' => uri.push('/'),
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' | b':' => {
-                uri.push(b as char)
+                uri.push(b as char);
             }
             _ => uri.push_str(&format!("%{b:02X}")),
         }
@@ -790,9 +790,9 @@ impl Store {
     }
 
     pub fn coverage(&self, account: &str) -> Result<Vec<CoverageRecord>> {
-        (|| match account_id(&self.conn, account)? {
-            Some(id) => coverage_for(&self.conn, id),
-            None => Ok(Vec::new()),
+        (|| {
+            account_id(&self.conn, account)?
+                .map_or_else(|| Ok(Vec::new()), |id| coverage_for(&self.conn, id))
         })()
         .map_err(classify)
     }
@@ -909,12 +909,10 @@ impl Store {
             };
             let mut file_size_bytes = 0;
             if let Some(path) = &self.path {
-                file_size_bytes += std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                file_size_bytes += std::fs::metadata(path).map_or(0, |m| m.len());
                 let mut wal = path.as_os_str().to_os_string();
                 wal.push("-wal");
-                file_size_bytes += std::fs::metadata(PathBuf::from(wal))
-                    .map(|m| m.len())
-                    .unwrap_or(0);
+                file_size_bytes += std::fs::metadata(PathBuf::from(wal)).map_or(0, |m| m.len());
             }
             Ok(CacheStats {
                 path: self.path.clone(),
@@ -1250,7 +1248,7 @@ fn upsert_pull_request(tx: &Transaction<'_>, p: &PullRequest) -> Result<()> {
             opt_nanos(p.merged_at),
             opt_to_json(p.merged_by.as_ref())?,
             p.head_sha,
-            p.latest_ci.map(|c| c.as_str()),
+            p.latest_ci.map(ghusage_core::model::CheckOutcome::as_str),
             p.coverage.as_str(),
             opt_secs(p.synced_at),
             opt_nanos(p.synced_at),
@@ -1416,7 +1414,9 @@ fn project_event(tx: &Transaction<'_>, e: &ActivityEvent) -> Result<()> {
                     e.meta.review_id.as_deref().unwrap_or(&e.entity_id),
                     e.parent_pr_id,
                     e.actor.login,
-                    e.meta.review_state.map(|s| s.as_str()),
+                    e.meta
+                        .review_state
+                        .map(ghusage_core::model::ReviewState::as_str),
                     secs(e.occurred_at),
                 ],
             )?;

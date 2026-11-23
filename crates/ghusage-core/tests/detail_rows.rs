@@ -76,7 +76,7 @@ fn world() -> Dataset {
         commit("R1", "a1", me(), "2026-03-01T10:00:00Z"),
         commit("R1", "a1", me(), "2026-03-01T10:00:00Z"),
         with_meta(commit("R2", "b1", me(), "2026-03-02T09:00:00Z"), |m| {
-            m.author_date = Some(utc("2026-02-28T23:00:00Z"))
+            m.author_date = Some(utc("2026-02-28T23:00:00Z"));
         }),
         commit("R1", "c1", user("bob"), "2026-03-01T11:00:00Z"),
         commit("R1", "d1", me(), "2026-03-05T10:00:00Z"),

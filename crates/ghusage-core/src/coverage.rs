@@ -43,10 +43,10 @@ impl CoverageStatus {
 
     /// Combines statuses of parts into the status of the whole. The whole is
     /// complete only when every part is complete.
-    pub fn combine<I: IntoIterator<Item = CoverageStatus>>(parts: I) -> CoverageStatus {
+    pub fn combine<I: IntoIterator<Item = Self>>(parts: I) -> Self {
         let mut iter = parts.into_iter();
         let Some(first) = iter.next() else {
-            return CoverageStatus::NotYetSynced;
+            return Self::NotYetSynced;
         };
         let mut all_same = true;
         for s in iter {
@@ -54,11 +54,7 @@ impl CoverageStatus {
                 all_same = false;
             }
         }
-        if all_same {
-            first
-        } else {
-            CoverageStatus::Partial
-        }
+        if all_same { first } else { Self::Partial }
     }
 }
 
@@ -75,7 +71,7 @@ pub enum DataKind {
 }
 
 impl DataKind {
-    pub const ALL: [DataKind; 3] = [DataKind::Commits, DataKind::PullRequests, DataKind::Issues];
+    pub const ALL: [Self; 3] = [Self::Commits, Self::PullRequests, Self::Issues];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -170,8 +166,9 @@ pub fn summarize(
             .iter()
             .filter(|r| r.start <= a && r.end >= b)
             .collect();
-        let (status, reason) = match covering.iter().map(|r| r.recorded_at).max() {
-            Some(latest_at) => {
+        let (status, reason) = covering.iter().map(|r| r.recorded_at).max().map_or(
+            (CoverageStatus::NotYetSynced, None),
+            |latest_at| {
                 let latest: Vec<&&CoverageRecord> = covering
                     .into_iter()
                     .filter(|r| r.recorded_at == latest_at)
@@ -182,9 +179,8 @@ pub fn summarize(
                 reasons.sort();
                 reasons.dedup();
                 (status, (!reasons.is_empty()).then(|| reasons.join("; ")))
-            }
-            None => (CoverageStatus::NotYetSynced, None),
-        };
+            },
+        );
         match segments.last_mut() {
             Some(last) if last.status == status && last.reason == reason && last.end == a => {
                 last.end = b;

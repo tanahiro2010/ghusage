@@ -415,8 +415,7 @@ pub fn assert_clean(app: &App, w: u16, h: u16) {
     for c in text.chars() {
         assert!(
             c == '\n' || !c.is_control(),
-            "control character {:?} rendered on screen:\n{text}",
-            c
+            "control character {c:?} rendered on screen:\n{text}"
         );
         assert!(
             !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'),

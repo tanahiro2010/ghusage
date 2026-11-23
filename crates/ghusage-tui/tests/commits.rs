@@ -619,7 +619,7 @@ fn seeded_cache() -> tempfile::TempDir {
             repositories: ds.repositories.values().cloned().collect(),
             pull_requests: ds.pull_requests.values().cloned().collect(),
             events: ds.events.clone(),
-            coverage: ds.coverage.clone(),
+            coverage: ds.coverage,
             ..WriteBatch::default()
         })
         .unwrap();
@@ -636,7 +636,7 @@ fn offline_loader_reads_cached_commits_and_reports_missing_ones() {
         offline: true,
         ..SessionConfig::default()
     };
-    let mut loader = Loader::new(cfg.clone(), false, zone());
+    let mut loader = Loader::new(cfg, false, zone());
     let missing = loader.load(&key_a()).unwrap_err();
     assert!(missing.offline, "{missing:?}");
     assert!(

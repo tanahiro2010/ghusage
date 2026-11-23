@@ -739,7 +739,7 @@ async fn incomplete_check_data_in_the_query_falls_back_to_rest() {
         (
             "more check runs in a suite than one page",
             Box::new(|c: &mut Value| {
-                c["checkSuites"]["nodes"][1]["checkRuns"]["pageInfo"]["hasNextPage"] = json!(true)
+                c["checkSuites"]["nodes"][1]["checkRuns"]["pageInfo"]["hasNextPage"] = json!(true);
             }),
             None,
         ),
@@ -758,7 +758,7 @@ async fn incomplete_check_data_in_the_query_falls_back_to_rest() {
         (
             "null check run",
             Box::new(|c: &mut Value| {
-                c["checkSuites"]["nodes"][0]["checkRuns"]["nodes"][0] = Value::Null
+                c["checkSuites"]["nodes"][0]["checkRuns"]["nodes"][0] = Value::Null;
             }),
             None,
         ),

@@ -76,7 +76,7 @@ fn event(
         event_type: ty,
         actor: user("alice"),
         repository_id: repo_id.into(),
-        entity_id: id.0.clone(),
+        entity_id: id.0,
         parent_pr_id: pr.map(Into::into),
         occurred_at: at,
         observed_at: t(10, 0),
@@ -892,7 +892,7 @@ fn hostile_looking_text_is_stored_verbatim() {
     let b = WriteBatch {
         account: evil.into(),
         repositories: vec![repo("R9", evil, "x\"y")],
-        pull_requests: vec![p.clone()],
+        pull_requests: vec![p],
         events: vec![e.clone()],
         cursors: vec![(evil.into(), evil.into())],
         ..Default::default()
@@ -1202,8 +1202,7 @@ fn running_as_root() -> bool {
     std::process::Command::new("id")
         .arg("-u")
         .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
-        .unwrap_or(false)
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
 }
 
 #[cfg(unix)]

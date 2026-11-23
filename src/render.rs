@@ -55,7 +55,10 @@ pub struct Table {
 impl Table {
     pub fn new(headers: &[&str]) -> Self {
         Self {
-            headers: headers.iter().map(|h| h.to_string()).collect(),
+            headers: headers
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
             rows: Vec::new(),
             right: vec![false; headers.len()],
             max_width: vec![None; headers.len()],
@@ -182,8 +185,7 @@ fn md_text(s: &str) -> String {
 }
 
 fn t(zone: &Zone, ts: Option<Timestamp>) -> String {
-    ts.map(|t| zone.format(t, "%Y-%m-%d %H:%M"))
-        .unwrap_or_else(|| "-".into())
+    ts.map_or_else(|| "-".into(), |t| zone.format(t, "%Y-%m-%d %H:%M"))
 }
 
 fn header(r: &Report, zone: &Zone, title: &str, style: Style) -> String {
@@ -631,10 +633,13 @@ pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> Stri
                     p.reviews.to_string(),
                     p.comments.to_string(),
                     p.participants.to_string(),
-                    p.latest_ci.map(|c| c.as_str()).unwrap_or("-").to_string(),
-                    p.diff
-                        .map(|d| format!("+{} -{}", d.additions, d.deletions))
-                        .unwrap_or_else(|| "?".into()),
+                    p.latest_ci
+                        .map_or("-", ghusage_core::model::CheckOutcome::as_str)
+                        .to_string(),
+                    p.diff.map_or_else(
+                        || "?".into(),
+                        |d| format!("+{} -{}", d.additions, d.deletions),
+                    ),
                 ]);
             }
             if t.is_empty() {
@@ -1047,10 +1052,7 @@ pub fn commit(r: &CommitReport, zone: Zone, style: Style) -> String {
         ),
         (
             "URL",
-            r.url
-                .as_deref()
-                .map(sanitize_line)
-                .unwrap_or_else(|| "-".into()),
+            r.url.as_deref().map_or_else(|| "-".into(), sanitize_line),
         ),
         (
             "Source",

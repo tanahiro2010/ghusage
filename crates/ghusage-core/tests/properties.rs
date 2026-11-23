@@ -808,7 +808,7 @@ proptest! {
         prop_assert_eq!(s.prs_created, 1);
         prop_assert_eq!(s.prs_merged, 0);
         // daily view: created on t1's local date, merged on t2's local date
-        let mut days = creation.clone();
+        let mut days = creation;
         days.period = Period::new(start, zone.start_of_day(zone.local_date(t2) + SignedDuration::from_hours(24))).unwrap();
         for b in metrics::breakdown(&ds, &days, Granularity::Day) {
             prop_assert_eq!(b.summary.prs_created, u64::from(b.bucket.key == zone.local_date(t1)));

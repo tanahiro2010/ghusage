@@ -99,7 +99,7 @@ pub enum ApiError {
 impl ApiError {
     /// Whether the error means credentials are invalid (exit code 3).
     pub fn is_auth(&self) -> bool {
-        matches!(self, ApiError::Unauthorized)
+        matches!(self, Self::Unauthorized)
     }
 }
 

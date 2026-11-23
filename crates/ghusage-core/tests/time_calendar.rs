@@ -167,7 +167,7 @@ fn year_end_is_split_by_month_but_shares_an_iso_week() {
     // 2026-12-31 is a Thursday: its week starts Monday 2026-12-28, which is
     // ISO week 53 of 2026 (2026 starts on a Thursday). 2027-01-01 (Friday)
     // belongs to that same week.
-    let weeks = local_days("2026-12-28", "2027-01-04", utc_zone.clone());
+    let weeks = local_days("2026-12-28", "2027-01-04", utc_zone);
     let b = metrics::breakdown(&ds, &weeks, Granularity::Week);
     assert_eq!(b.len(), 1);
     assert_eq!(b[0].bucket.label, "2026-W53");
@@ -237,7 +237,7 @@ fn new_york_dst_days_are_23_and_25_hours() {
         minutes(spring.period, "America/New_York", Granularity::Day),
         vec![1440, 23 * 60, 1440]
     );
-    let fall = local_days("2026-10-31", "2026-11-03", ny.clone());
+    let fall = local_days("2026-10-31", "2026-11-03", ny);
     assert_eq!(
         minutes(fall.period, "America/New_York", Granularity::Day),
         vec![1440, 25 * 60, 1440]
@@ -251,7 +251,7 @@ fn london_dst_days_are_23_and_25_hours() {
     let spring = local_days("2026-03-29", "2026-03-30", london.clone());
     assert_eq!(spring.period.start, utc("2026-03-29T00:00:00Z"));
     assert_eq!(spring.period.end, utc("2026-03-29T23:00:00Z"));
-    let fall = local_days("2026-10-25", "2026-10-26", london.clone());
+    let fall = local_days("2026-10-25", "2026-10-26", london);
     assert_eq!(fall.period.start, utc("2026-10-24T23:00:00Z"));
     assert_eq!(fall.period.end, utc("2026-10-26T00:00:00Z"));
     assert_eq!(

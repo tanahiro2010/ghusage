@@ -153,7 +153,7 @@ fn single_commit_counts_once_on_its_committer_day() {
 #[test]
 fn merge_commit_is_identified_separately() {
     let merge = with_meta(commit("R_tool", "m1", me(), "2026-11-20T10:00:00Z"), |m| {
-        m.is_merge_commit = Some(true)
+        m.is_merge_commit = Some(true);
     });
     let plain = commit("R_tool", "p1", me(), "2026-11-20T11:00:00Z");
     let ds = dataset(vec![tool()], vec![], vec![], vec![merge, plain]);
@@ -167,7 +167,7 @@ fn merge_commit_is_identified_separately() {
 fn author_date_basis_moves_commit_to_author_day() {
     // Authored 11-18, committed (rebased) 11-20.
     let c = with_meta(commit("R_tool", "abc", me(), "2026-11-20T10:00:00Z"), |m| {
-        m.author_date = Some(utc("2026-11-18T09:00:00Z"))
+        m.author_date = Some(utc("2026-11-18T09:00:00Z"));
     });
     let ds = dataset(vec![tool()], vec![], vec![], vec![c]);
     let mut opts = local_days("2026-11-17", "2026-11-21", zone("UTC"));
@@ -1661,7 +1661,7 @@ fn cross_repository_contribution_from_a_fork() {
     assert!(fork_row.owned);
     assert_eq!(fork_row.summary.commits, 1);
 
-    let mut ext = opts.clone();
+    let mut ext = opts;
     ext.filter.ownership = Some(Ownership::External);
     let s = summary(&ds, &ext);
     assert_eq!((s.commits, s.prs_created), (0, 1));

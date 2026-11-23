@@ -87,8 +87,7 @@ fn file(v: Value) -> Option<CommitFile> {
         status: f
             .status
             .as_deref()
-            .map(FileStatus::parse)
-            .unwrap_or(FileStatus::Unknown),
+            .map_or(FileStatus::Unknown, FileStatus::parse),
         additions,
         deletions,
         changes: f.changes.unwrap_or(additions + deletions),

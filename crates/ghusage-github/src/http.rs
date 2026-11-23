@@ -114,8 +114,7 @@ impl Transport {
             .map_err(|_| ApiError::Network("failed to initialize the HTTP client".into()))?;
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0x9E37_79B9_7F4A_7C15)
+            .map_or(0x9E37_79B9_7F4A_7C15, |d| d.as_nanos() as u64)
             | 1;
         Ok(Self {
             http,
@@ -385,16 +384,15 @@ impl Transport {
                 body: buf,
             })
         };
-        let result = match tokio::time::timeout(self.config.request_timeout, fut).await {
-            Ok(r) => r,
-            Err(_) => Err(AttemptError::Timeout),
-        };
+        let result = tokio::time::timeout(self.config.request_timeout, fut)
+            .await
+            .unwrap_or_else(|_| Err(AttemptError::Timeout));
         let elapsed = started.elapsed().as_millis() as u64;
-        let bytes = result.as_ref().map(|r| r.body.len() as u64).unwrap_or(0);
+        let bytes = result.as_ref().map_or(0, |r| r.body.len() as u64);
         tracing::debug!(
             %method,
             path = url.path(),
-            status = result.as_ref().map(|r| r.status).unwrap_or(0),
+            status = result.as_ref().map_or(0, |r| r.status),
             elapsed_ms = elapsed,
             bytes,
             "GitHub request"
@@ -499,16 +497,16 @@ impl Transport {
         let reset_at = header_str(headers, "x-ratelimit-reset")
             .and_then(|v| v.trim().parse::<i64>().ok())
             .and_then(|secs| Timestamp::from_second(secs).ok());
-        let delay = match reset_at {
-            Some(reset) => {
+        let delay = reset_at.map_or_else(
+            || self.backoff(attempt),
+            |reset| {
                 let secs = reset
                     .duration_since(Timestamp::now())
                     .as_secs_f64()
                     .max(0.0) as u64;
                 Duration::from_secs(secs + 1)
-            }
-            None => self.backoff(attempt),
-        };
+            },
+        );
         if delay > self.config.max_rate_limit_wait {
             return Decision::Fail(ApiError::RateLimited { reset_at });
         }

@@ -131,8 +131,7 @@ fn truncate(s: &str, width: usize) -> String {
 
 fn terminal_width() -> usize {
     ratatui::crossterm::terminal::size()
-        .map(|(w, _)| w as usize)
-        .unwrap_or(80)
+        .map_or(80, |(w, _)| w as usize)
         .max(20)
 }
 

@@ -1327,7 +1327,10 @@ async fn table_numbers_match_json_metrics() {
             );
             lines.insert(
                 cells[0].to_string(),
-                cells[10..].iter().map(|c| c.to_string()).collect(),
+                cells[10..]
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect(),
             );
         }
     }

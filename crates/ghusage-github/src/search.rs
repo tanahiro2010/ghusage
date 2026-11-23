@@ -306,8 +306,7 @@ pub(crate) fn commit_record(
     let actor = item
         .author
         .as_ref()
-        .map(RestUser::actor)
-        .unwrap_or_else(Actor::unknown);
+        .map_or_else(Actor::unknown, RestUser::actor);
     let committer = item
         .committer
         .as_ref()

@@ -99,7 +99,7 @@ impl Period {
     pub fn contains(&self, t: Timestamp) -> bool {
         self.start <= t && t < self.end
     }
-    pub fn overlaps(&self, other: &Period) -> bool {
+    pub fn overlaps(&self, other: &Self) -> bool {
         self.start < other.end && other.start < self.end
     }
     pub fn duration(&self) -> SignedDuration {

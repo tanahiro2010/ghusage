@@ -260,9 +260,11 @@ pub fn pr_commit(
     committed: &str,
     parents: u64,
 ) -> Value {
-    let user = |l: Option<&str>| match l {
-        Some(l) => json!({ "user": { "id": format!("U_{l}"), "login": l } }),
-        None => json!({ "user": null }),
+    let user = |l: Option<&str>| {
+        l.map_or_else(
+            || json!({ "user": null }),
+            |l| json!({ "user": { "id": format!("U_{l}"), "login": l } }),
+        )
     };
     json!({
         "url": format!("https://github.com/{owner}/{name}/pull/{number}/commits/{oid}"),

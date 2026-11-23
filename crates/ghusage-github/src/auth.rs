@@ -41,10 +41,10 @@ pub enum TokenSource {
 impl TokenSource {
     pub fn describe(&self) -> String {
         match self {
-            TokenSource::TokenFile(p) => format!("token file {}", p.display()),
-            TokenSource::GhTokenEnv => "GH_TOKEN".into(),
-            TokenSource::GithubTokenEnv => "GITHUB_TOKEN".into(),
-            TokenSource::GhCli => "gh auth token".into(),
+            Self::TokenFile(p) => format!("token file {}", p.display()),
+            Self::GhTokenEnv => "GH_TOKEN".into(),
+            Self::GithubTokenEnv => "GITHUB_TOKEN".into(),
+            Self::GhCli => "gh auth token".into(),
         }
     }
 }

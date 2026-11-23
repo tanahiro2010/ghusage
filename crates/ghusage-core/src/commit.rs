@@ -167,11 +167,7 @@ pub fn headline(message: &str) -> &str {
 
 /// The first seven characters of a SHA, the usual abbreviation.
 pub fn short_sha(sha: &str) -> &str {
-    let end = sha
-        .char_indices()
-        .nth(7)
-        .map(|(i, _)| i)
-        .unwrap_or(sha.len());
+    let end = sha.char_indices().nth(7).map_or(sha.len(), |(i, _)| i);
     &sha[..end]
 }
 

@@ -201,35 +201,35 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [EventType; 28] = [
-        EventType::CommitAuthored,
-        EventType::PrOpened,
-        EventType::PrConvertedToDraft,
-        EventType::PrReadyForReview,
-        EventType::PrClosed,
-        EventType::PrReopened,
-        EventType::PrMerged,
-        EventType::PrCommit,
-        EventType::PrHeadForcePushed,
-        EventType::ReviewSubmitted,
-        EventType::ReviewDismissed,
-        EventType::ConversationComment,
-        EventType::InlineComment,
-        EventType::ReviewSummary,
-        EventType::ReviewRequested,
-        EventType::ReviewRequestRemoved,
-        EventType::Assigned,
-        EventType::Unassigned,
-        EventType::Labeled,
-        EventType::Unlabeled,
-        EventType::Milestoned,
-        EventType::Demilestoned,
-        EventType::Renamed,
-        EventType::IssueOpened,
-        EventType::IssueClosed,
-        EventType::IssueReopened,
-        EventType::CheckRun,
-        EventType::CommitStatus,
+    pub const ALL: [Self; 28] = [
+        Self::CommitAuthored,
+        Self::PrOpened,
+        Self::PrConvertedToDraft,
+        Self::PrReadyForReview,
+        Self::PrClosed,
+        Self::PrReopened,
+        Self::PrMerged,
+        Self::PrCommit,
+        Self::PrHeadForcePushed,
+        Self::ReviewSubmitted,
+        Self::ReviewDismissed,
+        Self::ConversationComment,
+        Self::InlineComment,
+        Self::ReviewSummary,
+        Self::ReviewRequested,
+        Self::ReviewRequestRemoved,
+        Self::Assigned,
+        Self::Unassigned,
+        Self::Labeled,
+        Self::Unlabeled,
+        Self::Milestoned,
+        Self::Demilestoned,
+        Self::Renamed,
+        Self::IssueOpened,
+        Self::IssueClosed,
+        Self::IssueReopened,
+        Self::CheckRun,
+        Self::CommitStatus,
     ];
 
     pub fn category(self) -> EventCategory {
@@ -256,7 +256,7 @@ impl EventType {
     pub fn is_discussion(self) -> bool {
         matches!(
             self,
-            EventType::ConversationComment | EventType::InlineComment | EventType::ReviewSummary
+            Self::ConversationComment | Self::InlineComment | Self::ReviewSummary
         )
     }
 
@@ -366,7 +366,7 @@ impl EventType {
     pub fn parse(s: &str) -> Option<Self> {
         // "commit" is accepted for caches written by earlier versions.
         if s == "commit" {
-            return Some(EventType::CommitAuthored);
+            return Some(Self::CommitAuthored);
         }
         Self::ALL.iter().copied().find(|t| t.as_str() == s)
     }
@@ -384,16 +384,16 @@ pub enum Source {
 impl Source {
     pub fn as_str(self) -> &'static str {
         match self {
-            Source::Rest => "rest",
-            Source::Graphql => "graphql",
-            Source::Search => "search",
+            Self::Rest => "rest",
+            Self::Graphql => "graphql",
+            Self::Search => "search",
         }
     }
     pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "rest" => Some(Source::Rest),
-            "graphql" => Some(Source::Graphql),
-            "search" => Some(Source::Search),
+            "rest" => Some(Self::Rest),
+            "graphql" => Some(Self::Graphql),
+            "search" => Some(Self::Search),
             _ => None,
         }
     }
@@ -450,8 +450,14 @@ pub enum CheckOutcome {
 impl CheckOutcome {
     /// Maps GitHub check-run status/conclusion or commit-status state.
     pub fn from_github(status: Option<&str>, conclusion: Option<&str>) -> Self {
-        match conclusion.map(|c| c.to_ascii_lowercase()) {
-            Some(c) => match c.as_str() {
+        conclusion.map_or_else(
+            || match status.map(str::to_ascii_lowercase).as_deref() {
+                Some("queued" | "in_progress" | "waiting" | "requested" | "pending") => {
+                    Self::Pending
+                }
+                Some("completed") | None | Some(_) => Self::Unknown,
+            },
+            |c| match c.to_ascii_lowercase().as_str() {
                 "success" => Self::Success,
                 "failure" | "timed_out" | "startup_failure" | "action_required" | "error" => {
                     Self::Failure
@@ -462,13 +468,7 @@ impl CheckOutcome {
                 "pending" | "expected" => Self::Pending,
                 _ => Self::Unknown,
             },
-            None => match status.map(|s| s.to_ascii_lowercase()).as_deref() {
-                Some("queued" | "in_progress" | "waiting" | "requested" | "pending") => {
-                    Self::Pending
-                }
-                Some("completed") | None | Some(_) => Self::Unknown,
-            },
-        }
+        )
     }
     pub fn as_str(self) -> &'static str {
         match self {
@@ -736,28 +736,28 @@ pub enum Collection {
 }
 
 impl Collection {
-    pub const ALL: [Collection; 6] = [
-        Collection::Commits,
-        Collection::Reviews,
-        Collection::Comments,
-        Collection::ReviewComments,
-        Collection::Timeline,
-        Collection::Checks,
+    pub const ALL: [Self; 6] = [
+        Self::Commits,
+        Self::Reviews,
+        Self::Comments,
+        Self::ReviewComments,
+        Self::Timeline,
+        Self::Checks,
     ];
 
     /// The collection an event type belongs to, if it is a PR event.
-    pub fn of(t: EventType) -> Option<Collection> {
+    pub fn of(t: EventType) -> Option<Self> {
         use EventType::*;
         Some(match t {
-            PrCommit => Collection::Commits,
-            ReviewSubmitted | ReviewSummary => Collection::Reviews,
-            ConversationComment => Collection::Comments,
-            InlineComment => Collection::ReviewComments,
-            CheckRun | CommitStatus => Collection::Checks,
+            PrCommit => Self::Commits,
+            ReviewSubmitted | ReviewSummary => Self::Reviews,
+            ConversationComment => Self::Comments,
+            InlineComment => Self::ReviewComments,
+            CheckRun | CommitStatus => Self::Checks,
             PrOpened | PrConvertedToDraft | PrReadyForReview | PrClosed | PrReopened | PrMerged
             | PrHeadForcePushed | ReviewDismissed | ReviewRequested | ReviewRequestRemoved
             | Assigned | Unassigned | Labeled | Unlabeled | Milestoned | Demilestoned | Renamed => {
-                Collection::Timeline
+                Self::Timeline
             }
             CommitAuthored | IssueOpened | IssueClosed | IssueReopened => return None,
         })

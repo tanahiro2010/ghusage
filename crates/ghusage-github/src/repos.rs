@@ -103,26 +103,30 @@ pub(crate) async fn pushed_repositories(
     user: Option<&str>,
     pushed_since: Timestamp,
 ) -> Result<Vec<PushedRepository>, ApiError> {
-    let first = match user {
-        None => t.rest_url(
-            &["user", "repos"],
-            &[
-                ("affiliation", "owner,collaborator,organization_member"),
-                ("sort", "pushed"),
-                ("direction", "desc"),
-                ("per_page", "100"),
-            ],
-        ),
-        Some(login) => t.rest_url(
-            &["users", login, "repos"],
-            &[
-                ("type", "owner"),
-                ("sort", "pushed"),
-                ("direction", "desc"),
-                ("per_page", "100"),
-            ],
-        ),
-    };
+    let first = user.map_or_else(
+        || {
+            t.rest_url(
+                &["user", "repos"],
+                &[
+                    ("affiliation", "owner,collaborator,organization_member"),
+                    ("sort", "pushed"),
+                    ("direction", "desc"),
+                    ("per_page", "100"),
+                ],
+            )
+        },
+        |login| {
+            t.rest_url(
+                &["users", login, "repos"],
+                &[
+                    ("type", "owner"),
+                    ("sort", "pushed"),
+                    ("direction", "desc"),
+                    ("per_page", "100"),
+                ],
+            )
+        },
+    );
     let mut out = Vec::new();
     let mut seen_ids = HashSet::new();
     let mut seen_urls = HashSet::new();
