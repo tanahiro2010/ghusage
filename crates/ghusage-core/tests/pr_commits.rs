@@ -63,5 +63,5 @@ fn every_commit_once_oldest_first_with_removed_ones_marked() {
         rows.iter().filter(|r| r.removed).count() as u64,
         d.removed_commits
     );
-    assert!(pr_commit_rows(&ds, "P9").is_empty());
+    assert_eq!(pr_commit_rows(&ds, "P9").len(), 0);
 }

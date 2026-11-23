@@ -63,7 +63,7 @@ impl Default for ClientConfig {
             concurrency: 8,
             max_attempts: 5,
             request_timeout: Duration::from_secs(30),
-            max_rate_limit_wait: Duration::from_secs(15 * 60),
+            max_rate_limit_wait: Duration::from_mins(15),
             backoff_base: Duration::from_secs(1),
             max_response_bytes: 50 * 1024 * 1024,
             user_agent: concat!("ghusage/", env!("CARGO_PKG_VERSION")).into(),
