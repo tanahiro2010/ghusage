@@ -618,12 +618,12 @@ async fn checks_and_statuses_of_the_head_commit() {
     assert_eq!(status.event_type, EventType::CommitStatus);
     assert_eq!(status.meta.check_name.as_deref(), Some("ci/legacy"));
     assert_eq!(status.meta.check_outcome, Some(CheckOutcome::Success));
-    assert!(
+    assert_eq!(
         b.events
             .iter()
             .filter(|e| e.event_type.is_automation())
-            .count()
-            == 3
+            .count(),
+        3
     );
 }
 
