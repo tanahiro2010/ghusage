@@ -23,7 +23,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: "1.100.0"
 
 jobs:
   source:
@@ -63,7 +62,6 @@ jobs:
           submodules: false
       - uses: dtolnay/rust-toolchain@1.100.0
         with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
       - name: Install musl tools
         if: contains(matrix.target, 'musl')

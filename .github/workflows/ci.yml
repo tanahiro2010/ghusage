@@ -87,7 +87,6 @@ jobs:
       - if: steps.verified.outputs.cache-hit != 'true'
         uses: dtolnay/rust-toolchain@1.100.0
         with:
-          toolchain: "1.100.0"
           components: rustfmt, clippy
       - if: steps.verified.outputs.cache-hit != 'true'
         uses: Swatinem/rust-cache@v2.9.3
@@ -150,8 +149,6 @@ jobs:
       # The same pinned toolchain as the tests.
       - if: steps.verified.outputs.cache-hit != 'true'
         uses: dtolnay/rust-toolchain@1.100.0
-        with:
-          toolchain: "1.100.0"
       - if: steps.verified.outputs.cache-hit != 'true'
         uses: Swatinem/rust-cache@v2.9.3
         with:
@@ -277,6 +274,7 @@ jobs:
         with:
           submodules: false
       - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
-          toolchain: "1.94.0"
-      - run: cargo check --workspace --all-targets --locked
+          cache-on-failure: true
+      - run: cargo check --workspace --locked
