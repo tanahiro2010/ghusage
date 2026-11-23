@@ -185,19 +185,18 @@ pub fn cached_subject(store: &Store, user: Option<&str>) -> Result<(Subject, boo
 pub const PUBLIC_ONLY_SCOPE: &str = " (public repositories only)";
 
 /// Marker in the scope of commit coverage recorded by syncs that list
-/// repository commits in addition to commit search, and take search results
-/// only from repositories the subject is related to.
-pub const COMMIT_LISTING_SCOPE: &str =
-    "(repository listing + commit search in related repositories)";
+/// repository commits in addition to commit search, and leave out copies of
+/// commits found in related repositories.
+pub const COMMIT_LISTING_SCOPE: &str = "(repository listing + commit search; other repositories by commit search alone, copies excluded)";
 
 /// Coverage records that count for the current mode. Records from a
 /// public-only sync do not cover private data, so they are ignored unless
 /// the current mode is public-only too. Commit records without
 /// [`COMMIT_LISTING_SCOPE`] are ignored and the range is synced again:
 /// records written before repository listing was added relied on commit
-/// search alone, which misses commits, and records written before search
-/// results were limited to related repositories may count copies of the
-/// subject's commits in unrelated repositories.
+/// search alone, which misses commits, and records written before copies
+/// were told apart may count copies of the subject's commits in other
+/// repositories.
 pub fn applicable_coverage(records: Vec<CoverageRecord>, public_only: bool) -> Vec<CoverageRecord> {
     records
         .into_iter()
@@ -834,13 +833,19 @@ fn find_repo<'a>(
         .find(|r| r.owner.eq_ignore_ascii_case(owner) && r.name.eq_ignore_ascii_case(name))
 }
 
-/// Repositories the subject is related to other than through commits: owned
-/// by the subject, in the subject's repository list, or with pull requests
-/// or issues of the subject. Commit search also finds the subject's commits
-/// in repositories that merely contain a copy of them, such as a project
-/// uploaded again as a new repository instead of forked (GitHub does not
-/// mark those as forks). Search results in other repositories are left
-/// out; GitHub's contribution graph does not count such copies either.
+/// Repositories the subject is known to be related to other than through
+/// commits: owned by the subject, in the subject's repository list, or with
+/// pull requests or issues of the subject.
+///
+/// Commit search also finds the subject's commits in repositories whose
+/// relation cannot be confirmed from that metadata. Some are legitimate,
+/// such as a repository another user owns that the subject pushes to
+/// directly as a collaborator (not in the list of `--user`). Others only
+/// hold a copy of the subject's commits, such as a project uploaded again
+/// as a new repository instead of forked (GitHub does not mark those as
+/// forks). The two cannot always be told apart, so search results in those
+/// repositories are kept, except copies: commits whose SHA is also found in
+/// a related repository.
 struct Related<'a> {
     login: &'a str,
     ids: HashSet<String>,
@@ -854,13 +859,29 @@ impl Related<'_> {
             || self.ids.contains(&r.id)
             || self.names.contains(&r.full_name().to_ascii_lowercase())
     }
+
+    /// Whether the repository with `id` is related; one that is not known
+    /// at all is not.
+    fn contains_id(&self, id: &str, known: &HashMap<String, Repository>) -> bool {
+        self.ids.contains(id) || known.get(id).is_some_and(|r| self.contains(r))
+    }
+}
+
+/// The lowercase SHA of a commit, from its event id (`commit:{repo}:{sha}`).
+fn commit_sha(c: &CommitRecord) -> Option<&str> {
+    c.event
+        .event_id
+        .as_str()
+        .rsplit_once(':')
+        .map(|(_, sha)| sha)
 }
 
 /// Syncs commits for `ranges`: commit search, plus the commits list of the
 /// default branch of every repository the subject pushed to (repository
 /// listing), had commits found by search in, or has pull requests in.
 /// Both sources produce the same event ids, so a commit found by both is
-/// stored once. Search results only count in [`Related`] repositories.
+/// stored once. In repositories that are not [`Related`], search results
+/// are used as they are, without listing, and copies are left out.
 #[allow(clippy::too_many_arguments)]
 async fn sync_commits(
     sh: &Shared<'_, '_>,
@@ -944,28 +965,18 @@ async fn sync_commits(
             .map(|n| n.to_ascii_lowercase())
             .collect(),
     };
-    // Without the repository list, relation cannot be told, so every search
-    // result is kept (and the coverage is partial anyway).
-    let judge = listing_failure.is_none();
 
     for range in ranges {
         let range = *range;
         let fetched = searches.next().expect("one commit search per range");
-        let (items, unrelated): (Vec<CommitRecord>, Vec<CommitRecord>) = fetched
+        // Search results in repositories not known to be related are used as
+        // they are: listing their default branches could fail or take long
+        // for a huge copy, and could not tell copies apart either.
+        let (items, unconfirmed): (Vec<CommitRecord>, Vec<CommitRecord>) = fetched
             .items
             .into_iter()
-            .partition(|c| !judge || related.contains(&c.repository));
-        let mut unrelated_ids: Vec<String> =
-            unrelated.iter().map(|c| c.repository.id.clone()).collect();
-        unrelated_ids.sort();
-        unrelated_ids.dedup();
-        if !unrelated.is_empty() {
-            progress(SyncProgress::Detail(format!(
-                "skipping {} commit(s) found by search in {} unrelated repositories",
-                unrelated.len(),
-                unrelated_ids.len()
-            )));
-        }
+            .partition(|c| related.contains(&c.repository));
+        let cached = sh.store.borrow().commits_in(&subject.login, range)?;
         let mut statuses = vec![fetched.status];
         let mut reasons: Vec<String> = fetched.reason.into_iter().collect();
         if let Some(f) = &listing_failure {
@@ -1062,6 +1073,42 @@ async fn sync_commits(
             }
         }
         drop(stream);
+
+        // So far `found` holds only commits of related repositories. A
+        // commit found elsewhere with one of their SHAs is a copy.
+        let known = &*known_repos;
+        let mut related_shas: HashSet<String> = found
+            .values()
+            .filter_map(commit_sha)
+            .map(str::to_owned)
+            .collect();
+        related_shas.extend(
+            cached
+                .iter()
+                .filter(|c| related.contains_id(&c.repository_id, known))
+                .map(|c| c.sha.clone()),
+        );
+        let mut copies = 0;
+        for c in unconfirmed {
+            if commit_sha(&c).is_some_and(|sha| related_shas.contains(sha)) {
+                copies += 1;
+            } else {
+                found.entry(c.event.event_id.clone()).or_insert(c);
+            }
+        }
+        if copies > 0 {
+            progress(SyncProgress::Detail(format!(
+                "skipping {copies} commit(s) found by search that copy commits of related repositories"
+            )));
+        }
+        // Copies stored by earlier versions.
+        let stale_copies: Vec<(String, String)> = cached
+            .iter()
+            .filter(|c| matches!(c.source, Source::Search | Source::Rest))
+            .filter(|c| !related.contains_id(&c.repository_id, known))
+            .filter(|c| related_shas.contains(&c.sha))
+            .map(|c| (c.repository_id.clone(), c.sha.clone()))
+            .collect();
         if !inaccessible.is_empty() {
             for (owner, name) in &inaccessible {
                 sh.store
@@ -1119,12 +1166,10 @@ async fn sync_commits(
         let reason = (!reasons.is_empty()).then(|| reasons.join("; "));
         let rec = record(DataKind::Commits, range, status, reason, subject, opts);
         batch.coverage.push(rec.clone());
-        // Earlier versions stored search results from unrelated
-        // repositories; drop those of this range.
-        if !unrelated_ids.is_empty() {
+        if !stale_copies.is_empty() {
             sh.store
                 .borrow_mut()
-                .remove_listed_commits(&subject.login, range, &unrelated_ids)?;
+                .remove_listed_commits(&subject.login, &stale_copies)?;
         }
         sh.store.borrow_mut().apply(&batch)?;
         sh.report.borrow_mut().coverage.push(rec);
