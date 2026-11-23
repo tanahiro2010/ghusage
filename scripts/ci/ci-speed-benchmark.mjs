@@ -19,7 +19,9 @@ const packageName = option("--package", "");
 const scope = packageName
   ? ["--package", packageName]
   : ["--workspace"];
-const testSelection = ["--lib", "--bins", "--tests", "--no-fail-fast"];
+const testSelection = scenario === "split"
+  ? ["--bins", "--tests", "--no-fail-fast"]
+  : ["--lib", "--bins", "--tests", "--no-fail-fast"];
 const records = [];
 
 function commandLine(command, args) {
