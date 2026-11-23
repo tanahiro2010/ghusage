@@ -30,7 +30,7 @@ jobs:
           # Work from the oldest update first so grouped updates are handled
           # predictably. Only one merge is attempted per run; the next run
           # re-evaluates the remaining PRs against the new dependency graph.
-          prs=$(gh pr list --repo "$GH_REPO" --state open --limit 100 \
+          prs=$(gh pr list --repo "$GH_REPO" --state open --base dev --limit 100 \
             --json number,title,author,updatedAt \
             --jq '[.[] | select(.author.login == "dependabot[bot]")] | sort_by(.updatedAt)')
 
