@@ -104,7 +104,7 @@ fn commit_details_survive_reopening_and_are_removed_by_clear() {
     );
     s.clear().unwrap();
     assert_eq!(s.commit_detail("acme/widget", "abcdef0111").unwrap(), None);
-    assert!(s.integrity_check().unwrap().is_empty());
+    assert_eq!(s.integrity_check().unwrap(), Vec::<String>::new());
 }
 
 #[test]
