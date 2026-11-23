@@ -17,7 +17,7 @@ tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync"] }
 unicode-width = "0.2.3"
 
 [target.'cfg(unix)'.dependencies]
-signal-hook = "0.3.18"
+signal-hook = "0.4.6"
 
 [dev-dependencies]
 ghusage-storage = { version = "0.1.6", path = "../ghusage-storage" }
