@@ -6,7 +6,7 @@ use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::model::{ActivityEvent, EventId, EventMeta, EventType, Issue, Source};
 use jiff::Timestamp;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::gql::{self, Connection, GqlActor, GqlRepository, actor_of, time};
 use crate::http::Transport;
@@ -82,57 +82,8 @@ pub(crate) async fn fetch(
     let url = issue.url.clone().ok_or_else(|| missing("url"))?;
 
     let mut complete = resp.errors.is_empty();
-    // Timeline pages.
-    let mut nodes = Vec::new();
-    match issue.timeline_items.take() {
-        None => complete = false,
-        Some(mut conn) => {
-            let mut cursors = HashSet::new();
-            loop {
-                nodes.extend(conn.nodes.take().unwrap_or_default());
-                let cursor = match conn.next_cursor() {
-                    Ok(None) => break,
-                    Ok(Some(c)) if cursors.insert(c.clone()) => c,
-                    _ => {
-                        complete = false;
-                        break;
-                    }
-                };
-                let resp = match t
-                    .graphql(
-                        &queries::issue_timeline_page(),
-                        json!({ "id": id, "after": cursor }),
-                    )
-                    .await
-                {
-                    Ok(r) => r,
-                    Err(e @ (ApiError::Unauthorized | ApiError::RateLimited { .. })) => {
-                        return Err(e);
-                    }
-                    Err(_) => {
-                        complete = false;
-                        break;
-                    }
-                };
-                if !resp.errors.is_empty() {
-                    complete = false;
-                }
-                match resp
-                    .data
-                    .as_ref()
-                    .and_then(|d| d.get("node"))
-                    .and_then(|n| n.get("timelineItems"))
-                    .filter(|v| !v.is_null())
-                {
-                    Some(v) => conn = gql::from_value(Some(v)),
-                    None => {
-                        complete = false;
-                        break;
-                    }
-                }
-            }
-        }
-    }
+    let (nodes, timeline_complete) = collect_timeline(t, &id, issue.timeline_items.take()).await?;
+    complete &= timeline_complete;
 
     let now = Timestamp::now();
     let mut events = vec![ActivityEvent {
@@ -149,45 +100,10 @@ pub(crate) async fn fetch(
         meta: EventMeta::default(),
         coverage: CoverageStatus::Complete,
     }];
-    let parsed = Connection {
-        page_info: None,
-        nodes: Some(nodes),
-        total_count: None,
-    }
-    .parse_nodes::<TimelineNode>();
-    if parsed.1 > 0 {
-        complete = false;
-    }
-    for item in parsed.0 {
-        let (Some(ty), Some(node_id), Some(at)) = (
-            item.typename.as_deref(),
-            item.id.clone(),
-            time(&item.created_at),
-        ) else {
-            complete = false;
-            continue;
-        };
-        let event_type = match ty {
-            "ClosedEvent" => EventType::IssueClosed,
-            "ReopenedEvent" => EventType::IssueReopened,
-            _ => continue,
-        };
-        events.push(ActivityEvent {
-            event_id: EventId::timeline(&node_id),
-            event_type,
-            actor: actor_of(&item.actor),
-            repository_id: repository.id.clone(),
-            // The entity is the issue; the timeline node id is in event_id.
-            entity_id: id.clone(),
-            parent_pr_id: None,
-            occurred_at: at,
-            observed_at: now,
-            source: Source::Graphql,
-            url: item.url.clone().or_else(|| Some(url.clone())),
-            meta: EventMeta::default(),
-            coverage: CoverageStatus::Complete,
-        });
-    }
+    let (timeline_events, parsed_complete) =
+        issue_timeline_events(nodes, &id, &repository.id, &url, now);
+    complete &= parsed_complete;
+    events.extend(timeline_events);
     let status = if complete {
         CoverageStatus::Complete
     } else {
@@ -232,4 +148,104 @@ pub(crate) async fn fetch(
         events,
         status,
     })
+}
+
+async fn collect_timeline(
+    t: &Transport,
+    id: &str,
+    initial: Option<Connection>,
+) -> Result<(Vec<Value>, bool), ApiError> {
+    let Some(mut conn) = initial else {
+        return Ok((Vec::new(), false));
+    };
+    let mut nodes = Vec::new();
+    let mut complete = true;
+    let mut cursors = HashSet::new();
+    loop {
+        nodes.extend(conn.nodes.take().unwrap_or_default());
+        let cursor = match conn.next_cursor() {
+            Ok(None) => break,
+            Ok(Some(c)) if cursors.insert(c.clone()) => c,
+            _ => {
+                complete = false;
+                break;
+            }
+        };
+        let resp = match t
+            .graphql(
+                &queries::issue_timeline_page(),
+                json!({ "id": id, "after": cursor }),
+            )
+            .await
+        {
+            Ok(r) => r,
+            Err(e @ (ApiError::Unauthorized | ApiError::RateLimited { .. })) => return Err(e),
+            Err(_) => {
+                complete = false;
+                break;
+            }
+        };
+        complete &= resp.errors.is_empty();
+        match resp
+            .data
+            .as_ref()
+            .and_then(|d| d.get("node"))
+            .and_then(|n| n.get("timelineItems"))
+            .filter(|v| !v.is_null())
+        {
+            Some(v) => conn = gql::from_value(Some(v)),
+            None => {
+                complete = false;
+                break;
+            }
+        }
+    }
+    Ok((nodes, complete))
+}
+
+fn issue_timeline_events(
+    nodes: Vec<Value>,
+    id: &str,
+    repository_id: &str,
+    issue_url: &str,
+    now: Timestamp,
+) -> (Vec<ActivityEvent>, bool) {
+    let parsed = Connection {
+        page_info: None,
+        nodes: Some(nodes),
+        total_count: None,
+    }
+    .parse_nodes::<TimelineNode>();
+    let mut complete = parsed.1 == 0;
+    let mut events = Vec::new();
+    for item in parsed.0 {
+        let (Some(ty), Some(node_id), Some(at)) = (
+            item.typename.as_deref(),
+            item.id.clone(),
+            time(&item.created_at),
+        ) else {
+            complete = false;
+            continue;
+        };
+        let event_type = match ty {
+            "ClosedEvent" => EventType::IssueClosed,
+            "ReopenedEvent" => EventType::IssueReopened,
+            _ => continue,
+        };
+        events.push(ActivityEvent {
+            event_id: EventId::timeline(&node_id),
+            event_type,
+            actor: actor_of(&item.actor),
+            repository_id: repository_id.to_owned(),
+            entity_id: id.to_owned(),
+            parent_pr_id: None,
+            occurred_at: at,
+            observed_at: now,
+            source: Source::Graphql,
+            url: item.url.clone().or_else(|| Some(issue_url.to_owned())),
+            meta: EventMeta::default(),
+            coverage: CoverageStatus::Complete,
+        });
+    }
+    (events, complete)
 }

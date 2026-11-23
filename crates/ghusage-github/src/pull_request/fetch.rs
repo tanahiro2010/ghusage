@@ -16,6 +16,73 @@ struct FetchedPr {
     checks: ChecksResult,
 }
 
+async fn collect_graphql_pages(
+    t: &Transport,
+    pr_id: &str,
+    pr: &mut GqlPullRequest,
+    tracker: &mut Tracker,
+) -> Result<(
+    Vec<Value>,
+    Vec<Value>,
+    Vec<(ThreadNode, Vec<Value>, Option<u64>)>,
+    Vec<Value>,
+    Vec<Value>,
+), ApiError> {
+    let commits = collect_connection(t, pr_id, PrConnection::Commits, pr.commits.take(), tracker).await?;
+    let reviews = collect_connection(t, pr_id, PrConnection::Reviews, pr.reviews.take(), tracker).await?;
+    let thread_values = collect_connection(
+        t,
+        pr_id,
+        PrConnection::Threads,
+        pr.review_threads.take(),
+        tracker,
+    )
+    .await?;
+    let (threads, bad_threads) = collect_threads(t, thread_values, tracker).await?;
+    tracker.skipped(Collection::ReviewComments, "review threads", bad_threads);
+    let comments = collect_connection(t, pr_id, PrConnection::Comments, pr.comments.take(), tracker).await?;
+    let timeline = collect_connection(t, pr_id, PrConnection::Timeline, pr.timeline_items.take(), tracker).await?;
+    Ok((commits, reviews, threads, comments, timeline))
+}
+
+async fn collect_threads(
+    t: &Transport,
+    values: Vec<Value>,
+    tracker: &mut Tracker,
+) -> Result<(Vec<(ThreadNode, Vec<Value>, Option<u64>)>, usize), ApiError> {
+    let mut threads = Vec::new();
+    let mut bad = 0;
+    for v in values {
+        match serde_json::from_value::<ThreadNode>(v) {
+            Ok(mut th) if th.id.is_some() => {
+                let id = th.id.clone().unwrap_or_default();
+                let (comments, total) =
+                    collect_thread_comments(t, &id, th.comments.take(), tracker).await?;
+                threads.push((th, comments, total));
+            }
+            _ => bad += 1,
+        }
+    }
+    Ok((threads, bad))
+}
+
+async fn collect_pr_checks(
+    t: &Transport,
+    owner: &str,
+    name: &str,
+    head_sha: Option<&str>,
+    checks_from_graphql: Option<GraphqlChecks>,
+    tracker: &mut Tracker,
+) -> Result<ChecksResult, ApiError> {
+    match head_sha {
+        Some(sha) => fetch_checks(t, owner, name, sha, checks_from_graphql, tracker).await,
+        None => {
+            tracker.partial(Collection::Checks, "head commit unknown; checks not fetched");
+            Ok(ChecksResult::default())
+        }
+    }
+}
+
 async fn fetch_input(
     t: &Transport,
     owner: &str,
@@ -71,86 +138,15 @@ async fn fetch_input(
         .filter(|_| head_sha.is_some())
         .and_then(|c| graphql_checks(c, &resp.errors));
 
-    let graphql_pages = async {
-        let commits = collect_connection(
-            t,
-            &pr_id,
-            PrConnection::Commits,
-            pr.commits.take(),
-            &mut tracker,
-        )
-        .await?;
-        let reviews = collect_connection(
-            t,
-            &pr_id,
-            PrConnection::Reviews,
-            pr.reviews.take(),
-            &mut tracker,
-        )
-        .await?;
-        let thread_values = collect_connection(
-            t,
-            &pr_id,
-            PrConnection::Threads,
-            pr.review_threads.take(),
-            &mut tracker,
-        )
-        .await?;
-        let mut threads = Vec::new();
-        let mut bad_threads = 0;
-        for v in thread_values {
-            match serde_json::from_value::<ThreadNode>(v) {
-                Ok(mut th) if th.id.is_some() => {
-                    let id = th.id.clone().unwrap_or_default();
-                    let (comments, total) =
-                        collect_thread_comments(t, &id, th.comments.take(), &mut tracker).await?;
-                    threads.push((th, comments, total));
-                }
-                _ => bad_threads += 1,
-            }
-        }
-        tracker.skipped(Collection::ReviewComments, "review threads", bad_threads);
-        let comments = collect_connection(
-            t,
-            &pr_id,
-            PrConnection::Comments,
-            pr.comments.take(),
-            &mut tracker,
-        )
-        .await?;
-        let timeline = collect_connection(
-            t,
-            &pr_id,
-            PrConnection::Timeline,
-            pr.timeline_items.take(),
-            &mut tracker,
-        )
-        .await?;
-        Ok::<_, ApiError>((commits, reviews, threads, comments, timeline))
-    };
-
-    let checks = async {
-        match head_sha.as_deref() {
-            Some(sha) => {
-                fetch_checks(
-                    t,
-                    owner,
-                    name,
-                    sha,
-                    checks_from_graphql,
-                    &mut checks_tracker,
-                )
-                .await
-            }
-            None => {
-                checks_tracker.partial(
-                    Collection::Checks,
-                    "head commit unknown; checks not fetched",
-                );
-                Ok(ChecksResult::default())
-            }
-        }
-    };
+    let graphql_pages = collect_graphql_pages(t, &pr_id, &mut pr, &mut tracker);
+    let checks = collect_pr_checks(
+        t,
+        owner,
+        name,
+        head_sha.as_deref(),
+        checks_from_graphql,
+        &mut checks_tracker,
+    );
 
     let (pages, checks) = tokio::join!(graphql_pages, checks);
     let (commits, reviews, threads, comments, timeline) = pages?;
@@ -262,7 +258,42 @@ pub(crate) async fn fetch(
         .and_then(|r| r.state)
         .map(|s| CheckOutcome::from_github(None, Some(&s)));
 
-    // Finalize coverage.
+    finalize_pr(
+        repository,
+        pr,
+        pr_id,
+        pr_url,
+        number,
+        created_at,
+        head_sha,
+        latest_ci,
+        now,
+        tracker,
+        b.events,
+        out_threads,
+        current_commit_shas,
+        commit_stats,
+    )
+}
+
+
+#[allow(clippy::too_many_arguments)]
+fn finalize_pr(
+    repository: ghusage_core::model::Repository,
+    pr: GqlPullRequest,
+    pr_id: String,
+    pr_url: String,
+    number: u64,
+    created_at: Timestamp,
+    head_sha: Option<String>,
+    latest_ci: Option<CheckOutcome>,
+    now: Timestamp,
+    tracker: Tracker,
+    raw_events: Vec<ActivityEvent>,
+    threads: Vec<ReviewThread>,
+    current_commit_shas: Vec<String>,
+    commit_stats: Vec<(String, LineCounts)>,
+) -> Result<PrBundle, ApiError> {
     let complete_collections: Vec<Collection> = Collection::ALL
         .iter()
         .copied()
@@ -273,7 +304,7 @@ pub(crate) async fn fetch(
     } else {
         CoverageStatus::Partial
     };
-    let mut events = dedupe(b.events);
+    let mut events = dedupe(raw_events);
     for e in &mut events {
         e.coverage = match Collection::of(e.event_type) {
             Some(c) if tracker.partial.contains(&c) => CoverageStatus::Partial,
@@ -287,20 +318,16 @@ pub(crate) async fn fetch(
             &b.event_id,
         ))
     });
-
-    let state = pr
-        .state
-        .as_deref()
-        .and_then(PrState::parse)
-        .unwrap_or_else(|| {
-            if merged_at.is_some() {
-                PrState::Merged
-            } else if pr.closed_at.is_some() {
-                PrState::Closed
-            } else {
-                PrState::Open
-            }
-        });
+    let merged_at = time(&pr.merged_at);
+    let state = pr.state.as_deref().and_then(PrState::parse).unwrap_or_else(|| {
+        if merged_at.is_some() {
+            PrState::Merged
+        } else if pr.closed_at.is_some() {
+            PrState::Closed
+        } else {
+            PrState::Open
+        }
+    });
     let pull_request = PullRequest {
         id: pr_id.clone(),
         repository_id: repository.id.clone(),
@@ -320,7 +347,6 @@ pub(crate) async fn fetch(
         coverage: status,
         synced_at: Some(now),
     };
-    // Base-to-head diff now: a snapshot of the pull request.
     let diff = match (pr.additions, pr.deletions) {
         (Some(additions), Some(deletions)) => Some(PrDiff {
             additions,
@@ -334,7 +360,7 @@ pub(crate) async fn fetch(
         repository,
         pull_request,
         events,
-        threads: out_threads,
+        threads,
         current_commit_shas,
         commit_stats,
         diff,
@@ -348,7 +374,6 @@ pub(crate) async fn fetch(
         notes: tracker.notes,
     })
 }
-
 
 fn append_commits(
     commits: Vec<Value>,
@@ -540,13 +565,37 @@ fn append_timeline(
             Source::Graphql,
         );
     }
+    finish_timeline(
+        pr_id,
+        pr_url,
+        merged_at,
+        merged_by,
+        b,
+        tracker,
+        bad,
+        saw_merged,
+        unsupported,
+    );
+    dismissed_previous
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_timeline(
+    pr_id: &str,
+    pr_url: &str,
+    merged_at: Option<Timestamp>,
+    merged_by: Option<&GqlActor>,
+    b: &mut Builder,
+    tracker: &mut Tracker,
+    bad: usize,
+    saw_merged: bool,
+    unsupported: HashMap<String, usize>,
+) {
     tracker.skipped(Collection::Timeline, "timeline items", bad);
     let mut unsupported: Vec<_> = unsupported.into_iter().collect();
     unsupported.sort();
     for (ty, n) in unsupported {
-        tracker.note(format!(
-            "skipped {n} timeline item(s) of unsupported type {ty}"
-        ));
+        tracker.note(format!("skipped {n} timeline item(s) of unsupported type {ty}"));
     }
     if !saw_merged && let Some(m) = merged_at {
         b.push(
@@ -561,7 +610,6 @@ fn append_timeline(
         );
         tracker.note("merge recorded from the pull request's merge time (no merge timeline item)");
     }
-    dismissed_previous
 }
 
 fn append_reviews(
