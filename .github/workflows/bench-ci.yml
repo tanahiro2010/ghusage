@@ -105,7 +105,7 @@ jobs:
         run: >-
           node scripts/ci/ci-speed-benchmark.mjs
           --scenario "$SCENARIO"
-          --output "$RUNNER_TEMP/ci-speed-${{ matrix.os }}.json"
+          --output "${{ runner.temp }}/ci-speed-${{ matrix.os }}.json"
 
       - name: Upload benchmark result
         if: always()
@@ -171,7 +171,7 @@ jobs:
           node scripts/ci/ci-speed-benchmark.mjs
           --scenario "$SCENARIO"
           --package "$PACKAGE"
-          --output "$RUNNER_TEMP/ci-speed-${{ matrix.package }}.json"
+          --output "${{ runner.temp }}/ci-speed-${{ matrix.package }}.json"
 
       - name: Upload package result
         if: always()
