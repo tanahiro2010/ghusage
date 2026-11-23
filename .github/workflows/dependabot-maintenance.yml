@@ -1,0 +1,83 @@
+name: Dependabot maintenance
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: dependabot-maintenance
+  cancel-in-progress: false
+
+jobs:
+  maintain:
+    name: merge compatible Dependabot updates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Select and maintain Dependabot pull requests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Work from the oldest update first so grouped updates are handled
+          # predictably. Only one merge is attempted per run; the next run
+          # re-evaluates the remaining PRs against the new dependency graph.
+          prs=$(gh pr list --repo "$GH_REPO" --state open --limit 100 \
+            --json number,title,author,updatedAt \
+            --jq '[.[] | select(.author.login == "dependabot[bot]")] | sort_by(.updatedAt)')
+
+          merged=false
+          while IFS= read -r pr; do
+            number=$(jq -r '.number' <<< "$pr")
+            title=$(jq -r '.title' <<< "$pr")
+            details=$(gh pr view "$number" --repo "$GH_REPO" \
+              --json isDraft,mergeable,mergeStateStatus,statusCheckRollup)
+
+            is_draft=$(jq -r '.isDraft' <<< "$details")
+            mergeable=$(jq -r '.mergeable' <<< "$details")
+            merge_state=$(jq -r '.mergeStateStatus' <<< "$details")
+            checks=$(jq -c '.statusCheckRollup // []' <<< "$details")
+
+            if [[ "$is_draft" == "true" || "$mergeable" == "UNKNOWN" ]]; then
+              echo "Skipping #$number ($title): draft or mergeability is not settled"
+              continue
+            fi
+
+            has_pending=$(jq -r '[.[] | select((.status // "") != "COMPLETED" and (.state // "") != "SUCCESS")] | length > 0' <<< "$checks")
+            has_failure=$(jq -r '[.[] | select(
+              ((.conclusion // "") | IN("FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED")) or
+              ((.state // "") | IN("FAILURE", "ERROR"))
+            )] | length > 0' <<< "$checks")
+            all_success=$(jq -r 'length > 0 and all(.[]; 
+              ((.conclusion // "") | IN("SUCCESS", "NEUTRAL", "SKIPPED")) or
+              ((.state // "") == "SUCCESS")
+            )' <<< "$checks")
+
+            if [[ "$merge_state" == "CONFLICTING" || "$has_failure" == "true" ]]; then
+              gh pr comment "$number" --repo "$GH_REPO" --body \
+                "Closing this Dependabot update because it is not currently compatible: merge state=$merge_state, failed checks=$has_failure. A later Dependabot update can recreate it after the underlying issue is resolved."
+              gh pr close "$number" --repo "$GH_REPO"
+              echo "Closed #$number ($title)"
+              continue
+            fi
+
+            if [[ "$merge_state" == "CLEAN" && "$all_success" == "true" && "$has_pending" == "false" ]]; then
+              gh pr merge "$number" --repo "$GH_REPO" --squash --delete-branch
+              echo "Merged #$number ($title)"
+              merged=true
+              break
+            fi
+
+            echo "Leaving #$number ($title) open: checks or mergeability are not ready"
+          done < <(jq -c '.[]' <<< "$prs")
+
+          if [[ "$merged" == "false" ]]; then
+            echo "No compatible Dependabot pull request was merged"
+          fi

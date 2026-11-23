@@ -6,7 +6,7 @@ ignore = [
   "RUSTSEC-2026-0543",
   "RUSTSEC-2026-0555",
 ]
-unmaintained = "deny"
+unmaintained = "all"
 yanked = "deny"
 
 [licenses]
