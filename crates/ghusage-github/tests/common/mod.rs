@@ -80,7 +80,7 @@ pub fn rest_user(login: &str, node_id: &str, kind: &str) -> Value {
         "login": login,
         "id": 1000,
         "node_id": node_id,
-        "avatar_url": format!("https://avatars.githubusercontent.com/u/1000?v=4"),
+        "avatar_url": "https://avatars.githubusercontent.com/u/1000?v=4",
         "gravatar_id": "",
         "url": format!("https://api.github.com/users/{login}"),
         "html_url": format!("https://github.com/{login}"),
