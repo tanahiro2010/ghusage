@@ -12,7 +12,7 @@ use jiff::Timestamp;
 
 /// Output styling. Colors are only used on a terminal without NO_COLOR.
 #[derive(Debug, Clone, Copy)]
-pub struct Style {
+pub(crate) struct Style {
     pub color: bool,
 }
 
@@ -24,28 +24,28 @@ impl Style {
             s.to_string()
         }
     }
-    pub fn bold(&self, s: &str) -> String {
+    pub(crate) fn bold(&self, s: &str) -> String {
         self.paint("1", s)
     }
-    pub fn dim(&self, s: &str) -> String {
+    pub(crate) fn dim(&self, s: &str) -> String {
         self.paint("2", s)
     }
-    pub fn green(&self, s: &str) -> String {
+    pub(crate) fn green(&self, s: &str) -> String {
         self.paint("32", s)
     }
-    pub fn red(&self, s: &str) -> String {
+    pub(crate) fn red(&self, s: &str) -> String {
         self.paint("31", s)
     }
-    pub fn cyan(&self, s: &str) -> String {
+    pub(crate) fn cyan(&self, s: &str) -> String {
         self.paint("36", s)
     }
-    pub fn warn(&self, s: &str) -> String {
+    pub(crate) fn warn(&self, s: &str) -> String {
         self.paint("33", s)
     }
 }
 
 /// A simple aligned table. Cells are sanitized and width-aware.
-pub struct Table {
+pub(crate) struct Table {
     headers: Vec<String>,
     rows: Vec<Vec<String>>,
     right: Vec<bool>,
@@ -53,7 +53,7 @@ pub struct Table {
 }
 
 impl Table {
-    pub fn new(headers: &[&str]) -> Self {
+    pub(crate) fn new(headers: &[&str]) -> Self {
         Self {
             headers: headers
                 .iter()
@@ -65,23 +65,23 @@ impl Table {
         }
     }
     /// Right-align numeric columns.
-    pub fn numeric(mut self, cols: &[usize]) -> Self {
+    pub(crate) fn numeric(mut self, cols: &[usize]) -> Self {
         for &c in cols {
             self.right[c] = true;
         }
         self
     }
-    pub fn limit(mut self, col: usize, width: usize) -> Self {
+    pub(crate) fn limit(mut self, col: usize, width: usize) -> Self {
         self.max_width[col] = Some(width);
         self
     }
-    pub fn row(&mut self, cells: Vec<String>) {
+    pub(crate) fn row(&mut self, cells: Vec<String>) {
         self.rows.push(cells);
     }
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.rows.is_empty()
     }
-    pub fn render(&self, style: Style) -> String {
+    pub(crate) fn render(&self, style: Style) -> String {
         let cells: Vec<Vec<String>> = self
             .rows
             .iter()
@@ -132,7 +132,7 @@ impl Table {
     }
 
     /// The table as a GitHub-flavored Markdown table.
-    pub fn markdown(&self) -> String {
+    pub(crate) fn markdown(&self) -> String {
         let line = |cells: Vec<String>| format!("| {} |\n", cells.join(" | "));
         let mut out = line(self.headers.iter().map(|h| md_text(h)).collect());
         out.push_str(&line(
@@ -217,7 +217,7 @@ fn header(r: &Report, zone: &Zone, title: &str, style: Style) -> String {
 }
 
 /// Coverage footer: always shown so incomplete data is never silent.
-pub fn coverage_lines(
+pub(crate) fn coverage_lines(
     cov: &[CoverageSummary],
     synced: Option<Timestamp>,
     zone: &Zone,
@@ -547,7 +547,7 @@ fn stats_line(name: &str, s: &Option<Stats>, unit: f64, suffix: &str) -> (String
 }
 
 /// Renders a period report.
-pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> String {
+pub(crate) fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> String {
     let zone = Zone::parse(&r.timezone).unwrap_or(Zone::utc());
     let mut out = String::new();
     match kind {
@@ -856,7 +856,7 @@ fn dur(secs: Option<i64>) -> String {
 }
 
 /// Renders a pull request detail report.
-pub fn pr(r: &PrReport, timeline: bool, style: Style) -> String {
+pub(crate) fn pr(r: &PrReport, timeline: bool, style: Style) -> String {
     let zone = Zone::parse(&r.timezone).unwrap_or(Zone::utc());
     let mut out = String::new();
     out.push_str(&style.bold(&format!(
@@ -1015,7 +1015,7 @@ fn person(p: &PersonReport, zone: &Zone) -> String {
 
 /// A commit: facts, message, changed files and, when the report carries
 /// them, the diffs. Every line from GitHub is sanitized.
-pub fn commit(r: &CommitReport, zone: Zone, style: Style) -> String {
+pub(crate) fn commit(r: &CommitReport, zone: Zone, style: Style) -> String {
     let mut out = String::new();
     let headline = ghusage_core::commit::headline(&r.message);
     out.push_str(&style.bold(&format!(
@@ -1151,7 +1151,7 @@ pub fn commit(r: &CommitReport, zone: Zone, style: Style) -> String {
 
 /// Renders a period report as Markdown, for a profile README or a
 /// pull request comment. `None` for reports that have no Markdown form.
-pub fn report_markdown(r: &Report, kind: ReportKind) -> Option<String> {
+pub(crate) fn report_markdown(r: &Report, kind: ReportKind) -> Option<String> {
     let zone = Zone::parse(&r.timezone).unwrap_or(Zone::utc());
     let title = match kind {
         ReportKind::Overview => "Overview",

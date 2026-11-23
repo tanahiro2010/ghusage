@@ -51,12 +51,12 @@ pub(crate) struct GraphqlError {
 }
 
 impl GraphqlError {
-    pub fn message(&self) -> String {
+    pub(crate) fn message(&self) -> String {
         truncate(self.message.as_deref().unwrap_or("unknown error"), 300)
     }
 
     /// Path elements that are field names (array indices dropped).
-    pub fn field_path(&self) -> Vec<&str> {
+    pub(crate) fn field_path(&self) -> Vec<&str> {
         self.path.iter().filter_map(|p| p.as_str()).collect()
     }
 }
@@ -97,7 +97,7 @@ pub(crate) struct Transport {
 }
 
 impl Transport {
-    pub fn new(
+    pub(crate) fn new(
         credentials: Option<Credentials>,
         mut config: ClientConfig,
     ) -> Result<Self, ApiError> {
@@ -129,7 +129,7 @@ impl Transport {
         })
     }
 
-    pub fn stats(&self) -> ApiStats {
+    pub(crate) fn stats(&self) -> ApiStats {
         self.stats.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
@@ -140,7 +140,7 @@ impl Transport {
     }
 
     /// Builds a REST URL from path segments (each percent-encoded) and query.
-    pub fn rest_url(&self, segments: &[&str], query: &[(&str, &str)]) -> Url {
+    pub(crate) fn rest_url(&self, segments: &[&str], query: &[(&str, &str)]) -> Url {
         let mut url = self.api_base.clone();
         if let Ok(mut path) = url.path_segments_mut() {
             path.pop_if_empty();
@@ -156,7 +156,7 @@ impl Transport {
     }
 
     /// `GET` returning parsed JSON and the response headers.
-    pub async fn get_json(&self, url: &Url) -> Result<(Value, HeaderMap), ApiError> {
+    pub(crate) async fn get_json(&self, url: &Url) -> Result<(Value, HeaderMap), ApiError> {
         let resp = self.send(Method::GET, url, None, false).await?;
         let value = parse_json(&resp.body, url)?;
         Ok((value, resp.headers))
@@ -168,7 +168,7 @@ impl Transport {
     /// pages in between are fetched at once (still limited by the
     /// transport's concurrency) from the `next` link with only its page
     /// number changed.
-    pub async fn get_paginated(
+    pub(crate) async fn get_paginated(
         &self,
         first: Url,
         extract: impl Fn(&Value) -> Option<Vec<Value>>,
@@ -227,13 +227,13 @@ impl Transport {
     /// The `rel="next"` URL of a REST response. Links pointing to another
     /// origin than the API base are rejected so the token is never sent
     /// elsewhere.
-    pub fn next_link(&self, headers: &HeaderMap) -> Result<Option<Url>, ApiError> {
+    pub(crate) fn next_link(&self, headers: &HeaderMap) -> Result<Option<Url>, ApiError> {
         self.link(headers, "next")
     }
 
     /// The URL of the `Link` header entry with relation `rel`, checked like
     /// [`Self::next_link`].
-    pub fn link(&self, headers: &HeaderMap, rel: &str) -> Result<Option<Url>, ApiError> {
+    pub(crate) fn link(&self, headers: &HeaderMap, rel: &str) -> Result<Option<Url>, ApiError> {
         let Some(link) = headers.get("link").and_then(|v| v.to_str().ok()) else {
             return Ok(None);
         };
@@ -252,7 +252,7 @@ impl Transport {
 
     /// Sends a GraphQL query. Transport-level failures are errors; GraphQL
     /// `errors` are returned to the caller together with any partial data.
-    pub async fn graphql(
+    pub(crate) async fn graphql(
         &self,
         query: &str,
         variables: Value,

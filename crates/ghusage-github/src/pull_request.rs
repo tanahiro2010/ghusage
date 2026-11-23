@@ -327,7 +327,7 @@ pub(crate) struct RestUser {
 }
 
 impl RestUser {
-    pub fn actor(&self) -> Actor {
+    pub(crate) fn actor(&self) -> Actor {
         Actor::new(
             self.node_id.clone(),
             self.login.clone(),

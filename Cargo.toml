@@ -12,7 +12,6 @@ license = "Apache-2.0"
 [workspace.lints.rust]
 rust_2018_idioms = { level = "warn", priority = -1 }
 elided_lifetimes_in_paths = "allow"
-unreachable_pub = "allow"
 unused_qualifications = "allow"
 missing_docs = "allow"
 missing_debug_implementations = "allow"

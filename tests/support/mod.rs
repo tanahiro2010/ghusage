@@ -18,20 +18,20 @@ use wiremock::matchers::{
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 /// A recognizable fake token; it must never appear in any output.
-pub const SENTINEL_TOKEN: &str = "ghp_sentinelTOKENvalue1234567890abcdef";
+pub(crate) const SENTINEL_TOKEN: &str = "ghp_sentinelTOKENvalue1234567890abcdef";
 
 /// The authenticated user whose activity is analyzed.
-pub const ME: &str = "me";
-pub const ME_ID: &str = "U_me";
+pub(crate) const ME: &str = "me";
+pub(crate) const ME_ID: &str = "U_me";
 
 /// The fixed analysis period used by most tests: Monday 2024-03-04 through
 /// Sunday 2024-03-10 (both days included), in UTC.
-pub const SINCE: &str = "2024-03-04";
-pub const UNTIL: &str = "2024-03-10";
+pub(crate) const SINCE: &str = "2024-03-04";
+pub(crate) const UNTIL: &str = "2024-03-10";
 
-pub const WIDGET_ID: &str = "R_widget";
-pub const DOTFILES_ID: &str = "R_dotfiles";
-pub const SECRET_ID: &str = "R_secret";
+pub(crate) const WIDGET_ID: &str = "R_widget";
+pub(crate) const DOTFILES_ID: &str = "R_dotfiles";
+pub(crate) const SECRET_ID: &str = "R_secret";
 
 // ---------------------------------------------------------------------------
 // Process helpers
@@ -39,7 +39,7 @@ pub const SECRET_ID: &str = "R_secret";
 
 /// Result of one `ghusage` invocation.
 #[derive(Debug, Clone)]
-pub struct Run {
+pub(crate) struct Run {
     pub code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
@@ -56,7 +56,7 @@ impl Run {
         }
     }
 
-    pub fn json(&self) -> Value {
+    pub(crate) fn json(&self) -> Value {
         serde_json::from_str(&self.stdout).unwrap_or_else(|e| {
             panic!(
                 "stdout is not JSON ({e})\nstdout: {}\nstderr: {}",
@@ -67,7 +67,7 @@ impl Run {
 
     /// Asserts the exit code and returns `self` for chaining.
     #[track_caller]
-    pub fn expect_code(&self, code: i32) -> &Self {
+    pub(crate) fn expect_code(&self, code: i32) -> &Self {
         assert_eq!(
             self.code,
             Some(code),
@@ -78,13 +78,13 @@ impl Run {
         self
     }
 
-    pub fn all_output(&self) -> String {
+    pub(crate) fn all_output(&self) -> String {
         format!("{}{}", self.stdout, self.stderr)
     }
 
     /// Fails if a panic message or the token shows up anywhere.
     #[track_caller]
-    pub fn assert_clean(&self) {
+    pub(crate) fn assert_clean(&self) {
         let all = self.all_output();
         assert!(!all.contains("panicked"), "process panicked: {all}");
         assert!(!all.contains("RUST_BACKTRACE"), "process panicked: {all}");
@@ -94,30 +94,30 @@ impl Run {
 }
 
 /// An isolated data directory plus the API endpoint the binary talks to.
-pub struct Env {
+pub(crate) struct Env {
     pub dir: tempfile::TempDir,
     pub api_url: String,
 }
 
 impl Env {
-    pub fn new(server: &MockServer) -> Self {
+    pub(crate) fn new(server: &MockServer) -> Self {
         Self {
             dir: tempfile::tempdir().unwrap(),
             api_url: server.uri(),
         }
     }
 
-    pub fn data_dir(&self) -> &Path {
+    pub(crate) fn data_dir(&self) -> &Path {
         self.dir.path()
     }
 
-    pub fn db_path(&self) -> PathBuf {
+    pub(crate) fn db_path(&self) -> PathBuf {
         self.dir.path().join("ghusage.db")
     }
 
     /// A command isolated from the developer's environment: private data
     /// directory, only the sentinel token, no `gh` on PATH, UTC.
-    pub fn command(&self, args: &[&str]) -> Command {
+    pub(crate) fn command(&self, args: &[&str]) -> Command {
         let mut c = Command::new(bin());
         self.configure(&mut c);
         c.args(args);
@@ -126,7 +126,7 @@ impl Env {
 
     /// Applies the isolated environment to any command (e.g. a wrapper
     /// shell that then executes `ghusage`).
-    pub fn configure(&self, c: &mut Command) {
+    pub(crate) fn configure(&self, c: &mut Command) {
         c.env_clear();
         keep_system_env(c);
         c.env("PATH", self.dir.path().join("no-bin"))
@@ -140,14 +140,14 @@ impl Env {
     }
 
     /// Runs an arbitrary prepared command to completion.
-    pub async fn run_command(&self, mut c: Command) -> Run {
+    pub(crate) async fn run_command(&self, mut c: Command) -> Run {
         tokio::task::spawn_blocking(move || Run::from_output(c.output().unwrap()))
             .await
             .unwrap()
     }
 
     /// Runs `ghusage` to completion on a blocking thread.
-    pub async fn run(&self, args: &[&str]) -> Run {
+    pub(crate) async fn run(&self, args: &[&str]) -> Run {
         let mut c = self.command(args);
         tokio::task::spawn_blocking(move || Run::from_output(c.output().unwrap()))
             .await
@@ -155,7 +155,7 @@ impl Env {
     }
 
     /// `sync` over the standard period.
-    pub async fn sync(&self, extra: &[&str]) -> Run {
+    pub(crate) async fn sync(&self, extra: &[&str]) -> Run {
         let mut args = vec![
             "sync", "--since", SINCE, "--until", UNTIL, "--format", "json",
         ];
@@ -164,7 +164,7 @@ impl Env {
     }
 
     /// An offline JSON report over the standard period.
-    pub async fn offline_json(&self, cmd: &[&str]) -> Run {
+    pub(crate) async fn offline_json(&self, cmd: &[&str]) -> Run {
         let mut args: Vec<&str> = cmd.to_vec();
         args.extend_from_slice(&[
             "--since",
@@ -179,12 +179,12 @@ impl Env {
     }
 }
 
-pub fn bin() -> PathBuf {
+pub(crate) fn bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ghusage"))
 }
 
 /// Polls `cond` until it is true or `timeout` elapses.
-pub async fn wait_until<F, Fut>(timeout: Duration, mut cond: F) -> bool
+pub(crate) async fn wait_until<F, Fut>(timeout: Duration, mut cond: F) -> bool
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = bool>,
@@ -203,16 +203,16 @@ where
 // Request inspection
 // ---------------------------------------------------------------------------
 
-pub async fn requests(server: &MockServer) -> Vec<Request> {
+pub(crate) async fn requests(server: &MockServer) -> Vec<Request> {
     server.received_requests().await.unwrap_or_default()
 }
 
-pub fn body_str(r: &Request) -> String {
+pub(crate) fn body_str(r: &Request) -> String {
     String::from_utf8_lossy(&r.body).into_owned()
 }
 
 /// Number of `PullRequestDetail` queries for pull request `number`.
-pub fn pr_detail_requests(reqs: &[Request], number: u64) -> usize {
+pub(crate) fn pr_detail_requests(reqs: &[Request], number: u64) -> usize {
     reqs.iter()
         .filter(|r| r.url.path() == "/graphql")
         .filter(|r| {
@@ -225,7 +225,7 @@ pub fn pr_detail_requests(reqs: &[Request], number: u64) -> usize {
         .count()
 }
 
-pub fn all_pr_detail_requests(reqs: &[Request]) -> usize {
+pub(crate) fn all_pr_detail_requests(reqs: &[Request]) -> usize {
     reqs.iter()
         .filter(|r| r.url.path() == "/graphql" && body_str(r).contains("query PullRequestDetail"))
         .count()
@@ -235,7 +235,7 @@ pub fn all_pr_detail_requests(reqs: &[Request]) -> usize {
 // REST fixtures
 // ---------------------------------------------------------------------------
 
-pub fn rest_user(login: &str, node_id: &str, kind: &str) -> Value {
+pub(crate) fn rest_user(login: &str, node_id: &str, kind: &str) -> Value {
     json!({
         "login": login,
         "id": 1000,
@@ -250,7 +250,13 @@ pub fn rest_user(login: &str, node_id: &str, kind: &str) -> Value {
     })
 }
 
-pub fn rest_repo(node_id: &str, owner: &str, owner_type: &str, name: &str, private: bool) -> Value {
+pub(crate) fn rest_repo(
+    node_id: &str,
+    owner: &str,
+    owner_type: &str,
+    name: &str,
+    private: bool,
+) -> Value {
     json!({
         "id": 4242,
         "node_id": node_id,
@@ -267,15 +273,15 @@ pub fn rest_repo(node_id: &str, owner: &str, owner_type: &str, name: &str, priva
 }
 
 /// A 40-character hex SHA derived from `n`.
-pub fn sha(n: u64) -> String {
+pub(crate) fn sha(n: u64) -> String {
     format!("{n:040x}")
 }
 
 /// Author of a commit search result: `(login, node_id, type)` or nobody.
-pub type RestAuthor<'a> = Option<(&'a str, &'a str, &'a str)>;
+pub(crate) type RestAuthor<'a> = Option<(&'a str, &'a str, &'a str)>;
 
 /// One item of `GET /search/commits`.
-pub fn search_commit(
+pub(crate) fn search_commit(
     repo: &Value,
     sha: &str,
     author: RestAuthor<'_>,
@@ -317,7 +323,7 @@ pub fn search_commit(
 
 /// One item of `GET /repos/{owner}/{name}/commits`: the same shape as a
 /// commit search result without `repository` and `score`.
-pub fn list_commit(
+pub(crate) fn list_commit(
     repo: &Value,
     sha: &str,
     author: RestAuthor<'_>,
@@ -333,7 +339,7 @@ pub fn list_commit(
 
 /// A repository of `GET /user/repos`: the REST repository object with the
 /// viewer's permissions and the time of the last push.
-pub fn listed_repo(rest: &Value, permission: &str, pushed_at: &str) -> Value {
+pub(crate) fn listed_repo(rest: &Value, permission: &str, pushed_at: &str) -> Value {
     let level = |l: &str| {
         let order = ["pull", "triage", "push", "maintain", "admin"];
         let have = order.iter().position(|x| *x == permission).unwrap();
@@ -353,12 +359,12 @@ pub fn listed_repo(rest: &Value, permission: &str, pushed_at: &str) -> Value {
     v
 }
 
-pub fn search_page(items: Vec<Value>) -> Value {
+pub(crate) fn search_page(items: Vec<Value>) -> Value {
     json!({ "total_count": items.len(), "incomplete_results": false, "items": items })
 }
 
 /// One item of `GET /search/issues`.
-pub fn search_issue(
+pub(crate) fn search_issue(
     owner: &str,
     name: &str,
     number: u64,
@@ -400,7 +406,13 @@ pub fn search_issue(
     v
 }
 
-pub fn check_run(node_id: &str, head: &str, name: &str, conclusion: &str, at: &str) -> Value {
+pub(crate) fn check_run(
+    node_id: &str,
+    head: &str,
+    name: &str,
+    conclusion: &str,
+    at: &str,
+) -> Value {
     json!({
         "id": 1, "node_id": node_id, "head_sha": head, "name": name, "status": "completed",
         "conclusion": conclusion, "started_at": at, "completed_at": at,
@@ -416,15 +428,15 @@ pub fn check_run(node_id: &str, head: &str, name: &str, conclusion: &str, at: &s
 // GraphQL fixtures
 // ---------------------------------------------------------------------------
 
-pub fn gql_actor(typename: &str, login: &str, id: &str) -> Value {
+pub(crate) fn gql_actor(typename: &str, login: &str, id: &str) -> Value {
     json!({ "__typename": typename, "login": login, "id": id })
 }
 
-pub fn user(login: &str) -> Value {
+pub(crate) fn user(login: &str) -> Value {
     gql_actor("User", login, &format!("U_{login}"))
 }
 
-pub fn bot(login: &str) -> Value {
+pub(crate) fn bot(login: &str) -> Value {
     gql_actor("Bot", login, &format!("BOT_{login}"))
 }
 
@@ -432,7 +444,7 @@ pub fn bot(login: &str) -> Value {
 /// carrying the same check runs as the REST `check-runs` fixtures: one suite
 /// per `check_suite.id` with the suite's app, enum values in upper case and
 /// the REST `html_url` as the run's `permalink`.
-pub fn gql_check_suites(runs: &[Value]) -> Value {
+pub(crate) fn gql_check_suites(runs: &[Value]) -> Value {
     let mut suites: Vec<(Value, Value, Vec<Value>)> = Vec::new();
     for r in runs {
         let id = r["check_suite"]["id"].clone();
@@ -464,15 +476,21 @@ pub fn gql_check_suites(runs: &[Value]) -> Value {
     connection(nodes)
 }
 
-pub fn page_info(has_next: bool, cursor: Option<&str>) -> Value {
+pub(crate) fn page_info(has_next: bool, cursor: Option<&str>) -> Value {
     json!({ "hasNextPage": has_next, "endCursor": cursor })
 }
 
-pub fn connection(nodes: Vec<Value>) -> Value {
+pub(crate) fn connection(nodes: Vec<Value>) -> Value {
     json!({ "pageInfo": page_info(false, Some("end")), "nodes": nodes })
 }
 
-pub fn gql_repo(id: &str, owner: Value, name: &str, visibility: &str, permission: &str) -> Value {
+pub(crate) fn gql_repo(
+    id: &str,
+    owner: Value,
+    name: &str,
+    visibility: &str,
+    permission: &str,
+) -> Value {
     let login = owner["login"].as_str().unwrap().to_string();
     json!({
         "id": id,
@@ -486,9 +504,9 @@ pub fn gql_repo(id: &str, owner: Value, name: &str, visibility: &str, permission
 }
 
 /// Commit author for a pull request commit: `(login, id)` or no linked user.
-pub type GitUser<'a> = Option<(&'a str, &'a str)>;
+pub(crate) type GitUser<'a> = Option<(&'a str, &'a str)>;
 
-pub fn pr_commit(
+pub(crate) fn pr_commit(
     repo: &str,
     number: u64,
     oid: &str,
@@ -513,7 +531,7 @@ pub fn pr_commit(
     })
 }
 
-pub fn review(
+pub(crate) fn review(
     id: &str,
     state: &str,
     body: &str,
@@ -532,7 +550,7 @@ pub fn review(
     })
 }
 
-pub fn review_comment(
+pub(crate) fn review_comment(
     id: &str,
     author: Value,
     created_at: &str,
@@ -551,7 +569,7 @@ pub fn review_comment(
     })
 }
 
-pub fn thread(id: &str, resolved: bool, comments: Vec<Value>) -> Value {
+pub(crate) fn thread(id: &str, resolved: bool, comments: Vec<Value>) -> Value {
     let n = comments.len();
     json!({
         "id": id,
@@ -567,7 +585,12 @@ pub fn thread(id: &str, resolved: bool, comments: Vec<Value>) -> Value {
     })
 }
 
-pub fn issue_comment(id: &str, author: Value, created_at: &str, edited: Option<&str>) -> Value {
+pub(crate) fn issue_comment(
+    id: &str,
+    author: Value,
+    created_at: &str,
+    edited: Option<&str>,
+) -> Value {
     json!({
         "id": id,
         "createdAt": created_at,
@@ -577,7 +600,7 @@ pub fn issue_comment(id: &str, author: Value, created_at: &str, edited: Option<&
     })
 }
 
-pub fn tl(typename: &str, id: &str, created_at: &str, actor: Value, extra: Value) -> Value {
+pub(crate) fn tl(typename: &str, id: &str, created_at: &str, actor: Value, extra: Value) -> Value {
     let mut v =
         json!({ "__typename": typename, "id": id, "createdAt": created_at, "actor": actor });
     if let (Some(obj), Some(extra)) = (v.as_object_mut(), extra.as_object()) {
@@ -593,7 +616,7 @@ pub fn tl(typename: &str, id: &str, created_at: &str, actor: Value, extra: Value
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub struct RepoFixture {
+pub(crate) struct RepoFixture {
     pub owner: String,
     pub name: String,
     /// GraphQL `RepositoryFields`.
@@ -607,7 +630,7 @@ pub struct RepoFixture {
 }
 
 #[derive(Debug, Clone)]
-pub struct PrFixture {
+pub(crate) struct PrFixture {
     pub owner: String,
     pub name: String,
     pub number: u64,
@@ -622,11 +645,11 @@ pub struct PrFixture {
 }
 
 impl PrFixture {
-    pub fn head(&self) -> String {
+    pub(crate) fn head(&self) -> String {
         self.gql["headRefOid"].as_str().unwrap().to_string()
     }
 
-    pub fn url(&self) -> String {
+    pub(crate) fn url(&self) -> String {
         format!(
             "https://github.com/{}/{}/pull/{}",
             self.owner, self.name, self.number
@@ -635,7 +658,7 @@ impl PrFixture {
 }
 
 #[derive(Debug, Clone)]
-pub struct IssueFixture {
+pub(crate) struct IssueFixture {
     pub owner: String,
     pub name: String,
     pub number: u64,
@@ -646,14 +669,14 @@ pub struct IssueFixture {
 }
 
 #[derive(Debug, Clone)]
-pub struct World {
+pub(crate) struct World {
     pub repos: Vec<RepoFixture>,
     pub commits: Vec<Value>,
     pub prs: Vec<PrFixture>,
     pub issues: Vec<IssueFixture>,
 }
 
-pub fn widget() -> RepoFixture {
+pub(crate) fn widget() -> RepoFixture {
     RepoFixture {
         owner: "acme".into(),
         name: "widget".into(),
@@ -674,7 +697,7 @@ pub fn widget() -> RepoFixture {
     }
 }
 
-pub fn dotfiles() -> RepoFixture {
+pub(crate) fn dotfiles() -> RepoFixture {
     RepoFixture {
         owner: ME.into(),
         name: "dotfiles".into(),
@@ -689,7 +712,7 @@ pub fn dotfiles() -> RepoFixture {
     }
 }
 
-pub fn secret() -> RepoFixture {
+pub(crate) fn secret() -> RepoFixture {
     RepoFixture {
         owner: "acme".into(),
         name: "secret".into(),
@@ -723,7 +746,7 @@ pub fn secret() -> RepoFixture {
 /// - conversation comments: IC_A1 me 03-04 10:30, IC_A2 bob 03-04 11:00,
 ///   IC_A3 github-actions bot 03-04 11:05
 /// - one successful check run on the head commit, completed 03-05 11:10
-pub fn pr_a() -> PrFixture {
+pub(crate) fn pr_a() -> PrFixture {
     let repo = "acme/widget";
     let carol_c = review_comment(
         "PRRC_A1",
@@ -794,7 +817,7 @@ pub fn pr_a() -> PrFixture {
 
 /// Pull request me/dotfiles#3 by me: opened 2024-03-06T08:00Z, one commit
 /// by me (sha 21, 03-06 07:50), merged and closed by me at 03-06 09:00.
-pub fn pr_b() -> PrFixture {
+pub(crate) fn pr_b() -> PrFixture {
     PrFixture {
         owner: ME.into(),
         name: "dotfiles".into(),
@@ -836,7 +859,7 @@ pub fn pr_b() -> PrFixture {
 /// 2024-03-05T08:00Z with one commit by bob (sha 31); bob comments at
 /// 08:10; my CHANGES_REQUESTED review with body "Needs tests" at
 /// 2024-03-07T09:00Z containing inline comment PRRC_C1 (08:59).
-pub fn pr_c() -> PrFixture {
+pub(crate) fn pr_c() -> PrFixture {
     let my_c = review_comment("PRRC_C1", user(ME), "2024-03-07T08:59:00Z", "PRR_C1", None);
     PrFixture {
         owner: "acme".into(),
@@ -903,7 +926,7 @@ fn gql_issue(
 
 /// Issue me/dotfiles#5 opened by me 2024-03-05T07:00Z, closed by me
 /// 2024-03-07T07:00Z.
-pub fn issue_1() -> IssueFixture {
+pub(crate) fn issue_1() -> IssueFixture {
     IssueFixture {
         owner: ME.into(),
         name: "dotfiles".into(),
@@ -931,7 +954,7 @@ pub fn issue_1() -> IssueFixture {
 
 /// Issue acme/widget#7 opened by bob 2024-02-20 (before the period),
 /// closed by me 2024-03-06T06:00Z and reopened by bob at 07:00.
-pub fn issue_2() -> IssueFixture {
+pub(crate) fn issue_2() -> IssueFixture {
     IssueFixture {
         owner: "acme".into(),
         name: "widget".into(),
@@ -984,7 +1007,7 @@ impl World {
     ///
     /// Pull requests: [`pr_a`], [`pr_b`], [`pr_c`]. Issues: [`issue_1`],
     /// [`issue_2`].
-    pub fn base() -> Self {
+    pub(crate) fn base() -> Self {
         let mut w = widget();
         let mut d = dotfiles();
         let mine = Some((ME, ME_ID, "User"));
@@ -1021,14 +1044,14 @@ impl World {
         }
     }
 
-    pub fn repo_mut(&mut self, owner: &str, name: &str) -> &mut RepoFixture {
+    pub(crate) fn repo_mut(&mut self, owner: &str, name: &str) -> &mut RepoFixture {
         self.repos
             .iter_mut()
             .find(|r| r.owner == owner && r.name == name)
             .unwrap()
     }
 
-    pub fn pr_mut(&mut self, number: u64) -> &mut PrFixture {
+    pub(crate) fn pr_mut(&mut self, number: u64) -> &mut PrFixture {
         self.prs.iter_mut().find(|p| p.number == number).unwrap()
     }
 
@@ -1044,7 +1067,7 @@ impl World {
 
     /// Mounts every endpoint the sync touches (default priority, so tests
     /// can override single responses with a higher priority).
-    pub async fn mount(&self, server: &MockServer) {
+    pub(crate) async fn mount(&self, server: &MockServer) {
         Mock::given(method("GET"))
             .and(path("/user"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -1200,7 +1223,7 @@ impl World {
     /// The `PullRequestDetail` response body of a pull request.
     /// The `PullRequestDetail` response. The head commit carries the
     /// fixture's check runs and no commit statuses, like the REST mocks.
-    pub fn pr_body(&self, p: &PrFixture) -> Value {
+    pub(crate) fn pr_body(&self, p: &PrFixture) -> Value {
         let mut repo = self.repo_gql(&p.owner, &p.name);
         let mut pr = p.gql.clone();
         if let Some(head) = pr["headCommit"]["nodes"][0]["commit"].as_object_mut() {
@@ -1213,7 +1236,12 @@ impl World {
     }
 
     /// Mounts a `PullRequestDetail` response for one pull request.
-    pub async fn mount_pr(&self, server: &MockServer, p: &PrFixture, resp: ResponseTemplate) {
+    pub(crate) async fn mount_pr(
+        &self,
+        server: &MockServer,
+        p: &PrFixture,
+        resp: ResponseTemplate,
+    ) {
         pr_detail_mock(&p.owner, &p.name, p.number, resp, 5)
             .mount(server)
             .await;
@@ -1222,7 +1250,7 @@ impl World {
 
 /// A `PullRequestDetail` mock for one pull request at `priority` (1 is the
 /// highest; the world uses the default 5).
-pub fn pr_detail_mock(
+pub(crate) fn pr_detail_mock(
     owner: &str,
     name: &str,
     number: u64,
@@ -1240,14 +1268,14 @@ pub fn pr_detail_mock(
 }
 
 /// Starts a server serving `world`.
-pub async fn serve(world: &World) -> MockServer {
+pub(crate) async fn serve(world: &World) -> MockServer {
     let server = MockServer::start().await;
     world.mount(&server).await;
     server
 }
 
 /// Replaces everything the server serves (and forgets recorded requests).
-pub async fn reserve(server: &MockServer, world: &World) {
+pub(crate) async fn reserve(server: &MockServer, world: &World) {
     server.reset().await;
     world.mount(server).await;
 }
@@ -1257,7 +1285,7 @@ pub async fn reserve(server: &MockServer, world: &World) {
 // ---------------------------------------------------------------------------
 
 /// Status of one data kind in a report's `coverage` list.
-pub fn coverage_status(report: &Value, kind: &str) -> String {
+pub(crate) fn coverage_status(report: &Value, kind: &str) -> String {
     report["coverage"]
         .as_array()
         .expect("coverage list")
@@ -1270,7 +1298,7 @@ pub fn coverage_status(report: &Value, kind: &str) -> String {
 }
 
 /// All segment reasons of one data kind.
-pub fn coverage_reasons(report: &Value, kind: &str) -> Vec<String> {
+pub(crate) fn coverage_reasons(report: &Value, kind: &str) -> Vec<String> {
     report["coverage"]
         .as_array()
         .unwrap()
@@ -1282,7 +1310,7 @@ pub fn coverage_reasons(report: &Value, kind: &str) -> Vec<String> {
 }
 
 /// The breakdown bucket whose start date is `date` (YYYY-MM-DD).
-pub fn bucket<'a>(report: &'a Value, date: &str) -> &'a Value {
+pub(crate) fn bucket<'a>(report: &'a Value, date: &str) -> &'a Value {
     report["activity_breakdown"]
         .as_array()
         .expect("activity_breakdown")
@@ -1292,7 +1320,7 @@ pub fn bucket<'a>(report: &'a Value, date: &str) -> &'a Value {
 }
 
 /// Pull request numbers in a `prs` report.
-pub fn pr_numbers(report: &Value) -> Vec<u64> {
+pub(crate) fn pr_numbers(report: &Value) -> Vec<u64> {
     let mut v: Vec<u64> = report["pull_requests"]
         .as_array()
         .expect("pull_requests")

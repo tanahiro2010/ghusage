@@ -71,7 +71,7 @@ pub(crate) struct Worker {
 }
 
 impl Worker {
-    pub fn new(source: Box<dyn DataSource + Send>) -> Self {
+    pub(crate) fn new(source: Box<dyn DataSource + Send>) -> Self {
         Self {
             source,
             dataset: None,
@@ -98,7 +98,7 @@ impl Worker {
         }
     }
 
-    pub fn handle(&mut self, req: Request) -> Response {
+    pub(crate) fn handle(&mut self, req: Request) -> Response {
         let mut loaded_dataset = false;
         let outcome = match &req.job {
             Job::Report(_) => {
