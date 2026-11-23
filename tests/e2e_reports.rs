@@ -427,6 +427,53 @@ async fn user_option_analyzes_another_account_only() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn user_option_counts_direct_collaborator_commits_found_by_search() {
+    let server = serve(&World::base()).await;
+    mount_bob(&server).await;
+
+    // Bob is a collaborator on acme/collab and pushes directly to its
+    // default branch. GitHub does not include that repository in
+    // GET /users/bob/repos, and Bob has no pull request or issue there, but
+    // commit search still finds his commit.
+    let collab = support::rest_repo("R_collab", "acme", "Organization", "collab", false);
+    let bob = Some(("bob", "U_bob", "User"));
+    Mock::given(method("GET"))
+        .and(path("/search/commits"))
+        .and(query_param_contains("q", "author:bob"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(search_page(vec![
+            search_commit(
+                &support::rest_repo("R_widget", "acme", "Organization", "widget", false),
+                &sha(50),
+                bob,
+                "2024-03-05T10:00:00Z",
+                1,
+            ),
+            search_commit(&collab, &sha(51), bob, "2024-03-06T10:00:00Z", 1),
+        ])))
+        .with_priority(2)
+        .mount(&server)
+        .await;
+
+    let env = Env::new(&server);
+    let r = env.sync(&["--user", "bob"]).await;
+    r.expect_code(0).assert_clean();
+
+    let bob_report = env.offline_json(&["overview", "--user", "bob"]).await;
+    bob_report.expect_code(0).assert_clean();
+    let bob_report = bob_report.json();
+    assert_eq!(bob_report["metrics"]["commits"], 3);
+    assert!(
+        bob_report["repositories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["full_name"] == "acme/collab"),
+        "{}",
+        bob_report["repositories"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn repo_and_timezone_options_change_the_report() {
     let server = serve(&World::base()).await;
     let env = Env::new(&server);
