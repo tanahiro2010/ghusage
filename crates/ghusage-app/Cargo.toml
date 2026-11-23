@@ -6,6 +6,9 @@ rust-version.workspace = true
 repository.workspace = true
 license.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 jiff = { version = "1.0.2", features = ["serde"] }
 csv = "1.4.0"
