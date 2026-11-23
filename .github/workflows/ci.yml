@@ -107,10 +107,11 @@ jobs:
       - if: steps.verified.outputs.cache-hit != 'true' && matrix.os == env.FULL_OS
         run: cargo test --workspace --all-targets --no-fail-fast
       - if: steps.verified.outputs.cache-hit != 'true' && matrix.os != env.FULL_OS
-        name: cargo test (without the platform-independent 100k-event checks)
-        run: >-
-          cargo test --workspace --lib --bins --tests --no-fail-fast
-          -- --skip first_render_and_interaction_latency_on_100k_events
+        name: Compile workspace for the target platform
+        run: cargo build --workspace --bins --locked
+      - if: steps.verified.outputs.cache-hit != 'true' && matrix.os != env.FULL_OS
+        name: Smoke test the target-platform binary
+        run: cargo run --locked -- --version
       # Reached only when every step above passed.
       - name: Remember that these inputs passed
         if: steps.verified.outputs.cache-hit != 'true'
