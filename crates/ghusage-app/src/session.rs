@@ -125,7 +125,7 @@ pub fn credentials(token_file: Option<&Path>) -> Result<Credentials> {
 }
 
 /// Opens the cache database for a configuration.
-pub fn open_store(cfg: &SessionConfig) -> Result<(Store, Option<PathBuf>)> {
+pub(crate) fn open_store(cfg: &SessionConfig) -> Result<(Store, Option<PathBuf>)> {
     if cfg.no_cache {
         return Ok((Store::open_in_memory()?, None));
     }
@@ -154,6 +154,44 @@ pub fn open_store(cfg: &SessionConfig) -> Result<(Store, Option<PathBuf>)> {
         Err(e) => return Err(e.into()),
     };
     Ok((store, Some(dir)))
+}
+
+/// Builds client settings from the process environment.
+pub fn client_config(concurrency: usize) -> ClientConfig {
+    let mut config = ClientConfig {
+        concurrency,
+        ..ClientConfig::default()
+    };
+    if let Some(url) = std::env::var("GHUSAGE_API_URL")
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
+        config.api_base = url.trim_end_matches('/').to_string();
+        config.graphql_url = match config.api_base.strip_suffix("/api/v3") {
+            Some(host) => format!("{host}/api/graphql"),
+            None => format!("{}/graphql", config.api_base),
+        };
+    }
+    if let Some(url) = std::env::var("GHUSAGE_GRAPHQL_URL")
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
+        config.graphql_url = url;
+    }
+    if let Some(ms) = std::env::var("GHUSAGE_BACKOFF_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.backoff_base = std::time::Duration::from_millis(ms);
+    }
+    if let Some(ms) = std::env::var("GHUSAGE_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|ms| *ms > 0)
+    {
+        config.request_timeout = std::time::Duration::from_millis(ms);
+    }
+    config
 }
 
 impl Session {
@@ -224,6 +262,12 @@ impl Session {
             offline: self.is_offline(),
             reason: self.offline_reason.clone(),
         }
+    }
+
+    pub fn offline_error(&self) -> Option<AppError> {
+        self.offline_state()
+            .reason
+            .map(|reason| AppError::Other(format!("GitHub is not reachable: {reason}")))
     }
 
     pub fn token_source_description(&self) -> Option<String> {
