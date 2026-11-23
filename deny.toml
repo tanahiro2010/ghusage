@@ -1,0 +1,32 @@
+[advisories]
+version = 2
+ignore = [
+  # chrono and chrono-tz are retained temporarily while the timezone model is
+  # migrated to jiff. See issue #15 for the tracked replacement work.
+  "RUSTSEC-2026-0543",
+  "RUSTSEC-2026-0555",
+]
+unmaintained = "deny"
+yanked = "deny"
+
+[licenses]
+confidence-threshold = 0.8
+allow = [
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "MIT",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -4,6 +4,8 @@ on:
   push:
     branches: [dev, release]
   pull_request:
+  schedule:
+    - cron: "17 3 * * 1"
 
 permissions:
   contents: read
@@ -29,7 +31,7 @@ jobs:
       rust: ${{ steps.hash.outputs.rust }}
       npm: ${{ steps.hash.outputs.npm }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: false
       - id: hash
@@ -68,13 +70,13 @@ jobs:
       # The default MSVC linker is slow to link the many test binaries.
       CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld.exe
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The build must never depend on private submodules.
           submodules: false
       - id: verified
         name: Look for an earlier successful run with the same inputs
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .ci-verified
           key: ${{ env.VERIFIED_KEY }}
@@ -83,12 +85,12 @@ jobs:
         run: echo "Inputs ${{ needs.inputs.outputs.rust }} already passed on ${{ matrix.os }}; skipping."
       # Pinned so lint results are reproducible; upgraded deliberately.
       - if: steps.verified.outputs.cache-hit != 'true'
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@1.100.0
         with:
-          toolchain: "1.94.0"
+          toolchain: "1.100.0"
           components: rustfmt, clippy
       - if: steps.verified.outputs.cache-hit != 'true'
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.9.3
         with:
           # Keep compiled dependencies even when a test fails.
           cache-on-failure: true
@@ -109,7 +111,7 @@ jobs:
         shell: bash
         run: echo "${{ needs.inputs.outputs.rust }}" > .ci-verified
       - if: steps.verified.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .ci-verified
           key: ${{ env.VERIFIED_KEY }}
@@ -132,13 +134,13 @@ jobs:
     env:
       VERIFIED_KEY: ci-verified-build-${{ matrix.os }}-${{ needs.inputs.outputs.rust }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The build must never depend on private submodules.
           submodules: false
       - id: verified
         name: Look for an earlier successful run with the same inputs
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .ci-verified
           key: ${{ env.VERIFIED_KEY }}
@@ -147,11 +149,11 @@ jobs:
         run: echo "Inputs ${{ needs.inputs.outputs.rust }} already passed on ${{ matrix.os }}; skipping."
       # The same pinned toolchain as the tests.
       - if: steps.verified.outputs.cache-hit != 'true'
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@1.100.0
         with:
-          toolchain: "1.94.0"
+          toolchain: "1.100.0"
       - if: steps.verified.outputs.cache-hit != 'true'
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.9.3
         with:
           # Keep compiled dependencies even when a later step fails.
           cache-on-failure: true
@@ -192,7 +194,7 @@ jobs:
         shell: bash
         run: echo "${{ needs.inputs.outputs.rust }}" > .ci-verified
       - if: steps.verified.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .ci-verified
           key: ${{ env.VERIFIED_KEY }}
@@ -208,11 +210,11 @@ jobs:
     env:
       VERIFIED_KEY: ci-verified-npm-${{ matrix.os }}-${{ needs.inputs.outputs.npm }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: false
       - id: verified
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .ci-verified
           key: ${{ env.VERIFIED_KEY }}
@@ -220,7 +222,7 @@ jobs:
       - if: steps.verified.outputs.cache-hit == 'true'
         run: echo "Inputs ${{ needs.inputs.outputs.npm }} already passed on ${{ matrix.os }}; skipping."
       - if: steps.verified.outputs.cache-hit != 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
       - if: steps.verified.outputs.cache-hit != 'true'
@@ -233,7 +235,7 @@ jobs:
         shell: bash
         run: echo "${{ needs.inputs.outputs.npm }}" > .ci-verified
       - if: steps.verified.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .ci-verified
           key: ${{ env.VERIFIED_KEY }}
@@ -243,10 +245,38 @@ jobs:
     name: dependency audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: false
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.90.8
         with:
           tool: cargo-audit
       - run: cargo audit
+      - uses: taiki-e/install-action@v2.90.8
+        with:
+          tool: cargo-deny
+      - run: cargo deny check
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Audit documentation dependencies
+        working-directory: docs
+        run: |
+          npm ci
+          # The static-site toolchain is dev-only; see docs/SECURITY.md.
+          npm audit --audit-level=high --omit=dev
+      - name: Audit npm launcher dependencies
+        working-directory: npm/ghusage
+        run: npm audit --audit-level=high --package-lock=false
+
+  msrv:
+    name: MSRV check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          toolchain: "1.94.0"
+      - run: cargo check --workspace --all-targets --locked
