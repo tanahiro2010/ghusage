@@ -370,7 +370,7 @@ impl Tracker {
 }
 
 /// Errors that make further requests pointless.
-fn is_fatal(e: &ApiError) -> bool {
+const fn is_fatal(e: &ApiError) -> bool {
     matches!(e, ApiError::Unauthorized | ApiError::RateLimited { .. })
 }
 
@@ -412,7 +412,7 @@ fn mark_errors(errors: &[GraphqlError], tracker: &mut Tracker) {
     }
 }
 
-fn collection_of(conn: PrConnection) -> Collection {
+const fn collection_of(conn: PrConnection) -> Collection {
     match conn {
         PrConnection::Commits => Collection::Commits,
         PrConnection::Reviews => Collection::Reviews,
@@ -477,12 +477,11 @@ async fn collect_connection(
             .as_ref()
             .and_then(|d| d.get("node"))
             .and_then(|n| n.get(field));
-        match next.filter(|v| !v.is_null()) {
-            Some(v) => conn = gql::from_value(Some(v)),
-            None => {
-                tracker.partial(c, format!("{field}: a later page returned no data"));
-                break;
-            }
+        if let Some(v) = next.filter(|v| !v.is_null()) {
+            conn = gql::from_value(Some(v));
+        } else {
+            tracker.partial(c, format!("{field}: a later page returned no data"));
+            break;
         }
     }
     Ok(nodes)
@@ -548,12 +547,11 @@ async fn collect_thread_comments(
             .as_ref()
             .and_then(|d| d.get("node"))
             .and_then(|n| n.get("comments"));
-        match next.filter(|v| !v.is_null()) {
-            Some(v) => conn = gql::from_value(Some(v)),
-            None => {
-                tracker.partial(c, "review thread comments: a later page returned no data");
-                break;
-            }
+        if let Some(v) = next.filter(|v| !v.is_null()) {
+            conn = gql::from_value(Some(v));
+        } else {
+            tracker.partial(c, "review thread comments: a later page returned no data");
+            break;
         }
     }
     Ok((nodes, total))
@@ -636,34 +634,31 @@ async fn fetch_checks(
     tracker: &mut Tracker,
 ) -> Result<ChecksResult, ApiError> {
     let mut out = ChecksResult::default();
-    let fetch_statuses = match from_graphql {
-        Some(g) => {
-            out.runs = g.runs;
-            g.has_statuses
-        }
-        None => {
-            let runs_url = t.rest_url(
-                &["repos", owner, name, "commits", sha, "check-runs"],
-                // Every attempt, not only the latest run of each name (the
-                // endpoint's default): a failure that was re-run happened.
-                &[("per_page", "100"), ("filter", "all")],
-            );
-            match t
-                .get_paginated(runs_url, |v| v.get("check_runs")?.as_array().cloned())
-                .await
-            {
-                Ok(v) => {
-                    let (runs, bad) = parse_values::<RestCheckRun>(v);
-                    out.runs = runs.into_iter().map(RestCheckRun::into_record).collect();
-                    out.bad_runs = bad;
-                }
-                Err(e) if is_fatal(&e) => return Err(e),
-                Err(e) => {
-                    tracker.partial(Collection::Checks, format!("check runs not fetched: {e}"));
-                }
+    let fetch_statuses = if let Some(g) = from_graphql {
+        out.runs = g.runs;
+        g.has_statuses
+    } else {
+        let runs_url = t.rest_url(
+            &["repos", owner, name, "commits", sha, "check-runs"],
+            // Every attempt, not only the latest run of each name (the
+            // endpoint's default): a failure that was re-run happened.
+            &[("per_page", "100"), ("filter", "all")],
+        );
+        match t
+            .get_paginated(runs_url, |v| v.get("check_runs")?.as_array().cloned())
+            .await
+        {
+            Ok(v) => {
+                let (runs, bad) = parse_values::<RestCheckRun>(v);
+                out.runs = runs.into_iter().map(RestCheckRun::into_record).collect();
+                out.bad_runs = bad;
             }
-            true
+            Err(e) if is_fatal(&e) => return Err(e),
+            Err(e) => {
+                tracker.partial(Collection::Checks, format!("check runs not fetched: {e}"));
+            }
         }
+        true
     };
     if !fetch_statuses {
         return Ok(out);
@@ -756,7 +751,6 @@ struct Builder {
 }
 
 impl Builder {
-    #[allow(clippy::too_many_arguments)]
     fn push(
         &mut self,
         event_type: EventType,

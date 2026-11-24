@@ -40,13 +40,17 @@ use crate::source::SessionSource;
 /// Options for the terminal UI.
 #[derive(Debug, Clone)]
 pub struct TuiOptions {
+    /// Report period shown when the UI starts.
     pub period: Period,
+    /// Time zone used to display dates.
     pub zone: Zone,
+    /// Repository filter applied to reports.
     pub filter: Filter,
     /// Session configuration; the UI reads the cache offline.
     pub session: SessionConfig,
     /// Fill missing data from GitHub in the background.
     pub background_sync: bool,
+    /// Maximum concurrent background API requests.
     pub concurrency: usize,
     /// Which commit date counts for daily totals and period membership.
     pub commit_basis: ghusage_core::metrics::CommitDateBasis,

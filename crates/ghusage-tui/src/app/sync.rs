@@ -1,4 +1,5 @@
 impl App {
+    /// Rebuilds current reports after data or selection changes.
     pub fn refresh(&mut self) -> Option<Effect> {
             self.reload();
             if !self.background_sync {
@@ -24,6 +25,7 @@ impl App {
             Some(Effect::StartSync(self.period))
         }
 
+    /// Applies a background synchronization message to UI state.
     pub fn on_sync(&mut self, msg: SyncMsg) {
             match msg {
                 SyncMsg::Started { auth } => {

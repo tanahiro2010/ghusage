@@ -48,10 +48,10 @@ pub fn install_panic_hook() {
     HOOK.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            if QUIET_PANICS.with(|q| q.get()) {
+            if QUIET_PANICS.with(Cell::get) {
                 return;
             }
-            let _ = restore_terminal();
+            drop(restore_terminal());
             PANIC_RESTORES.fetch_add(1, Ordering::SeqCst);
             previous(info);
         }));
@@ -60,13 +60,14 @@ pub fn install_panic_hook() {
 
 /// Set when the process is asked to stop (SIGTERM or SIGHUP on Unix), so
 /// the event loop can quit through its normal path and restore the terminal.
+#[must_use]
 pub fn stop_requested() -> Arc<AtomicBool> {
     let flag = Arc::new(AtomicBool::new(false));
     #[cfg(unix)]
     for signal in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGHUP] {
         // Without a handler the default action still ends the process;
         // only the terminal restore is lost.
-        let _ = signal_hook::flag::register(signal, Arc::clone(&flag));
+        drop(signal_hook::flag::register(signal, Arc::clone(&flag)));
     }
     flag
 }
@@ -81,24 +82,25 @@ pub fn enter() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut out = io::stdout();
     if let Err(e) = execute!(out, EnterAlternateScreen) {
-        let _ = restore_terminal();
+        drop(restore_terminal());
         return Err(e);
     }
     match Terminal::new(CrosstermBackend::new(out)) {
         Ok(t) => Ok(t),
         Err(e) => {
-            let _ = restore_terminal();
+            drop(restore_terminal());
             Err(e)
         }
     }
 }
 
 /// Restores the terminal when dropped (normal exit and error paths).
+#[derive(Debug)]
 pub struct RestoreGuard;
 
 impl Drop for RestoreGuard {
     fn drop(&mut self) {
-        let _ = restore_terminal();
+        drop(restore_terminal());
     }
 }
 
@@ -139,7 +141,7 @@ pub fn open_url(url: &str) -> Result<(), String> {
         .map_err(|e| format!("cannot start the browser: {e}"))?;
     // Reap the launcher without blocking the UI.
     std::thread::spawn(move || {
-        let _ = child.wait();
+        drop(child.wait());
     });
     Ok(())
 }

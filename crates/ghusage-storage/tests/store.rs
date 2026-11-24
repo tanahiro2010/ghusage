@@ -407,7 +407,7 @@ fn viewing_shared_pull_request_does_not_overwrite_another_accounts_activity() {
             pr_snapshots: vec![PrSnapshot {
                 pr_id: "PR1".into(),
                 observed_at: t(10, 0),
-                complete_collections: ghusage_core::model::Collection::ALL.to_vec(),
+                complete_collections: Collection::ALL.to_vec(),
                 present: HashSet::new(),
                 present_threads: HashSet::new(),
             }],
@@ -531,12 +531,12 @@ fn same_commit_from_two_sources_is_stored_once() {
     };
     s.apply(&b).unwrap();
     let ds = alice_dataset(&s);
-    let commits: Vec<_> = ds
+    let commits = ds
         .events
         .iter()
         .filter(|e| e.event_type == EventType::CommitAuthored)
-        .collect();
-    assert_eq!(commits.len(), 1);
+        .count();
+    assert_eq!(commits, 1);
 }
 
 #[test]
@@ -1461,7 +1461,7 @@ fn file_that_is_not_a_database_is_reported_as_corrupt() {
         b"this is definitely not sqlite, just some garbage bytes \x00\xff",
     )
     .unwrap();
-    let err = Store::open(&path).err().expect("garbage must not open");
+    let err = Store::open(&path).expect_err("garbage must not open");
     assert!(matches!(err, StorageError::Corrupt(_)), "{err:?}");
     assert!(err.to_string().contains("not a SQLite database"), "{err}");
     // The file is left alone.
@@ -1514,9 +1514,7 @@ fn database_from_a_newer_version_is_refused() {
         conn.execute_batch("CREATE TABLE future (x); PRAGMA user_version = 4242;")
             .unwrap();
     }
-    let err = Store::open(&path)
-        .err()
-        .expect("newer schema must be refused");
+    let err = Store::open(&path).expect_err("newer schema must be refused");
     match err {
         StorageError::TooNew { found, supported } => {
             assert_eq!(found, 4242);
@@ -1705,8 +1703,8 @@ fn a_period_brings_every_event_of_its_active_pull_requests() {
     let opts = ghusage_core::metrics::Options {
         period,
         zone: ghusage_core::time::Zone::utc(),
-        filter: Default::default(),
-        commit_basis: Default::default(),
+        filter: ghusage_core::metrics::Filter::default(),
+        commit_basis: ghusage_core::metrics::CommitDateBasis::default(),
     };
     assert_eq!(ghusage_core::metrics::summary(&ds, &opts).prs_created, 0);
 }

@@ -136,7 +136,7 @@ impl Worker {
     }
 }
 
-fn view_of(r: &Request) -> Option<(Period, crate::app::FilterPreset)> {
+const fn view_of(r: &Request) -> Option<(Period, crate::app::FilterPreset)> {
     match &r.job {
         Job::Report(k) => Some((r.view, k.filter)),
         _ => None,

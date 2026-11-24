@@ -13,8 +13,8 @@ fn restore_sequence_leaves_alternate_screen_and_shows_cursor() {
 
 #[test]
 fn restoring_a_terminal_that_was_never_switched_is_harmless() {
-    let _ = term::restore_terminal();
-    let _ = term::restore_terminal();
+    drop(term::restore_terminal());
+    drop(term::restore_terminal());
 }
 
 #[test]
@@ -29,7 +29,7 @@ fn panic_hook_restores_the_terminal_and_quiet_threads_are_left_alone() {
     // A panic in a background worker does not tear down the UI.
     let h = std::thread::spawn(|| {
         term::set_quiet_panics(true);
-        let _ = std::panic::catch_unwind(|| panic!("worker"));
+        drop(std::panic::catch_unwind(|| panic!("worker")));
     });
     h.join().unwrap();
     assert_eq!(term::panic_restore_count(), before + 1);

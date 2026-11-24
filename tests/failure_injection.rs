@@ -710,7 +710,7 @@ async fn corrupt_cache_is_reported_as_a_cache_error() {
     let server = serve(&World::base()).await;
     let env = Env::new(&server);
     let garbage: Vec<u8> = (0..64 * 1024u32)
-        .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 13).to_le_bytes()[0])
         .collect();
     std::fs::write(env.db_path(), &garbage).unwrap();
 
@@ -744,9 +744,10 @@ fn report_skipped(test: &str) {
         "SKIPPED {test}: file permissions are not enforced for this user \
          (running as root?); nothing was verified"
     );
-    if std::env::var_os("GHUSAGE_REQUIRE_PERMISSION_TESTS").is_some_and(|v| !v.is_empty()) {
-        panic!("{msg}");
-    }
+    assert!(
+        std::env::var_os("GHUSAGE_REQUIRE_PERMISSION_TESTS").is_none_or(|v| v.is_empty()),
+        "{msg}"
+    );
     eprintln!("{msg}");
 }
 

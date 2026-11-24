@@ -1,8 +1,8 @@
-/// Fetches the line counts of the subject's non-merge commits in `period`
-/// that have none yet, in batches of up to 100 commits per GraphQL query.
-/// Counts already known are reused, so running it again only asks for what
-/// is still missing. Commits outside the period, merge commits and commits
-/// of repositories hidden by `public_only` are left alone.
+/// Fetches line counts for the subject's non-merge commits.
+///
+/// Missing counts are requested in batches of up to 100 commits per GraphQL
+/// query. Existing counts are reused, and commits outside the period, merge
+/// commits, and repositories hidden by `public_only` are skipped.
 pub async fn fetch_line_counts(
     client: &GitHubClient,
     store: &mut Store,

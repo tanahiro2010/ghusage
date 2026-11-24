@@ -1,10 +1,14 @@
-//! Making untrusted GitHub content safe to display and open.
+//! Safety helpers for displaying and opening GitHub content.
+//!
+//! These helpers sanitize untrusted text and restrict URLs to GitHub hosts.
 
 use unicode_width::UnicodeWidthStr;
 
-/// Removes terminal control sequences and control characters from untrusted
-/// text so it cannot move the cursor, change colors, set the window title or
-/// reorder text. Newlines and tabs become spaces; the result is one line.
+/// Removes terminal control sequences from untrusted text.
+///
+/// Newlines and tabs become spaces, and other control characters are removed
+/// so the result cannot change the terminal state or reorder displayed text.
+#[must_use]
 pub fn sanitize_line(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
@@ -29,6 +33,7 @@ pub fn sanitize_line(input: &str) -> String {
 /// Like [`sanitize_line`] for one line of code or diff: tabs become four
 /// spaces instead of one, so indentation keeps its shape, and a trailing
 /// carriage return is dropped.
+#[must_use]
 pub fn sanitize_code_line(input: &str) -> String {
     let line = input.strip_suffix('\r').unwrap_or(input);
     if line.contains('\t') {
@@ -97,6 +102,7 @@ fn skip_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
 }
 
 /// Sanitizes and truncates to a display width, appending `…` when cut.
+#[must_use]
 pub fn truncate_width(input: &str, max_width: usize) -> String {
     let s = sanitize_line(input);
     if s.width() <= max_width {
@@ -120,12 +126,18 @@ pub fn truncate_width(input: &str, max_width: usize) -> String {
 }
 
 /// Display width of sanitized text.
+#[must_use]
 pub fn display_width(s: &str) -> usize {
     s.width()
 }
 
 /// Validates a URL before opening it in a browser: only `https` URLs on
 /// GitHub hosts are allowed.
+///
+/// # Errors
+///
+/// Returns an error when the URL contains control characters, uses a scheme
+/// other than HTTPS, or names a host that is not in `allowed_hosts`.
 pub fn validate_github_url(url: &str, allowed_hosts: &[&str]) -> Result<String, UrlError> {
     let trimmed = url.trim();
     if trimmed.chars().any(|c| c.is_control() || c.is_whitespace()) {
@@ -150,12 +162,16 @@ pub fn validate_github_url(url: &str, allowed_hosts: &[&str]) -> Result<String, 
     Ok(trimmed.to_string())
 }
 
+/// Rejection reasons returned by GitHub URL validation.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum UrlError {
+    /// The URL does not use HTTPS.
     #[error("only https URLs can be opened")]
     SchemeNotAllowed,
+    /// The URL host is not in the allowed host list.
     #[error("URL host is not a GitHub host")]
     HostNotAllowed,
+    /// The URL contains whitespace or control characters.
     #[error("URL contains invalid characters")]
     InvalidCharacters,
 }

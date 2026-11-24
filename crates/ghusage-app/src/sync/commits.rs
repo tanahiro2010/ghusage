@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 /// Repository id, creation and last update of a cached pull request.
 type CachedPr = (String, Timestamp, Option<Timestamp>);
 
@@ -12,11 +14,10 @@ fn name_repos(names: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     if names.len() > MAX_NAMED_REPOS {
-        s.push_str(&format!(" and {} more", names.len() - MAX_NAMED_REPOS));
+        let _ = write!(s, " and {} more", names.len() - MAX_NAMED_REPOS);
     }
     s
 }
-#[allow(clippy::too_many_arguments)]
 async fn persist_commit_range(
     sh: &Shared<'_, '_>,
     range: Period,
@@ -219,7 +220,6 @@ fn commit_sha(c: &CommitRecord) -> Option<&str> {
 /// Both sources produce the same event ids, so a commit found by both is
 /// stored once. In repositories that are not [`Related`], search results
 /// are used as they are, without listing, and copies are left out.
-#[allow(clippy::too_many_arguments)]
 async fn sync_commits(
     sh: &Shared<'_, '_>,
     ranges: &[Period],
@@ -301,7 +301,6 @@ async fn sync_commits(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn sync_commit_range(
     sh: &Shared<'_, '_>,
     range: Period,

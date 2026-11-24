@@ -2,7 +2,10 @@
 //! returned by the GitHub REST and GraphQL APIs (including fields the
 //! client ignores).
 
-#![allow(dead_code)]
+#![expect(
+    dead_code,
+    reason = "shared fixtures are only used by some integration test targets"
+)]
 
 use std::time::Duration;
 
@@ -55,12 +58,16 @@ pub(crate) fn period(start: &str, end: &str) -> Period {
 }
 
 pub(crate) fn day(y: i32, m: u8, d: u8) -> Timestamp {
-    Date::new(y as i16, m as i8, d as i8)
-        .unwrap()
-        .at(0, 0, 0, 0)
-        .to_zoned_datetime(jiff::tz::TimeZone::UTC)
-        .unwrap()
-        .timestamp()
+    Date::new(
+        i16::try_from(y).expect("test year fits i16"),
+        i8::try_from(m).expect("test month fits i8"),
+        i8::try_from(d).expect("test day fits i8"),
+    )
+    .unwrap()
+    .at(0, 0, 0, 0)
+    .to_zoned_datetime(jiff::tz::TimeZone::UTC)
+    .unwrap()
+    .timestamp()
 }
 
 /// Asserts that a rendered error contains no trace of the token.
@@ -255,7 +262,6 @@ pub(crate) fn gql_repo(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn pr_commit(
     owner: &str,
     name: &str,

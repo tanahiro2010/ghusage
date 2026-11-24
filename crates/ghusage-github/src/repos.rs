@@ -195,10 +195,7 @@ pub(crate) async fn default_branch_commits(
             ("per_page", "100"),
         ],
     );
-    let items = match t
-        .get_paginated(first, |v| v.as_array().map(|a| a.to_vec()))
-        .await
-    {
+    let items = match t.get_paginated(first, |v| v.as_array().cloned()).await {
         Ok(items) => items,
         Err(ApiError::Http { status: 409, .. }) => Vec::new(),
         Err(e) => return Err(e),

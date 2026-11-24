@@ -32,7 +32,7 @@ async fn sync_issues(
             repos.push(repo);
         }
     }
-    let _ = issue_repos.send(repos);
+    drop(issue_repos.send(repos));
     for (range, found) in searched {
         sh.report.borrow_mut().issues_found += found.items.len() as u64;
         // An issue whose update time is unchanged since it was last fetched

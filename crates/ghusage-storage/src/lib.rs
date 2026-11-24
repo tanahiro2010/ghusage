@@ -22,6 +22,7 @@ mod codec;
 mod schema;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -44,22 +45,43 @@ use codec::{
     opt_to_json, secs, time, to_json,
 };
 
+/// Result of a cache operation.
 pub type Result<T> = std::result::Result<T, StorageError>;
 
+/// Errors returned while opening, reading, or writing the cache.
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
+    /// SQLite rejected or failed an operation.
     #[error("cache database error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    /// The cache file is corrupt or is not a valid database.
     #[error("cache database is corrupt: {0}")]
     Corrupt(String),
+    /// The cache was written by a newer schema than this version supports.
     #[error("cache database schema version {found} is newer than supported version {supported}")]
-    TooNew { found: u32, supported: u32 },
+    TooNew {
+        /// Schema version found in the database.
+        found: u32,
+        /// Newest schema version supported by this binary.
+        supported: u32,
+    },
+    /// A schema migration failed.
     #[error("cache migration from version {from} to {to} failed: {message}")]
-    Migration { from: u32, to: u32, message: String },
+    Migration {
+        /// Schema version before the failed migration.
+        from: u32,
+        /// Schema version the migration was applying.
+        to: u32,
+        /// Underlying migration error.
+        message: String,
+    },
+    /// Another process holds the sync lock.
     #[error("another ghusage sync is already running (lock: {0})")]
     Locked(PathBuf),
+    /// The cache could not be read or written.
     #[error("cache I/O error: {0}")]
     Io(#[from] std::io::Error),
+    /// Stored or supplied data violates cache invariants.
     #[error("cache data error: {0}")]
     Data(String),
 }
@@ -67,6 +89,7 @@ pub enum StorageError {
 impl StorageError {
     /// True when the error comes from missing write access to the cache
     /// file or its directory.
+    #[must_use]
     pub fn is_read_only(&self) -> bool {
         match self {
             Self::Sqlite(e) => matches!(
@@ -83,16 +106,22 @@ impl StorageError {
 /// observed that the commit is no longer part of the pull request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrCommitLink {
+    /// GitHub node ID of the pull request.
     pub pr_id: String,
+    /// GitHub node ID of the repository.
     pub repository_id: String,
+    /// Commit SHA.
     pub sha: String,
+    /// Whether this commit is currently in the pull request.
     pub is_current: bool,
 }
 
 /// Result of fetching one pull request's internal activity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrSnapshot {
+    /// GitHub node ID of the pull request.
     pub pr_id: String,
+    /// Time this snapshot was fetched.
     pub observed_at: Timestamp,
     /// Collections fetched completely in this sync. For each, stored events
     /// of this PR in that collection whose ids are not in `present` get
@@ -106,7 +135,9 @@ pub struct PrSnapshot {
     /// this PR that are not sent as current links in the same batch are
     /// kept but marked `is_current = false`.
     pub complete_collections: Vec<Collection>,
+    /// Event identifiers present in the completed collections.
     pub present: HashSet<EventId>,
+    /// Thread identifiers present in the fetched thread collection.
     pub present_threads: HashSet<String>,
 }
 
@@ -115,22 +146,31 @@ pub struct PrSnapshot {
 pub struct WriteBatch {
     /// Login of the subject the data was fetched for.
     pub account: String,
+    /// Repository snapshots to store.
     pub repositories: Vec<Repository>,
+    /// Pull request snapshots to store.
     pub pull_requests: Vec<PullRequest>,
+    /// Issue snapshots to store.
     pub issues: Vec<Issue>,
+    /// Review thread snapshots to store.
     pub threads: Vec<ReviewThread>,
+    /// Activity events to upsert.
     pub events: Vec<ActivityEvent>,
+    /// Pull request commit membership to update.
     pub pr_commits: Vec<PrCommitLink>,
+    /// Complete pull request snapshots for reconciliation.
     pub pr_snapshots: Vec<PrSnapshot>,
     /// Pull requests cached only because the account opened their detail.
     pub viewed_pull_requests: Vec<String>,
     /// Lines added and deleted by commits.
+    /// Commit line statistics to store.
     pub commit_stats: Vec<CommitStats>,
     /// Latest observed diffs of pull requests, by pull request id.
     pub pr_diffs: Vec<(String, PrDiff)>,
     /// Parents of the commit each merged pull request was merged with, by
     /// pull request id (2: merge commit, 1: squash or rebase).
     pub pr_merge_commit_parents: Vec<(String, u64)>,
+    /// Coverage records to store.
     pub coverage: Vec<CoverageRecord>,
     /// `(key, value)` sync cursors for `account`.
     pub cursors: Vec<(String, String)>,
@@ -139,6 +179,7 @@ pub struct WriteBatch {
 /// A commit stored for an account, as [`Store::commits_in`] lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredCommit {
+    /// Repository containing the commit.
     pub repository_id: String,
     /// The SHA in lower case.
     pub sha: String,
@@ -150,51 +191,75 @@ pub struct StoredCommit {
 /// `observed_at`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitStats {
+    /// Repository containing the commit.
     pub repository_id: String,
+    /// Commit SHA.
     pub sha: String,
+    /// Added and deleted line counts.
     pub counts: LineCounts,
+    /// Time the statistics were fetched.
     pub observed_at: Timestamp,
 }
 
 /// Bookkeeping of one sync run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncRun {
+    /// Database identifier of this run.
     pub id: i64,
+    /// Account synchronized by this run.
     pub account: String,
+    /// Run start time.
     pub started_at: Timestamp,
+    /// Run completion time, when finished.
     pub finished_at: Option<Timestamp>,
     /// `running`, `success`, `partial`, `failed`.
     pub status: String,
+    /// Start of the requested period, when supplied.
     pub period_start: Option<Timestamp>,
+    /// End of the requested period, when supplied.
     pub period_end: Option<Timestamp>,
     /// JSON object with API statistics (request count, retries, ...).
     pub stats_json: Option<String>,
+    /// Human-readable run message, when present.
     pub message: Option<String>,
 }
 
 /// Sync state of a stored pull request, used for incremental sync.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrSyncState {
+    /// GitHub node ID of the pull request.
     pub pr_id: String,
+    /// Latest pull request update time known to GitHub.
     pub updated_at: Option<Timestamp>,
+    /// Time internal activity was last synchronized.
     pub synced_at: Option<Timestamp>,
-    pub coverage: ghusage_core::coverage::CoverageStatus,
+    /// Current completeness of internal pull request data.
+    pub coverage: CoverageStatus,
 }
 
 /// Size and row counts of the cache.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CacheStats {
+    /// Cache path, when file-backed.
     pub path: Option<PathBuf>,
+    /// Size of the database file in bytes.
     pub file_size_bytes: u64,
+    /// Current SQLite schema version.
     pub schema_version: u32,
+    /// Number of repository records.
     pub repositories: u64,
+    /// Number of pull request records.
     pub pull_requests: u64,
+    /// Number of issue records.
     pub issues: u64,
+    /// Number of activity event records.
     pub events: u64,
+    /// Number of account records.
     pub accounts: u64,
 }
 
 /// The cache database.
+#[derive(Debug)]
 pub struct Store {
     conn: Connection,
     path: Option<PathBuf>,
@@ -260,7 +325,9 @@ fn immutable_uri(path: &Path) -> Result<String> {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' | b':' => {
                 uri.push(b as char);
             }
-            _ => uri.push_str(&format!("%{b:02X}")),
+            _ => {
+                let _ = write!(uri, "%{b:02X}");
+            }
         }
     }
     uri.push_str("?immutable=1");
@@ -288,7 +355,10 @@ fn restrict_to_user(path: &Path, mode: u32) {
             && meta.permissions().mode() & 0o777 != mode
             && meta.permissions().mode() & 0o200 != 0
         {
-            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+            drop(std::fs::set_permissions(
+                path,
+                std::fs::Permissions::from_mode(mode),
+            ));
         }
     }
     #[cfg(not(unix))]
@@ -338,6 +408,12 @@ include!("store/lock.rs");
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sqlite_integer_conversion_rejects_values_outside_i64() {
+        assert_eq!(to_i64(i64::MAX.cast_unsigned()).unwrap(), i64::MAX);
+        assert!(to_i64(u64::MAX).is_err());
+    }
 
     #[test]
     fn pull_request_events_are_found_through_the_parent_index() {

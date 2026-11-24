@@ -1,4 +1,4 @@
-fn activity_chart(f: &mut Frame, r: &Report, area: Rect) {
+fn activity_chart(f: &mut Frame<'_>, r: &Report, area: Rect) {
     let values: Vec<u64> = r
         .activity_breakdown
         .iter()
@@ -38,7 +38,10 @@ fn activity_chart(f: &mut Frame, r: &Report, area: Rect) {
     );
 }
 
-fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
+fn draw_dashboard(f: &mut Frame<'_>, app: &App, area: Rect) {
+    const CHART_H: u16 = 5;
+    const LISTS_MIN: u16 = 5;
+
     let Some(r) = app.base_report() else {
         return loading(f, area, "Dashboard");
     };
@@ -49,10 +52,8 @@ fn draw_dashboard(f: &mut Frame, app: &App, area: Rect) {
         _ => 1,
     };
     let figures = headline(r);
-    let fig_rows = figures.len().div_ceil(cols) as u16;
+    let fig_rows = to_u16(figures.len().div_ceil(cols));
     let head_h = fig_rows + 2;
-    const CHART_H: u16 = 5;
-    const LISTS_MIN: u16 = 5;
     let h = area.height;
     let show_chart = h >= head_h + 1 + CHART_H + LISTS_MIN;
     let show_lists = h >= head_h + 1 + LISTS_MIN;

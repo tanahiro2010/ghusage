@@ -1,7 +1,10 @@
-/// Coverage records that count for the current mode. Records from a
+/// Filters coverage records for the current sync mode.
+///
+/// Records from a
 /// public-only sync do not cover private data, so they are ignored unless
 /// the current mode is public-only too. Commit records without
 /// older generations are ignored and fetched again.
+#[must_use]
 pub fn applicable_coverage(records: Vec<CoverageRecord>, public_only: bool) -> Vec<CoverageRecord> {
     records
         .into_iter()
@@ -15,6 +18,7 @@ pub fn applicable_coverage(records: Vec<CoverageRecord>, public_only: bool) -> V
 }
 
 /// Ranges of `kind` that need fetching for `period`.
+#[must_use]
 pub fn ranges_to_fetch(
     records: &[CoverageRecord],
     kind: DataKind,

@@ -10,7 +10,7 @@ use ghusage_storage::{Store, WriteBatch};
 use std::hint::black_box;
 
 mod common;
-use common::*;
+use common::{ctx, data, subject};
 
 fn benches(c: &mut Criterion) {
     let (repos, prs, events) = data();

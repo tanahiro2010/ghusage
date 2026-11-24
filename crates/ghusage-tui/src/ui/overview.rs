@@ -1,4 +1,4 @@
-fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
+fn draw_overview(f: &mut Frame<'_>, app: &App, area: Rect) {
     let Some(r) = app.base_report() else {
         return loading(f, area, "Overview");
     };
@@ -13,7 +13,7 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     draw_overview_repositories(f, app, r, repos_area);
 }
 
-fn draw_overview_summary(f: &mut Frame, app: &App, r: &Report, area: Rect) {
+fn draw_overview_summary(f: &mut Frame<'_>, app: &App, r: &Report, area: Rect) {
     let s = &r.metrics;
     let rows = vec![
         (
@@ -53,7 +53,7 @@ fn draw_overview_summary(f: &mut Frame, app: &App, r: &Report, area: Rect) {
             line_cells(&s.diff_stats)[1].clone(),
         ),
     ];
-    let rows: Vec<Row> = rows
+    let rows: Vec<Row<'_>> = rows
         .into_iter()
         .map(|(a, av, b, bv)| {
             Row::new(vec![
@@ -80,7 +80,7 @@ fn draw_overview_summary(f: &mut Frame, app: &App, r: &Report, area: Rect) {
         f.render_widget(t, area);
 }
 
-fn draw_overview_activity(f: &mut Frame, r: &Report, area: Rect) {
+fn draw_overview_activity(f: &mut Frame<'_>, r: &Report, area: Rect) {
     // Activity timeline: one bar per day, newest on the right.
     let values: Vec<u64> = r
         .activity_breakdown
@@ -124,7 +124,7 @@ fn draw_overview_activity(f: &mut Frame, r: &Report, area: Rect) {
 
 }
 
-fn draw_overview_repositories(f: &mut Frame, app: &App, r: &Report, area: Rect) {
+fn draw_overview_repositories(f: &mut Frame<'_>, app: &App, r: &Report, area: Rect) {
     let focused = app.overview_pane == OverviewPane::Repositories;
     let title = "Top repositories (Tab to focus, Enter for detail)".to_string();
     if r.repositories.is_empty() {
@@ -136,7 +136,7 @@ fn draw_overview_repositories(f: &mut Frame, app: &App, r: &Report, area: Rect) 
         );
     }
     let name_w = flex_width(area, &[16, 7, 5, 7, 8]);
-    let rows: Vec<Row> = r
+    let rows: Vec<Row<'_>> = r
         .repositories
         .iter()
         .map(|x| {

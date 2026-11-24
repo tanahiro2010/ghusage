@@ -1,5 +1,8 @@
 //! Synthetic activity used by the UI tests.
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "Integration test targets share fixture helpers, and each target uses only a subset."
+)]
 
 use ghusage_core::coverage::{CoverageRecord, CoverageStatus, DataKind};
 use ghusage_core::metrics::{Dataset, Filter};
@@ -376,11 +379,11 @@ pub(crate) fn app() -> App {
     app_with(dataset(), false)
 }
 
-pub(crate) fn key(c: char) -> KeyEvent {
+pub(crate) const fn key(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
 }
 
-pub(crate) fn code(c: KeyCode) -> KeyEvent {
+pub(crate) const fn code(c: KeyCode) -> KeyEvent {
     KeyEvent::new(c, KeyModifiers::NONE)
 }
 

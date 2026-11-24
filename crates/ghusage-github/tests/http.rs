@@ -26,7 +26,7 @@ struct Sequence {
 }
 
 impl Sequence {
-    fn new(responses: Vec<ResponseTemplate>) -> Self {
+    const fn new(responses: Vec<ResponseTemplate>) -> Self {
         Self {
             calls: AtomicUsize::new(0),
             responses,
@@ -426,8 +426,8 @@ async fn raw_server(
                 max.fetch_max(now, Ordering::SeqCst);
                 tokio::time::sleep(delay).await;
                 inf.fetch_sub(1, Ordering::SeqCst);
-                let _ = sock.write_all(response.as_bytes()).await;
-                let _ = sock.shutdown().await;
+                drop(sock.write_all(response.as_bytes()).await);
+                drop(sock.shutdown().await);
             });
         }
     });
@@ -565,11 +565,11 @@ async fn rate_limit_resources_are_reported() {
     Mock::given(path("/rate_limit"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "resources": {
-                "core": { "limit": 5000, "used": 1, "remaining": 4999, "reset": 1700000000 },
-                "search": { "limit": 30, "used": 0, "remaining": 30, "reset": 1700000060 },
-                "graphql": { "limit": 5000, "used": 7, "remaining": 4993, "reset": 1700000000 }
+                "core": { "limit": 5000, "used": 1, "remaining": 4999, "reset": 1_700_000_000 },
+                "search": { "limit": 30, "used": 0, "remaining": 30, "reset": 1_700_000_060 },
+                "graphql": { "limit": 5000, "used": 7, "remaining": 4993, "reset": 1_700_000_000 }
             },
-            "rate": { "limit": 5000, "used": 1, "remaining": 4999, "reset": 1700000000 }
+            "rate": { "limit": 5000, "used": 1, "remaining": 4999, "reset": 1_700_000_000 }
         })))
         .mount(&server)
         .await;

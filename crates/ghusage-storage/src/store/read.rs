@@ -309,7 +309,6 @@ fn pr_events_sql() -> String {
 
 /// Known commit statistics of the account's repositories and diffs of its
 /// pull requests.
-#[allow(clippy::type_complexity)]
 fn diff_stats_for(
     conn: &Connection,
     account_id: i64,
@@ -348,8 +347,8 @@ fn commit_stats_where<P: rusqlite::Params>(
         out.insert(
             EventId::commit(&repo, &sha).0,
             LineCounts {
-                additions: r.get::<_, i64>(2)?.max(0) as u64,
-                deletions: r.get::<_, i64>(3)?.max(0) as u64,
+                additions: u64::try_from(r.get::<_, i64>(2)?.max(0)).unwrap_or_default(),
+                deletions: u64::try_from(r.get::<_, i64>(3)?.max(0)).unwrap_or_default(),
             },
         );
     }
@@ -388,7 +387,8 @@ fn pr_diffs_where<P: rusqlite::Params>(
     let mut out = BTreeMap::new();
     while let Some(r) = rows.next()? {
         let n = |i: usize| -> Result<u64> {
-            Ok(r.get::<_, Option<i64>>(i)?.unwrap_or(0).max(0) as u64)
+            Ok(u64::try_from(r.get::<_, Option<i64>>(i)?.unwrap_or(0).max(0))
+                .unwrap_or_default())
         };
         out.insert(
             r.get::<_, String>(0)?,

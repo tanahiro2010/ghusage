@@ -159,7 +159,7 @@ fn pr_from_row(r: &Row<'_>) -> Result<PullRequest> {
     Ok(PullRequest {
         id: r.get("id")?,
         repository_id: r.get("repository_id")?,
-        number: r.get::<_, i64>("number")?.max(0) as u64,
+        number: u64::try_from(r.get::<_, i64>("number")?.max(0)).unwrap_or_default(),
         title: r.get("title")?,
         url: r.get("url")?,
         author: actor(
@@ -188,7 +188,7 @@ fn issue_from_row(r: &Row<'_>) -> Result<Issue> {
     Ok(Issue {
         id: r.get("id")?,
         repository_id: r.get("repository_id")?,
-        number: r.get::<_, i64>("number")?.max(0) as u64,
+        number: u64::try_from(r.get::<_, i64>("number")?.max(0)).unwrap_or_default(),
         title: r.get("title")?,
         url: r.get("url")?,
         author: actor(

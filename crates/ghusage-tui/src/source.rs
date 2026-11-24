@@ -11,23 +11,36 @@ use jiff::Timestamp;
 /// The most recent synchronization recorded in the cache.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LastSync {
+    /// Time the synchronization began.
     pub started_at: Timestamp,
+    /// Time the synchronization finished, when complete.
     pub finished_at: Option<Timestamp>,
+    /// Synchronization result.
     pub status: String,
+    /// Additional run message, when present.
     pub message: Option<String>,
 }
 
 /// Facts about the cache shown on the System screen.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SystemInfo {
+    /// GitHub login being analyzed.
     pub login: String,
+    /// Whether the analyzed account is the authenticated viewer.
     pub subject_is_viewer: bool,
+    /// Cache directory, when file-backed.
     pub data_dir: Option<PathBuf>,
+    /// Cache database size in bytes.
     pub cache_size_bytes: Option<u64>,
+    /// Number of cached events.
     pub cached_events: Option<u64>,
+    /// Number of cached pull requests.
     pub cached_pull_requests: Option<u64>,
+    /// Number of cached repositories.
     pub cached_repositories: Option<u64>,
+    /// Most recent synchronization run.
     pub last_sync: Option<LastSync>,
+    /// Completion time of the latest sync, when known.
     pub synced_at: Option<Timestamp>,
     /// Set when the cache could not be inspected.
     pub error: Option<String>,
@@ -46,11 +59,15 @@ pub trait DataSource {
 /// An in-memory data source, used for embedding and tests.
 #[derive(Debug, Clone)]
 pub struct MemorySource {
+    /// Dataset returned by every query.
     pub dataset: Dataset,
+    /// System information returned by the source.
     pub system: SystemInfo,
 }
 
 impl MemorySource {
+    /// Creates a memory data source for a dataset.
+    #[must_use]
     pub fn new(dataset: Dataset) -> Self {
         let system = SystemInfo {
             login: dataset.subject.login.clone(),
@@ -77,12 +94,14 @@ impl DataSource for MemorySource {
 }
 
 /// Reads from the cache of an offline [`Session`].
+#[derive(Debug)]
 pub struct SessionSource {
     session: Session,
 }
 
 impl SessionSource {
-    pub fn new(session: Session) -> Self {
+    /// Creates a cache-backed data source from a session.
+    pub const fn new(session: Session) -> Self {
         Self { session }
     }
 }

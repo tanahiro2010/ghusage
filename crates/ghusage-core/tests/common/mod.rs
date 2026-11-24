@@ -1,5 +1,8 @@
 //! Shared builders for the aggregation test suites.
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "Integration test targets share fixture helpers, and each target uses only a subset."
+)]
 
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::metrics::{CommitDateBasis, Dataset, Filter, Options};

@@ -22,22 +22,32 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// What to report on.
 #[derive(Debug, Clone)]
 pub struct QueryContext {
+    /// Time range covered by the report.
     pub period: Period,
+    /// Time zone used for dates in the report.
     pub zone: Zone,
+    /// Repository selection criteria.
     pub filter: Filter,
+    /// Date source used for commit activity.
     pub commit_basis: CommitDateBasis,
     /// Hide names, titles and URLs of non-public repositories.
     pub redact_private: bool,
+    /// Time of the last completed synchronization, when available.
     pub synced_at: Option<Timestamp>,
 }
 
+/// Account identity included in a report.
 #[derive(Debug, Clone, Serialize)]
 pub struct AccountInfo {
+    /// GitHub login.
     pub login: String,
+    /// GitHub node ID, when known.
     pub id: Option<String>,
+    /// Whether this is the authenticated viewer.
     pub is_authenticated_user: bool,
 }
 
+/// Serialized start and end of a report period.
 #[derive(Debug, Clone, Serialize)]
 pub struct PeriodInfo {
     /// Inclusive start (RFC 3339 in the report time zone).
@@ -49,16 +59,26 @@ pub struct PeriodInfo {
 /// Which optional sections to compute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReportKind {
+    /// Summary metrics and repository activity.
     Overview,
+    /// Summary grouped by the selected calendar unit.
     Breakdown(Granularity),
+    /// Repository activity rows.
     Repositories,
+    /// Pull request activity rows with the requested filters.
     PullRequests {
+        /// Pull request participation scope.
         participation: Participation,
+        /// Optional current state filter.
         state: Option<PrState>,
+        /// Sort order for pull request rows.
         sort: PrSort,
     },
+    /// Reviews submitted and received by the subject.
     Reviews,
+    /// Comments written and received by the subject.
     Comments,
+    /// Issues with subject activity.
     Issues,
 }
 
@@ -66,41 +86,63 @@ pub enum ReportKind {
 /// command are omitted when not requested.
 #[derive(Debug, Clone, Serialize)]
 pub struct Report {
+    /// Version of the serialized report schema.
     pub schema_version: u32,
+    /// Account described by the report.
     pub account: AccountInfo,
+    /// Report period boundaries.
     pub period: PeriodInfo,
+    /// Report time zone name.
     pub timezone: String,
+    /// Aggregate activity metrics for the period.
     pub metrics: Summary,
+    /// Current-state counts for the account.
     pub snapshot: Snapshot,
+    /// Per-repository activity summaries.
     pub repositories: Vec<RepoSummary>,
+    /// Activity totals partitioned by calendar bucket.
     pub activity_breakdown: Vec<BucketSummary>,
+    /// Calendar unit used for `activity_breakdown`, when requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub granularity: Option<Granularity>,
+    /// Coverage state for each data kind in the report period.
     pub coverage: Vec<CoverageSummary>,
+    /// Time of the last synchronization, when known.
     pub synced_at: Option<Timestamp>,
+    /// Whether private repository details were redacted.
     pub private_repositories_redacted: bool,
+    /// Pull request activity rows, when requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pull_requests: Option<Vec<PrRow>>,
+    /// Per-pull-request activity density, when requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intensity: Option<Intensity>,
+    /// Pull request lifecycle timing statistics, when requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timing: Option<TimingStats>,
+    /// Reviews submitted by the subject, when requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reviews_submitted: Option<Vec<ReviewRow>>,
+    /// Reviews received on the subject's pull requests, when requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reviews_received: Option<Vec<ReviewRow>>,
+    /// Comments written or received, when requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comments: Option<Vec<CommentRow>>,
+    /// Issues with subject activity, when requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issues: Option<Vec<IssueRow>>,
+    /// Commits authored by the subject, when requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commits: Option<Vec<CommitRow>>,
+    /// Human activity events, when requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity: Option<Vec<ActivityRow>>,
 }
 
 impl Report {
     /// Combined coverage of every data kind for the period.
+    #[must_use]
     pub fn overall_coverage(&self) -> CoverageStatus {
         CoverageStatus::combine(self.coverage.iter().map(|c| c.status))
     }
@@ -122,6 +164,7 @@ fn account(ds: &Dataset) -> AccountInfo {
 }
 
 /// Coverage of each data kind for the period.
+#[must_use]
 pub fn coverage_for(ds: &Dataset, period: Period) -> Vec<CoverageSummary> {
     DataKind::ALL
         .iter()
@@ -140,6 +183,7 @@ fn options(ctx: &QueryContext, filter: Filter) -> metrics::Options {
 
 /// Builds a report. When redaction is on, private names are replaced
 /// before aggregation, so numbers are identical either way.
+#[must_use]
 pub fn build(ds: &Dataset, ctx: &QueryContext, kind: ReportKind) -> Report {
     let (ds, filter) = prepare(ds, ctx);
     build_on(&ds, &options(ctx, filter), ctx, kind)
@@ -198,6 +242,7 @@ fn build_on(ds: &Dataset, opts: &metrics::Options, ctx: &QueryContext, kind: Rep
 
 /// An overview report that also lists the pull requests the subject was
 /// active in, most recently active first.
+#[must_use]
 pub fn build_dashboard(ds: &Dataset, ctx: &QueryContext) -> Report {
     let (ds, filter) = prepare(ds, ctx);
     let opts = options(ctx, filter);
@@ -212,11 +257,14 @@ pub fn build_dashboard(ds: &Dataset, ctx: &QueryContext) -> Report {
     r
 }
 
-/// A report with every listing filled in: pull requests, reviews in both
+/// Builds a detailed activity report.
+///
+/// The result includes pull requests, reviews in both
 /// directions, comments, issues, commits and the activity itself. Used for
 /// the detail of one day (a one-day period) or one repository (a
 /// one-repository filter); its numbers are those of [`build`] for the same
 /// context.
+#[must_use]
 pub fn build_detail(ds: &Dataset, ctx: &QueryContext) -> Report {
     let (ds, filter) = prepare(ds, ctx);
     let ds = &ds;
@@ -244,20 +292,32 @@ pub fn build_detail(ds: &Dataset, ctx: &QueryContext) -> Report {
 /// period.
 #[derive(Debug, Clone, Serialize)]
 pub struct IssueReport {
+    /// GitHub node ID of the issue.
     pub issue_id: String,
+    /// Repository display name.
     pub repository: String,
+    /// Issue number in the repository.
     pub number: u64,
+    /// Current issue title.
     pub title: String,
+    /// GitHub URL for the issue.
     pub url: String,
+    /// Issue author's login or display name.
     pub author: String,
+    /// Whether the issue is currently open.
     pub is_open: bool,
+    /// Issue creation time.
     pub created_at: Timestamp,
+    /// Issue close time, when applicable.
     pub closed_at: Option<Timestamp>,
+    /// Issue events in the report period.
     pub events: Vec<ActivityRow>,
+    /// Whether private repository details were redacted.
     pub private_repositories_redacted: bool,
 }
 
 /// Builds the detail report of one issue for the period of `ctx`.
+#[must_use]
 pub fn issue_report(ds: &Dataset, ctx: &QueryContext, issue_id: &str) -> Option<IssueReport> {
     let (ds, filter) = prepare(ds, ctx);
     let d = metrics::issue_detail(&ds, &options(ctx, filter), issue_id)?;
@@ -351,6 +411,7 @@ pub(crate) fn short_hash(s: &str) -> String {
 }
 
 /// Lower-case `owner/name` of every public repository in `ds`.
+#[must_use]
 pub fn public_names(ds: &Dataset) -> BTreeSet<String> {
     ds.repositories
         .values()
@@ -362,6 +423,7 @@ pub fn public_names(ds: &Dataset) -> BTreeSet<String> {
 /// Replaces every `owner/name` (with an optional `#number`) in `text` that
 /// is not a known public repository. Coverage reasons and sync failures
 /// name repositories; unknown ones are treated as private.
+#[must_use]
 pub fn scrub_names(text: &str, public: &BTreeSet<String>) -> String {
     let is_name_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.');
     let chars: Vec<char> = text.chars().collect();
@@ -412,6 +474,7 @@ pub fn scrub_names(text: &str, public: &BTreeSet<String>) -> String {
 
 /// Replaces names, titles and URLs of non-public repositories. Owned
 /// private repositories keep the subject as owner so ownership is stable.
+#[must_use]
 pub fn redact(ds: &Dataset) -> Dataset {
     let mut out = ds.clone();
     let private: BTreeSet<String> = ds
@@ -423,10 +486,10 @@ pub fn redact(ds: &Dataset) -> Dataset {
     for repo in out.repositories.values_mut() {
         if private.contains(&repo.id) {
             let owned = repo.is_owned_by(&ds.subject, ds.subject_is_viewer);
-            if !owned {
-                repo.owner = "private".into();
-            } else {
+            if owned {
                 repo.owner.clone_from(&ds.subject.login);
+            } else {
+                repo.owner = "private".into();
             }
             // Keep ownership decisions identical after renaming.
             if owned {
@@ -487,14 +550,23 @@ pub fn redact(ds: &Dataset) -> Dataset {
 /// One timeline row of a pull request.
 #[derive(Debug, Clone, Serialize)]
 pub struct TimelineEntry {
+    /// Stable event identifier.
     pub event_id: String,
+    /// Time attributed to the event.
     pub occurred_at: Timestamp,
+    /// Time this event was observed from GitHub.
     pub observed_at: Timestamp,
+    /// Actor login or display name.
     pub actor: String,
+    /// Classification of the event actor.
     pub actor_kind: ActorKind,
+    /// Normalized event kind.
     pub event_type: EventType,
+    /// Human-readable event label.
     pub label: String,
+    /// Event-specific detail for display.
     pub detail: Option<String>,
+    /// GitHub URL for the event, when available.
     pub url: Option<String>,
     /// Present when the object was later observed to be gone.
     pub removed_observed_at: Option<Timestamp>,
@@ -503,44 +575,74 @@ pub struct TimelineEntry {
 /// Detail report of one pull request.
 #[derive(Debug, Clone, Serialize)]
 pub struct PrReport {
+    /// Version of the serialized report schema.
     pub schema_version: u32,
+    /// Account described by the report.
     pub account: AccountInfo,
+    /// Time zone used for report timestamps.
     pub timezone: String,
+    /// GitHub node ID of the pull request.
     pub pr_id: String,
+    /// Repository display name.
     pub repository: String,
+    /// Pull request number in the repository.
     pub number: u64,
+    /// Current pull request title.
     pub title: String,
+    /// GitHub URL for the pull request.
     pub url: String,
+    /// Pull request author's login or display name.
     pub author: String,
+    /// Current pull request state.
     pub state: PrState,
+    /// Whether the pull request is currently a draft.
     pub is_draft: bool,
+    /// Pull request creation time.
     pub created_at: Timestamp,
+    /// Merge time, when merged.
     pub merged_at: Option<Timestamp>,
+    /// Merger login, when known.
     pub merged_by: Option<String>,
+    /// Close time, when closed.
     pub closed_at: Option<Timestamp>,
+    /// Latest combined CI state, when known.
     pub latest_ci: Option<String>,
+    /// Current commit count.
     pub commits: u64,
+    /// Commits previously present but removed from the pull request.
     pub removed_commits: u64,
+    /// Review submissions grouped by state.
     pub reviews: ReviewCounts,
+    /// Comments grouped by type.
     pub comments: metrics::CommentCounts,
+    /// Current review thread totals.
     pub review_threads: ThreadCounts,
+    /// Distinct human participants.
     pub participants: Vec<String>,
+    /// Distinct authors of discussion comments.
     pub discussion_participants: Vec<String>,
+    /// Commit counts grouped by author.
     pub commit_authors: Vec<metrics::AuthorCount>,
     /// The commits of the pull request, including removed ones. Shown by
     /// the terminal UI; not part of the JSON output.
     #[serde(skip)]
     pub commit_list: Vec<metrics::PrCommitRow>,
+    /// Lifecycle timings derived from observed events.
     pub timing: PrTiming,
     /// Base-to-head diff when last fetched (a snapshot of the pull request).
     pub diff: Option<metrics::PrDiff>,
+    /// Pull request event timeline.
     pub timeline: Vec<TimelineEntry>,
+    /// Completeness of pull request data.
     pub coverage: CoverageStatus,
+    /// Time the pull request was last synchronized.
     pub synced_at: Option<Timestamp>,
+    /// Whether private repository details were redacted.
     pub private_repositories_redacted: bool,
 }
 
 /// Builds the detail report of one pull request.
+#[must_use]
 pub fn pr_report(
     ds: &Dataset,
     pr_id: &str,

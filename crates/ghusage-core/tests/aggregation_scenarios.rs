@@ -1275,6 +1275,8 @@ fn unknown_actor_is_never_the_user() {
 
 #[test]
 fn ci_results_are_never_human_activity() {
+    use ghusage_core::model::CheckOutcome::*;
+
     let pr = pull("P1", "R_tool", 1, me());
     let check = |id: &str, kind: EventType, actor: Actor, outcome, at: &str| {
         let eid = if kind == EventType::CheckRun {
@@ -1287,7 +1289,6 @@ fn ci_results_are_never_human_activity() {
             |m| m.check_outcome = Some(outcome),
         )
     };
-    use ghusage_core::model::CheckOutcome::*;
     let events = vec![
         check(
             "k1",
@@ -2664,7 +2665,7 @@ fn intensity_dataset() -> Dataset {
 }
 
 /// (count, min, median, mean, p90, max)
-fn stat(s: Option<metrics::Stats>) -> (u64, f64, f64, f64, f64, f64) {
+const fn stat(s: Option<metrics::Stats>) -> (u64, f64, f64, f64, f64, f64) {
     let s = s.expect("statistics");
     (s.count, s.min, s.median, s.mean, s.p90, s.max)
 }

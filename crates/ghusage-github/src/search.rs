@@ -151,8 +151,7 @@ async fn search(
         let pages = total.min(SEARCH_CAP).div_ceil(PER_PAGE);
         let mut last_headers = headers;
         let template = t.next_link(&last_headers)?;
-        let mut fetched_up_to = 1;
-        if let Some(next) = template.filter(|u| page_of(u) == Some(2))
+        let mut fetched_up_to = if let Some(next) = template.filter(|u| page_of(u) == Some(2))
             && pages > 1
         {
             let urls: Vec<_> = (2..=pages).map(|n| with_page(&next, n)).collect();
@@ -163,8 +162,10 @@ async fn search(
                 take(&value)?;
                 last_headers = headers;
             }
-            fetched_up_to = pages;
-        }
+            pages
+        } else {
+            1
+        };
         // Results added while paging can leave more behind the last page.
         // A `next` link to a page already fetched ends the paging.
         while let Some(next) = t.next_link(&last_headers)? {

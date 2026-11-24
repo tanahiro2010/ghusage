@@ -386,7 +386,7 @@ async fn same_sha_in_two_repositories_is_kept_separately() {
         .unwrap();
     assert_eq!(r.items.len(), 2);
     let mut repos: Vec<_> = r.items.iter().map(|c| c.repository.id.as_str()).collect();
-    repos.sort();
+    repos.sort_unstable();
     assert_eq!(repos, vec!["R_fork", "R_widget"]);
     let fork_rec = r
         .items

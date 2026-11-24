@@ -6,18 +6,26 @@
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+/// Completeness state of a fetched data range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CoverageStatus {
+    /// All records in the requested range were fetched.
     Complete,
+    /// Some, but not all, of the requested range was fetched.
     Partial,
+    /// The source does not provide this kind of data.
     NotAvailable,
+    /// No sync has fetched this range yet.
     NotYetSynced,
+    /// The stored status is not recognized.
     Unknown,
 }
 
 impl CoverageStatus {
-    pub fn as_str(self) -> &'static str {
+    /// Returns the stable serialized status name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Complete => "complete",
             Self::Partial => "partial",
@@ -27,6 +35,8 @@ impl CoverageStatus {
         }
     }
 
+    /// Parses a serialized status name, returning `Unknown` for other values.
+    #[must_use]
     pub fn parse(s: &str) -> Self {
         match s {
             "complete" => Self::Complete,
@@ -37,6 +47,8 @@ impl CoverageStatus {
         }
     }
 
+    /// Whether every part of the range is known to be covered.
+    #[must_use]
     pub fn is_complete(self) -> bool {
         self == Self::Complete
     }
@@ -70,30 +82,43 @@ pub enum DataKind {
     Issues,
 }
 
+/// Visibility scope of a synchronization generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CoverageVisibility {
+    /// Data fetched from all repositories available to the account.
     All,
+    /// Data fetched from public repositories only.
     PublicOnly,
 }
 
+/// Fetch implementation used to produce a coverage record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CoverageGeneration {
+    /// A legacy scope whose completeness cannot be established.
     LegacyUnusable,
+    /// Commit data fetched using the listing and search strategy.
     CommitsListingSearchV1,
+    /// Pull request data fetched using the current sync strategy.
     PullRequestsV1,
+    /// Issue data fetched using the current sync strategy.
     IssuesV1,
 }
 
+/// Repository visibility and fetch generation associated with coverage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CoverageScope {
+    /// Whether the sync included private repositories.
     pub visibility: CoverageVisibility,
+    /// The versioned fetch strategy used by the sync.
     pub generation: CoverageGeneration,
 }
 
 impl CoverageScope {
-    pub fn as_label(self) -> &'static str {
+    /// Returns the stable scope label stored in the cache.
+    #[must_use]
+    pub const fn as_label(self) -> &'static str {
         match (self.visibility, self.generation) {
             (CoverageVisibility::All, CoverageGeneration::LegacyUnusable) => "legacy_unusable",
             (CoverageVisibility::PublicOnly, CoverageGeneration::LegacyUnusable) => {
@@ -125,9 +150,12 @@ impl From<&str> for CoverageScope {
 }
 
 impl DataKind {
+    /// All coverage kinds in stable declaration order.
     pub const ALL: [Self; 3] = [Self::Commits, Self::PullRequests, Self::Issues];
 
-    pub fn as_str(self) -> &'static str {
+    /// Returns the stable serialized data kind name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Commits => "commits",
             Self::PullRequests => "pull_requests",
@@ -135,6 +163,8 @@ impl DataKind {
         }
     }
 
+    /// Parses a serialized data kind name.
+    #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "commits" => Some(Self::Commits),
@@ -148,34 +178,50 @@ impl DataKind {
 /// Coverage for one data kind over `[start, end)`, recorded by a sync run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoverageRecord {
+    /// Kind of data covered by this record.
     pub kind: DataKind,
+    /// Inclusive beginning of the covered range.
     pub start: Timestamp,
+    /// Exclusive end of the covered range.
     pub end: Timestamp,
+    /// Result of fetching the range.
     pub status: CoverageStatus,
+    /// Repository visibility and fetch generation for this record.
     pub scope: CoverageScope,
     /// Human-readable explanation retained for reports and legacy cache rows.
     #[serde(default, skip_serializing)]
     pub description: String,
     /// Why the status is not complete, when applicable.
+    /// Explanation for an incomplete or unavailable result, when known.
     pub reason: Option<String>,
+    /// Time at which this coverage result was recorded.
     pub recorded_at: Timestamp,
 }
 
 /// A contiguous part of a requested range with a single status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoverageSegment {
+    /// Inclusive beginning of this segment.
     pub start: Timestamp,
+    /// Exclusive end of this segment.
     pub end: Timestamp,
+    /// Coverage state throughout this segment.
     pub status: CoverageStatus,
+    /// Explanation for this segment's status, when known.
     pub reason: Option<String>,
 }
 
 /// Coverage of one data kind for a requested range.
+/// Coverage for one data kind across a requested time range.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoverageSummary {
+    /// Kind of data summarized.
     pub kind: DataKind,
+    /// Combined status over the requested range.
     pub status: CoverageStatus,
+    /// Distinct scopes represented in the range.
     pub scopes: Vec<String>,
+    /// Ordered segments partitioning the requested range.
     pub segments: Vec<CoverageSegment>,
 }
 
@@ -189,6 +235,7 @@ impl CoverageSummary {
 /// Computes coverage of `kind` over `[start, end)`. For every instant the
 /// most recently recorded record wins; instants with no record are
 /// `NotYetSynced`.
+#[must_use]
 pub fn summarize(
     records: &[CoverageRecord],
     kind: DataKind,

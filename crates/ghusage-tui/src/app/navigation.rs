@@ -1,4 +1,5 @@
 impl App {
+    /// Returns the current screen, resolving detail navigation state.
     pub fn tab(&self) -> Screen {
             self.nav.first().copied().unwrap_or(self.screen).top()
         }
@@ -106,7 +107,7 @@ impl App {
         }
 
         /// Section order of the current day or repository detail.
-    pub fn detail_tabs(&self) -> &'static [DetailTab] {
+    pub const fn detail_tabs(&self) -> &'static [DetailTab] {
             match self.scope {
                 Some(Screen::RepoDetail) => &DetailTab::REPO,
                 _ => &DetailTab::DAY,
@@ -142,6 +143,7 @@ impl App {
             }
         }
 
+    /// Applies a key press and returns any effect for the event loop.
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<Effect> {
             if key.kind == KeyEventKind::Release {
                 return None;
@@ -197,7 +199,7 @@ impl App {
                 KeyCode::BackTab => self.switch_pane(-1),
                 KeyCode::Char('/') => match self.current_list() {
                     Some(_) if !matches!(self.screen, Screen::Overview | Screen::Dashboard) => {
-                        self.search_mode = true
+                        self.search_mode = true;
                     }
                     _ => self.message = Some("search works on lists (screens 3–7, details)".into()),
                 },
@@ -300,7 +302,7 @@ impl App {
                     match id {
                         Some(id) => self.open_pr(id),
                         None if self.selected_row(list).is_some() => {
-                            self.message = Some("this review's pull request is not cached".into())
+                            self.message = Some("this review's pull request is not cached".into());
                         }
                         None => {}
                     }
@@ -409,9 +411,8 @@ impl App {
                 }
                 Screen::DayDetail | Screen::RepoDetail => {
                     let tabs = self.detail_tabs();
-                    let n = tabs.len() as isize;
-                    let i = tabs.iter().position(|t| *t == self.detail_tab).unwrap_or(0) as isize;
-                    self.detail_tab = tabs[((i + delta).rem_euclid(n)) as usize];
+                    let i = tabs.iter().position(|t| *t == self.detail_tab).unwrap_or(0);
+                    self.detail_tab = tabs[stepped_index(tabs.len(), i, delta)];
                 }
                 _ => {}
             }

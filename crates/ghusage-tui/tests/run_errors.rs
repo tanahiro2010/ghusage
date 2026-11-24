@@ -22,7 +22,7 @@ fn options(dir: &std::path::Path, user: Option<&str>) -> TuiOptions {
         },
         background_sync: false,
         concurrency: 1,
-        commit_basis: Default::default(),
+        commit_basis: ghusage_core::metrics::CommitDateBasis::default(),
     }
 }
 

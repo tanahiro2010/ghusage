@@ -1,4 +1,6 @@
-//! Loading commits for the commit detail screen. Commits are read from the
+//! Commit detail loading for the terminal UI.
+//!
+//! Commits are read from the
 //! cache, or fetched from GitHub when missing and the UI is online, on a
 //! thread of their own with its own runtime and session, through the same
 //! service as `ghusage commit`. The UI only receives messages.
@@ -46,6 +48,7 @@ pub fn spawn(
 }
 
 /// Loads commits with one session, opened on first use.
+#[derive(Debug)]
 pub struct Loader {
     cfg: SessionConfig,
     online: bool,
@@ -55,7 +58,9 @@ pub struct Loader {
 }
 
 impl Loader {
-    pub fn new(cfg: SessionConfig, online: bool, zone: Zone) -> Self {
+    #[must_use]
+    /// Creates a commit loader for the configured session.
+    pub const fn new(cfg: SessionConfig, online: bool, zone: Zone) -> Self {
         Self {
             cfg,
             online,
@@ -66,6 +71,10 @@ impl Loader {
     }
 
     /// The commit from the cache, or from GitHub when online.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the worker's runtime or session invariant is broken.
     pub fn load(&mut self, key: &CommitKey) -> Result<Arc<CommitView>, CommitFailure> {
         let fail = |message: String| CommitFailure {
             offline: false,

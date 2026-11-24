@@ -3,15 +3,20 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommitDateBasis {
+    /// Use the commit time reported by the committer.
     #[default]
     Committer,
+    /// Use the original author time when available.
     Author,
 }
 
+/// Whether a repository is owned by the subject or another account.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Ownership {
+    /// Repositories owned or administered by the subject.
     Owned,
+    /// Repositories not owned or administered by the subject.
     External,
 }
 
@@ -22,19 +27,26 @@ pub struct Filter {
     pub repositories: Vec<String>,
     /// Owner or organization login.
     pub owners: Vec<String>,
+    /// Optional public or non-public repository selection.
     pub visibility: Option<VisibilityFilter>,
+    /// Optional ownership selection.
     pub ownership: Option<Ownership>,
 }
 
+/// Repository visibility selection for reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VisibilityFilter {
+    /// Include public repositories only.
     Public,
+    /// Include private and internal repositories.
     Private,
 }
 
 impl Filter {
-    pub fn is_empty(&self) -> bool {
+    /// Whether no repository, owner, visibility, or ownership restriction is set.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.repositories.is_empty()
             && self.owners.is_empty()
             && self.visibility.is_none()
@@ -91,13 +103,18 @@ impl Filter {
 /// Aggregation options.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
+    /// Half-open date and time range being summarized.
     pub period: Period,
+    /// Time zone used for dates and calendar buckets.
     pub zone: Zone,
+    /// Repository and owner selection criteria.
     pub filter: Filter,
+    /// Date source used for commit activity.
     pub commit_basis: CommitDateBasis,
 }
 
 /// The instant an event is attributed to.
+#[must_use]
 pub fn event_time(e: &ActivityEvent, basis: CommitDateBasis) -> Timestamp {
     match (e.event_type, basis) {
         (EventType::CommitAuthored | EventType::PrCommit, CommitDateBasis::Author) => {

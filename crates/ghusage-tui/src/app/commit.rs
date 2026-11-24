@@ -57,7 +57,7 @@ impl App {
 
         /// Keys of the commit screen. Returns `false` for keys it does not use.
     fn commit_key(&mut self, code: KeyCode) -> bool {
-            let page = self.commit_view_height.get().max(1) as isize;
+            let page = isize::try_from(self.commit_view_height.get().max(1)).unwrap_or(isize::MAX);
             match code {
                 KeyCode::Char('j') | KeyCode::Down => self.scroll_commit(1),
                 KeyCode::Char('k') | KeyCode::Up => self.scroll_commit(-1),

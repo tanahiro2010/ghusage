@@ -1,4 +1,4 @@
-fn draw_daily(f: &mut Frame, app: &App, area: Rect) {
+fn draw_daily(f: &mut Frame<'_>, app: &App, area: Rect) {
     let Some(r) = app.base_report() else {
         return loading(f, area, "Daily");
     };
@@ -15,7 +15,7 @@ fn draw_daily(f: &mut Frame, app: &App, area: Rect) {
     if vis.is_empty() {
         return empty(f, area, title, &[&no_match(app, list)]);
     }
-    let rows: Vec<Row> = vis
+    let rows: Vec<Row<'_>> = vis
         .iter()
         .map(|&i| {
             let b = &r.activity_breakdown[i];
@@ -74,7 +74,24 @@ fn draw_daily(f: &mut Frame, app: &App, area: Rect) {
     stateful_table(f, app, area, list, t, true);
 }
 
-fn draw_repositories(f: &mut Frame, app: &App, area: Rect) {
+fn draw_repositories(f: &mut Frame<'_>, app: &App, area: Rect) {
+    const COLS: [(&str, u16); 12] = [
+        ("Visibility", 16),
+        ("Commits", 7),
+        ("PRs", 5),
+        ("Merged", 6),
+        ("Reviews", 7),
+        ("Comments", 8),
+        ("Issues", 6),
+        ("Active PRs", 10),
+        ("PR events", 9),
+        ("+Lines", 8),
+        ("-Lines", 8),
+        ("Last activity", 16),
+    ];
+    const DROP_ORDER: [usize; 8] = [8, 7, 6, 10, 9, 3, 4, 0];
+    const MIN_NAME: usize = 32;
+
     let Some(r) = app.base_report() else {
         return loading(f, area, "Repositories");
     };
@@ -101,22 +118,6 @@ fn draw_repositories(f: &mut Frame, app: &App, area: Rect) {
     // Columns after the name: header, width. On a narrow terminal the
     // least important ones are dropped (in `DROP_ORDER` order) so the
     // repository name stays readable.
-    const COLS: [(&str, u16); 12] = [
-        ("Visibility", 16),
-        ("Commits", 7),
-        ("PRs", 5),
-        ("Merged", 6),
-        ("Reviews", 7),
-        ("Comments", 8),
-        ("Issues", 6),
-        ("Active PRs", 10),
-        ("PR events", 9),
-        ("+Lines", 8),
-        ("-Lines", 8),
-        ("Last activity", 16),
-    ];
-    const DROP_ORDER: [usize; 8] = [8, 7, 6, 10, 9, 3, 4, 0];
-    const MIN_NAME: usize = 32;
     let mut keep = [true; COLS.len()];
     let widths_of = |keep: &[bool; COLS.len()]| -> Vec<u16> {
         COLS.iter()
@@ -133,7 +134,7 @@ fn draw_repositories(f: &mut Frame, app: &App, area: Rect) {
     }
     let fixed = widths_of(&keep);
     let name_w = flex_width(area, &fixed);
-    let rows: Vec<Row> = vis
+    let rows: Vec<Row<'_>> = vis
         .iter()
         .map(|&i| {
             let x = &r.repositories[i];

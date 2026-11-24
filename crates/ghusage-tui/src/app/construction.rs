@@ -1,4 +1,5 @@
 impl App {
+    /// Creates UI state and begins loading the initial reports.
     pub fn new(source: Box<dyn DataSource + Send>, cfg: AppConfig) -> std::io::Result<Self> {
             Self::with_clock(source, cfg, Box::new(Timestamp::now))
         }
@@ -16,6 +17,7 @@ impl App {
 
         /// Creates the UI state with reports computed synchronously on the
         /// calling thread. Useful for scripting and tests.
+    #[must_use]
     pub fn inline(source: Box<dyn DataSource + Send>, cfg: AppConfig, clock: Clock) -> Self {
             let system = source.system_info();
             Self::build(

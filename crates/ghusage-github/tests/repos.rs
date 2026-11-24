@@ -398,7 +398,7 @@ async fn commit_pages_up_to_the_last_link_are_all_fetched_in_order() {
     let page = |n: u32| {
         vec![list_commit(
             &w,
-            &sha(n as u64),
+            &sha(u64::from(n)),
             Some(LOGIN),
             &day(10 + n),
             &day(10 + n),

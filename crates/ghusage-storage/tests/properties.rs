@@ -107,7 +107,7 @@ fn fetch() -> impl Strategy<Value = Fetch> {
         )
 }
 
-fn bit(mask: u8, k: usize) -> bool {
+const fn bit(mask: u8, k: usize) -> bool {
     mask >> k & 1 == 1
 }
 
@@ -142,7 +142,9 @@ fn base_event(id: EventId, ty: EventType, actor: Actor, occurred: Timestamp) -> 
 fn build(f: &Fetch, index: usize, merged_before: bool) -> Built {
     // Fetches happen in April, after all activity (March), one day apart.
     let observed_at = "2026-04-01T00:00:00Z".parse::<Timestamp>().unwrap()
-        + SignedDuration::from_secs(index as i64 * 24 * 60 * 60);
+        + SignedDuration::from_secs(
+            i64::try_from(index).expect("test index fits i64") * 24 * 60 * 60,
+        );
     let merged = merged_before || f.state == 2;
     let state = if merged {
         PrState::Merged
@@ -174,7 +176,7 @@ fn build(f: &Fetch, index: usize, merged_before: bool) -> Built {
             EventId::comment(&format!("C{k}")),
             EventType::ConversationComment,
             user(author),
-            at(3 + k as u32, 10),
+            at(3 + u32::try_from(k).expect("fixture index fits u32"), 10),
         );
         if bit(f.edited, k) {
             e.meta.edited_at = Some(observed_at - SignedDuration::from_secs(60 * 60));
@@ -188,7 +190,7 @@ fn build(f: &Fetch, index: usize, merged_before: bool) -> Built {
             EventId::review(&format!("RV{k}")),
             EventType::ReviewSubmitted,
             user(author),
-            at(10 + k as u32, 15),
+            at(10 + u32::try_from(k).expect("fixture index fits u32"), 15),
         );
         e.meta.review_id = Some(format!("RV{k}"));
         // A dismissal or re-request can change what the latest fetch reports.
@@ -217,7 +219,7 @@ fn build(f: &Fetch, index: usize, merged_before: bool) -> Built {
             EventId::comment(&format!("IC{k}")),
             EventType::InlineComment,
             user("me"),
-            at(14 + k as u32, 8),
+            at(14 + u32::try_from(k).expect("fixture index fits u32"), 8),
         );
         e.meta.thread_id = Some(format!("TH{k}"));
         e.meta.reply_to = Some(format!("ROOT{k}"));
@@ -231,7 +233,7 @@ fn build(f: &Fetch, index: usize, merged_before: bool) -> Built {
             EventId::pr_commit(PR, &s),
             EventType::PrCommit,
             user("me"),
-            at(2 + k as u32, 11),
+            at(2 + u32::try_from(k).expect("fixture index fits u32"), 11),
         );
         e.entity_id.clone_from(&s);
         e.meta.sha = Some(s.clone());

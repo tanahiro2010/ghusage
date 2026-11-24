@@ -8,10 +8,12 @@ use std::process::{Command, Stdio};
 pub struct Secret(String);
 
 impl Secret {
+    /// Wraps a token so formatting never reveals its value.
     pub fn new(s: impl Into<String>) -> Self {
         Self(s.into())
     }
     /// The raw value. Only for building the Authorization header.
+    #[must_use]
     pub fn expose(&self) -> &str {
         &self.0
     }
@@ -32,13 +34,19 @@ impl std::fmt::Display for Secret {
 /// Where the token came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenSource {
+    /// Token was read from an explicit token file.
     TokenFile(PathBuf),
+    /// Token came from the `GH_TOKEN` environment variable.
     GhTokenEnv,
+    /// Token came from the `GITHUB_TOKEN` environment variable.
     GithubTokenEnv,
+    /// Token came from `gh auth token`.
     GhCli,
 }
 
 impl TokenSource {
+    /// Returns a safe description of the credential source.
+    #[must_use]
     pub fn describe(&self) -> String {
         match self {
             Self::TokenFile(p) => format!("token file {}", p.display()),
@@ -49,27 +57,40 @@ impl TokenSource {
     }
 }
 
+/// A GitHub token and the source from which it was resolved.
 #[derive(Debug, Clone)]
 pub struct Credentials {
+    /// Secret token used for authorization.
     pub token: Secret,
+    /// Source selected during credential resolution.
     pub source: TokenSource,
 }
 
+/// Failures encountered while locating or reading GitHub credentials.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
+    /// No supported source supplied a token.
     #[error(
         "no GitHub credentials found: set GH_TOKEN or GITHUB_TOKEN, log in with `gh auth login`, or pass --token-file"
     )]
     NotFound,
     #[error("cannot read token file {path}: {message}")]
-    TokenFile { path: PathBuf, message: String },
+    /// An explicitly selected token file could not be read.
+    TokenFile {
+        /// Path to the selected token file.
+        path: PathBuf,
+        /// Underlying read error.
+        message: String,
+    },
+    /// Token file permissions allow access by other users.
     #[error("token file {0} must not be readable by other users (use chmod 600)")]
     InsecureTokenFile(PathBuf),
 }
 
-/// Resolves credentials in order: `token_file`, `GH_TOKEN`, `GITHUB_TOKEN`,
-/// `gh auth token`. `env` reads environment variables and `gh_token` runs
-/// `gh auth token`; both are injectable for tests. Empty values are skipped.
+/// Resolves credentials from an explicit token file or a supported source.
+///
+/// Sources are checked in order: `token_file`, `GH_TOKEN`, `GITHUB_TOKEN`,
+/// then `gh auth token`. The environment and command are injectable for tests.
 ///
 /// An explicitly given token file is never skipped: if it cannot be read,
 /// is accessible by group or other users (Unix), or is empty, an error is

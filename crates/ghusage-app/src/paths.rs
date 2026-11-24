@@ -7,6 +7,7 @@ pub const DATA_DIR_ENV: &str = "GHUSAGE_DATA_DIR";
 
 /// Resolves the data directory: explicit value, then `GHUSAGE_DATA_DIR`,
 /// then the OS user data directory.
+#[must_use]
 pub fn data_dir(explicit: Option<PathBuf>) -> Option<PathBuf> {
     if let Some(p) = explicit {
         return Some(p);
@@ -18,6 +19,7 @@ pub fn data_dir(explicit: Option<PathBuf>) -> Option<PathBuf> {
 }
 
 /// Path of the cache database inside a data directory.
+#[must_use]
 pub fn db_path(dir: &std::path::Path) -> PathBuf {
     dir.join("ghusage.db")
 }

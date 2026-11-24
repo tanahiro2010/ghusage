@@ -92,8 +92,8 @@ async fn fetch_prs(
         total,
     });
     let mut stream = futures::stream::iter(to_fetch.into_iter().map(|(repo, num)| async move {
-        let res = client.fetch_pull_request(&repo.owner, &repo.name, num).await;
-        (repo.owner, repo.name, num, res)
+        let response = client.fetch_pull_request(&repo.owner, &repo.name, num).await;
+        (repo.owner, repo.name, num, response)
     }))
     .buffer_unordered(opts.concurrency.clamp(1, 16));
     while let Some((o, n, num, res)) = stream.next().await {
@@ -137,13 +137,20 @@ async fn fetch_prs(
                 pr_partial.len()
             ));
         }
-        let status = if pr_failures.is_empty() && pr_partial.is_empty() {
+        let pr_coverage_status = if pr_failures.is_empty() && pr_partial.is_empty() {
             status
         } else {
             CoverageStatus::combine([status, CoverageStatus::Partial])
         };
         let reason = (!reasons.is_empty()).then(|| reasons.join("; "));
-        let rec = record(DataKind::PullRequests, range, status, reason, subject, opts);
+        let rec = record(
+            DataKind::PullRequests,
+            range,
+            pr_coverage_status,
+            reason,
+            subject,
+            opts,
+        );
         sh.store.borrow_mut().apply(&WriteBatch {
             account: subject.login.clone(),
             coverage: vec![rec.clone()],

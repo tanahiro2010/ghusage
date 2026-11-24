@@ -449,8 +449,8 @@ fn run_on_tty(mut c: std::process::Command) -> (Option<i32>, String) {
     // name, termios and window size are optional and left null.
     let rc = unsafe {
         libc::openpty(
-            &mut master,
-            &mut slave,
+            &raw mut master,
+            &raw mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),

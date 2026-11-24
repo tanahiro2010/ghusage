@@ -74,12 +74,9 @@ async fn collect_pr_checks(
     checks_from_graphql: Option<GraphqlChecks>,
     tracker: &mut Tracker,
 ) -> Result<ChecksResult, ApiError> {
-    match head_sha {
-        Some(sha) => fetch_checks(t, owner, name, sha, checks_from_graphql, tracker).await,
-        None => {
-            tracker.partial(Collection::Checks, "head commit unknown; checks not fetched");
-            Ok(ChecksResult::default())
-        }
+    if let Some(sha) = head_sha { fetch_checks(t, owner, name, sha, checks_from_graphql, tracker).await } else {
+        tracker.partial(Collection::Checks, "head commit unknown; checks not fetched");
+        Ok(ChecksResult::default())
     }
 }
 
@@ -258,7 +255,7 @@ pub(crate) async fn fetch(
         .and_then(|r| r.state)
         .map(|s| CheckOutcome::from_github(None, Some(&s)));
 
-    finalize_pr(
+    Ok(finalize_pr(
         repository,
         pr,
         pr_id,
@@ -273,11 +270,10 @@ pub(crate) async fn fetch(
         out_threads,
         current_commit_shas,
         commit_stats,
-    )
+    ))
 }
 
 
-#[allow(clippy::too_many_arguments)]
 fn finalize_pr(
     repository: ghusage_core::model::Repository,
     pr: GqlPullRequest,
@@ -293,7 +289,7 @@ fn finalize_pr(
     threads: Vec<ReviewThread>,
     current_commit_shas: Vec<String>,
     commit_stats: Vec<(String, LineCounts)>,
-) -> Result<PrBundle, ApiError> {
+) -> PrBundle {
     let complete_collections: Vec<Collection> = Collection::ALL
         .iter()
         .copied()
@@ -329,7 +325,7 @@ fn finalize_pr(
         }
     });
     let pull_request = PullRequest {
-        id: pr_id.clone(),
+        id: pr_id,
         repository_id: repository.id.clone(),
         number: pr.number.unwrap_or(number),
         title: pr.title.clone().unwrap_or_default(),
@@ -342,7 +338,7 @@ fn finalize_pr(
         closed_at: time(&pr.closed_at),
         merged_at,
         merged_by: pr.merged_by.as_ref().map(GqlActor::actor),
-        head_sha: head_sha.clone(),
+        head_sha,
         latest_ci,
         coverage: status,
         synced_at: Some(now),
@@ -356,7 +352,7 @@ fn finalize_pr(
         }),
         _ => None,
     };
-    Ok(PrBundle {
+    PrBundle {
         repository,
         pull_request,
         events,
@@ -372,7 +368,7 @@ fn finalize_pr(
         complete_collections,
         status,
         notes: tracker.notes,
-    })
+    }
 }
 
 fn append_commits(
@@ -579,7 +575,6 @@ fn append_timeline(
     dismissed_previous
 }
 
-#[allow(clippy::too_many_arguments)]
 fn finish_timeline(
     pr_id: &str,
     pr_url: &str,
@@ -735,14 +730,16 @@ fn append_review_threads(
             is_outdated: th.is_outdated.unwrap_or(false),
             resolved_by: th.resolved_by.as_ref().map(GqlActor::actor),
             path: th.path,
-            comment_count: total.map_or(fetched, |n| n as u32).saturating_sub(pending),
+            comment_count: total
+                .map_or(fetched, |n| u32::try_from(n).unwrap_or(u32::MAX))
+                .saturating_sub(pending),
             first_comment_author: first_author,
         });
     }
     for (review_id, v) in review_comments {
         match serde_json::from_value::<CommentNode>(v) {
             Ok(c) => {
-                if let CommentOutcome::Bad = inline_comment(b, &c, None, Some(&review_id)) {
+                if matches!(inline_comment(b, &c, None, Some(&review_id)), CommentOutcome::Bad) {
                     bad += 1;
                 }
             }

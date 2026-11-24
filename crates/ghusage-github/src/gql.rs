@@ -145,11 +145,7 @@ pub(crate) fn failure(errors: &[GraphqlError], what: &str) -> ApiError {
 
 /// Short description of GraphQL errors for coverage notes.
 pub(crate) fn describe(errors: &[GraphqlError]) -> String {
-    let mut parts: Vec<String> = errors
-        .iter()
-        .take(3)
-        .map(super::http::GraphqlError::message)
-        .collect();
+    let mut parts: Vec<String> = errors.iter().take(3).map(GraphqlError::message).collect();
     if errors.len() > 3 {
         parts.push(format!("and {} more", errors.len() - 3));
     }

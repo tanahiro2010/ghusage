@@ -3,6 +3,7 @@
 //! the latest thing the sync did. Shown only when stderr is a terminal, and
 //! erased when the sync ends.
 
+use std::fmt::Write as _;
 use std::io::{IsTerminal, Write};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
@@ -39,7 +40,7 @@ struct State {
 }
 
 impl State {
-    fn slot(&mut self, k: DataKind) -> &mut KindState {
+    const fn slot(&mut self, k: DataKind) -> &mut KindState {
         match k {
             DataKind::PullRequests => &mut self.prs,
             DataKind::Commits => &mut self.commits,
@@ -88,12 +89,13 @@ fn frame(
         secs % 60
     );
     if let Some(a) = activity {
-        status.push_str(&format!(
+        let _ = write!(
+            status,
             " · {}/{} in parallel · {} requests done",
             a.running.len(),
             a.limit,
             a.done
-        ));
+        );
     }
     if !parts.is_empty() {
         status.push_str(" · ");
@@ -178,7 +180,7 @@ impl Drop for Progress {
     fn drop(&mut self) {
         self.update(SyncProgress::Finished);
         if let Some(h) = self.painter.take() {
-            let _ = h.join();
+            drop(h.join());
         }
     }
 }
@@ -196,8 +198,8 @@ fn paint(shared: &Shared) {
         };
         if st.finished {
             if drawn > 0 {
-                let _ = write!(err, "{}", redraw(&[], drawn));
-                let _ = err.flush();
+                drop(write!(err, "{}", redraw(&[], drawn)));
+                drop(err.flush());
             }
             return;
         }
@@ -214,8 +216,8 @@ fn paint(shared: &Shared) {
             terminal_width() - 1,
         );
         drop(st);
-        let _ = write!(err, "{}", redraw(&lines, drawn));
-        let _ = err.flush();
+        drop(write!(err, "{}", redraw(&lines, drawn)));
+        drop(err.flush());
         drawn = lines.len();
         tick += 1;
     }
@@ -234,12 +236,14 @@ fn redraw(lines: &[String], previous: usize) -> String {
         out.push_str("\x1b[2K");
         match lines.get(i) {
             Some(line) if i == 0 => out.push_str(line),
-            Some(line) => out.push_str(&format!("\x1b[2m{line}\x1b[0m")),
+            Some(line) => {
+                let _ = write!(out, "\x1b[2m{line}\x1b[0m");
+            }
             None => {}
         }
     }
     if total > 1 {
-        out.push_str(&format!("\x1b[{}A", total - 1));
+        let _ = write!(out, "\x1b[{}A", total - 1);
     }
     out.push('\r');
     out

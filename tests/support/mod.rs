@@ -5,7 +5,10 @@
 //! The default fixture ("the world") is described in [`World::base`]; tests
 //! derive expectations from that description, not from the implementation.
 
-#![allow(dead_code)]
+#![expect(
+    dead_code,
+    reason = "shared fixtures are only used by some integration test targets"
+)]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -187,7 +190,7 @@ pub(crate) fn bin() -> PathBuf {
 pub(crate) async fn wait_until<F, Fut>(timeout: Duration, mut cond: F) -> bool
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
+    Fut: Future<Output = bool>,
 {
     let start = std::time::Instant::now();
     while start.elapsed() < timeout {
@@ -457,16 +460,15 @@ pub(crate) fn gql_check_suites(runs: &[Value]) -> Value {
             "completedAt": r["completed_at"],
             "permalink": r["html_url"],
         });
-        match suites.iter_mut().find(|(s, _, _)| *s == id) {
-            Some((_, _, list)) => list.push(run),
-            None => {
-                let app = if r["app"].is_null() {
-                    Value::Null
-                } else {
-                    json!({ "id": r["app"]["node_id"], "slug": r["app"]["slug"] })
-                };
-                suites.push((id, app, vec![run]));
-            }
+        if let Some((_, _, list)) = suites.iter_mut().find(|(s, _, _)| *s == id) {
+            list.push(run);
+        } else {
+            let app = if r["app"].is_null() {
+                Value::Null
+            } else {
+                json!({ "id": r["app"]["node_id"], "slug": r["app"]["slug"] })
+            };
+            suites.push((id, app, vec![run]));
         }
     }
     let nodes = suites
@@ -739,12 +741,12 @@ pub(crate) fn secret() -> RepoFixture {
 /// - commits: sha 11 (me, 03-04 08:30), sha 12 (me, 03-05 09:30),
 ///   sha 13 (dependabot[bot], 03-05 10:00), sha 14 (no linked user,
 ///   03-05 11:00, head)
-/// - reviews: bob APPROVED 03-06 10:00 (no body); carol CHANGES_REQUESTED
-///   03-05 14:00 with body "Please fix" and inline comment PRRC_A1
+/// - reviews: bob APPROVED 03-06 10:00 (no body); carol `CHANGES_REQUESTED`
+///   03-05 14:00 with body "Please fix" and inline comment `PRRC_A1`
 ///   (03-05 13:59); my COMMENTED review 03-05 15:00 without body that only
-///   contains my reply PRRC_A2 in carol's thread
-/// - conversation comments: IC_A1 me 03-04 10:30, IC_A2 bob 03-04 11:00,
-///   IC_A3 github-actions bot 03-04 11:05
+///   contains my reply `PRRC_A2` in carol's thread
+/// - conversation comments: `IC_A1` me 03-04 10:30, `IC_A2` bob 03-04 11:00,
+///   `IC_A3` github-actions bot 03-04 11:05
 /// - one successful check run on the head commit, completed 03-05 11:10
 pub(crate) fn pr_a() -> PrFixture {
     let repo = "acme/widget";
@@ -857,8 +859,8 @@ pub(crate) fn pr_b() -> PrFixture {
 
 /// Pull request acme/widget#20 by bob, reviewed by me: opened
 /// 2024-03-05T08:00Z with one commit by bob (sha 31); bob comments at
-/// 08:10; my CHANGES_REQUESTED review with body "Needs tests" at
-/// 2024-03-07T09:00Z containing inline comment PRRC_C1 (08:59).
+/// 08:10; my `CHANGES_REQUESTED` review with body "Needs tests" at
+/// 2024-03-07T09:00Z containing inline comment `PRRC_C1` (08:59).
 pub(crate) fn pr_c() -> PrFixture {
     let my_c = review_comment("PRRC_C1", user(ME), "2024-03-07T08:59:00Z", "PRR_C1", None);
     PrFixture {
@@ -899,7 +901,6 @@ pub(crate) fn pr_c() -> PrFixture {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn gql_issue(
     id: &str,
     number: u64,
@@ -1079,9 +1080,9 @@ impl World {
             .and(path("/rate_limit"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "resources": {
-                    "core": { "limit": 5000, "remaining": 4999, "reset": 4102444800u64 },
-                    "search": { "limit": 30, "remaining": 30, "reset": 4102444800u64 },
-                    "graphql": { "limit": 5000, "remaining": 5000, "reset": 4102444800u64 }
+                    "core": { "limit": 5000, "remaining": 4999, "reset": 4_102_444_800_u64 },
+                    "search": { "limit": 30, "remaining": 30, "reset": 4_102_444_800_u64 },
+                    "graphql": { "limit": 5000, "remaining": 5000, "reset": 4_102_444_800_u64 }
                 }
             })))
             .mount(server)
@@ -1347,7 +1348,7 @@ pub(crate) fn pr_numbers(report: &Value) -> Vec<u64> {
         .iter()
         .map(|p| p["number"].as_u64().unwrap())
         .collect();
-    v.sort();
+    v.sort_unstable();
     v
 }
 

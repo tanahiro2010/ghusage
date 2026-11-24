@@ -1,4 +1,5 @@
 impl Store {
+    /// Returns coverage records associated with an account.
     pub fn coverage(&self, account: &str) -> Result<Vec<CoverageRecord>> {
         (|| {
             account_id(&self.conn, account)?
@@ -7,6 +8,7 @@ impl Store {
         .map_err(classify)
     }
 
+    /// Returns cached pull request synchronization state.
     pub fn pr_sync_states(&self) -> Result<Vec<PrSyncState>> {
         query_list(
             &self.conn,
@@ -25,6 +27,7 @@ impl Store {
         .map_err(classify)
     }
 
+    /// Returns one synchronization cursor for an account.
     pub fn cursor(&self, account: &str, key: &str) -> Result<Option<String>> {
         self.conn
             .query_row(
@@ -37,6 +40,7 @@ impl Store {
             .map_err(|e| classify(e.into()))
     }
 
+    /// Creates a running sync record and returns its database identifier.
     pub fn begin_sync_run(
         &mut self,
         account: &str,
@@ -67,6 +71,7 @@ impl Store {
         .map_err(classify)
     }
 
+    /// Marks a sync record finished and stores its outcome and statistics.
     pub fn finish_sync_run(
         &mut self,
         id: i64,
@@ -96,6 +101,7 @@ impl Store {
         Ok(())
     }
 
+    /// Returns the most recently started sync record for an account.
     pub fn last_sync_run(&self, account: &str) -> Result<Option<SyncRun>> {
         self.conn
             .query_row(
@@ -111,11 +117,12 @@ impl Store {
             .map_err(classify)
     }
 
+    /// Returns database size and record counts.
     pub fn stats(&self) -> Result<CacheStats> {
         (|| {
             let count = |sql: &str| -> Result<u64> {
                 let n: i64 = self.conn.query_row(sql, [], |r| r.get(0))?;
-                Ok(n.max(0) as u64)
+                Ok(u64::try_from(n.max(0)).unwrap_or_default())
             };
             let mut file_size_bytes = 0;
             if let Some(path) = &self.path {
@@ -157,6 +164,7 @@ impl Store {
         .map_err(classify)
     }
 
+    /// Returns a metadata value by key.
     pub fn meta(&self, key: &str) -> Result<Option<String>> {
         self.conn
             .query_row(
@@ -168,6 +176,7 @@ impl Store {
             .map_err(|e| classify(e.into()))
     }
 
+    /// Inserts or replaces a cache metadata value.
     pub fn set_meta(&mut self, key: &str, value: &str) -> Result<()> {
         self.conn
             .execute(
