@@ -135,12 +135,16 @@ impl Store {
                     .filter(|id| own.contains(id))
                     .map(str::to_owned)
                     .collect();
-                let mut stmt = self.conn.prepare_cached(&pr_events_sql())?;
-                let cols = EventCols::of(&stmt)?;
                 let mut active: Vec<String> = active.into_iter().collect();
                 active.sort();
-                for pr in active {
-                    let mut rows = stmt.query(params![account_id, pr])?;
+                for prs in active.chunks(500) {
+                    let sql = pr_events_sql(prs.len());
+                    let mut stmt = self.conn.prepare_cached(&sql)?;
+                    let cols = EventCols::of(&stmt)?;
+                    let values = std::iter::once(rusqlite::types::Value::Integer(account_id))
+                        .chain(prs.iter().cloned().map(rusqlite::types::Value::Text))
+                        .collect::<Vec<_>>();
+                    let mut rows = stmt.query(rusqlite::params_from_iter(values))?;
                     while let Some(row) = rows.next()? {
                         let e = cols.event(row)?;
                         if seen.insert(e.event_id.0.clone()) {
@@ -299,11 +303,15 @@ fn query_list<T, P: rusqlite::Params>(
 /// Events of one pull request seen by an account. `CROSS JOIN` keeps
 /// SQLite from driving the join from `account_events`, which would scan every
 /// event of the account once per pull request.
-fn pr_events_sql() -> String {
+fn pr_events_sql(pr_count: usize) -> String {
+    let placeholders = (2..=pr_count + 1)
+        .map(|n| format!("?{n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
         "SELECT {EVENT_COLS} FROM activity_events e \
          CROSS JOIN account_events ae ON ae.event_id = e.event_id \
-         WHERE e.parent_pr_id = ?2 AND ae.account_id = ?1"
+         WHERE e.parent_pr_id IN ({placeholders}) AND ae.account_id = ?1"
     )
 }
 

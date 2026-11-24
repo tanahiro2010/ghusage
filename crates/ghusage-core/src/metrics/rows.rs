@@ -12,7 +12,7 @@ pub struct BucketSummary {
 #[must_use]
 pub fn breakdown(ds: &Dataset, opts: &Options, gran: Granularity) -> Vec<BucketSummary> {
     let bs = buckets(opts.period, &opts.zone, gran);
-    let mut per: BTreeMap<Date, Vec<&ActivityEvent>> = BTreeMap::new();
+    let mut per: BTreeMap<Date, SummaryAccumulator<'_>> = BTreeMap::new();
     for e in selected(ds, opts) {
         per.entry(bucket_key(
             event_time(e, opts.commit_basis),
@@ -20,13 +20,13 @@ pub fn breakdown(ds: &Dataset, opts: &Options, gran: Granularity) -> Vec<BucketS
             gran,
         ))
         .or_default()
-        .push(e);
+        .observe(ds, e, &opts.zone, opts.commit_basis);
     }
     bs.into_iter()
         .map(|b| {
-            let events = per.remove(&b.key).unwrap_or_default();
-            let summary =
-                summarize_events(ds, events.into_iter(), opts.zone.clone(), opts.commit_basis);
+            let summary = per
+                .remove(&b.key)
+                .map_or_else(Summary::default, SummaryAccumulator::finish);
             BucketSummary { bucket: b, summary }
         })
         .collect()
