@@ -153,6 +153,7 @@ fn associate(tx: &Transaction<'_>, sql: &str, account_id: i64, id: &str) -> Resu
 
 fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
     let account_id = ensure_account(tx, &b.account)?;
+    let viewed_only = !b.viewed_pull_requests.is_empty();
 
     for r in &b.repositories {
         upsert_repository(tx, r)?;
@@ -182,11 +183,21 @@ fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
         }
         upsert_event(tx, e)?;
         project_event(tx, e)?;
-        associate(tx, ASSOC_EVENT, account_id, e.event_id.as_str())?;
-        associate(tx, ASSOC_REPO, account_id, &e.repository_id)?;
-        if let Some(pr) = &e.parent_pr_id {
-            associate(tx, ASSOC_PR, account_id, pr)?;
+        if !viewed_only {
+            associate(tx, ASSOC_EVENT, account_id, e.event_id.as_str())?;
+            associate(tx, ASSOC_REPO, account_id, &e.repository_id)?;
+            if let Some(pr) = &e.parent_pr_id {
+                associate(tx, ASSOC_PR, account_id, pr)?;
+            }
         }
+    }
+    for pr_id in &b.viewed_pull_requests {
+        require_pull_request(tx, pr_id, "viewed pull request")?;
+        tx.execute(
+            "INSERT INTO account_pull_requests (account_id, pr_id, viewed) VALUES (?1, ?2, 1) \
+             ON CONFLICT(account_id, pr_id) DO UPDATE SET viewed = 1",
+            params![account_id, pr_id],
+        )?;
     }
 
     // Commit links sent in this batch, per pull request.
@@ -701,8 +712,8 @@ fn apply_snapshot(
 fn insert_coverage(tx: &Transaction<'_>, account_id: i64, c: &CoverageRecord) -> Result<()> {
     tx.execute(
         "INSERT INTO coverage_intervals (account_id, data_kind, start_at, start_at_ns, end_at, \
-         end_at_ns, status, scope, reason, recorded_at, recorded_at_ns) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) ON CONFLICT DO NOTHING",
+         end_at_ns, status, scope, reason, recorded_at, recorded_at_ns, visibility, generation) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) ON CONFLICT DO NOTHING",
         params![
             account_id,
             c.kind.as_str(),
@@ -711,10 +722,20 @@ fn insert_coverage(tx: &Transaction<'_>, account_id: i64, c: &CoverageRecord) ->
             secs(c.end),
             nanos(c.end),
             c.status.as_str(),
-            c.scope,
+            c.description,
             c.reason,
             secs(c.recorded_at),
             nanos(c.recorded_at),
+            match c.scope.visibility {
+                ghusage_core::coverage::CoverageVisibility::All => "all",
+                ghusage_core::coverage::CoverageVisibility::PublicOnly => "public_only",
+            },
+            match c.scope.generation {
+                ghusage_core::coverage::CoverageGeneration::LegacyUnusable => "legacy_unusable",
+                ghusage_core::coverage::CoverageGeneration::CommitsListingSearchV1 => "commits_listing_search_v1",
+                ghusage_core::coverage::CoverageGeneration::PullRequestsV1 => "pull_requests_v1",
+                ghusage_core::coverage::CoverageGeneration::IssuesV1 => "issues_v1",
+            },
         ],
     )?;
     Ok(())

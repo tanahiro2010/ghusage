@@ -27,7 +27,9 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use ghusage_core::coverage::{CoverageRecord, CoverageStatus, DataKind};
+use ghusage_core::coverage::{
+    CoverageGeneration, CoverageRecord, CoverageScope, CoverageStatus, CoverageVisibility, DataKind,
+};
 use ghusage_core::metrics::{Dataset, LineCounts, PrDiff};
 use ghusage_core::model::{
     ActivityEvent, CheckOutcome, Collection, EventId, EventMeta, EventType, Issue, PrState,
@@ -120,6 +122,8 @@ pub struct WriteBatch {
     pub events: Vec<ActivityEvent>,
     pub pr_commits: Vec<PrCommitLink>,
     pub pr_snapshots: Vec<PrSnapshot>,
+    /// Pull requests cached only because the account opened their detail.
+    pub viewed_pull_requests: Vec<String>,
     /// Lines added and deleted by commits.
     pub commit_stats: Vec<CommitStats>,
     /// Latest observed diffs of pull requests, by pull request id.
@@ -310,8 +314,8 @@ fn check_header(path: &Path) -> Result<()> {
 
 const ASSOC_REPO: &str = "INSERT INTO account_repositories (account_id, repository_id) \
                           VALUES (?1, ?2) ON CONFLICT DO NOTHING";
-const ASSOC_PR: &str = "INSERT INTO account_pull_requests (account_id, pr_id) \
-                        VALUES (?1, ?2) ON CONFLICT DO NOTHING";
+const ASSOC_PR: &str = "INSERT INTO account_pull_requests (account_id, pr_id, viewed) \
+                        VALUES (?1, ?2, 0) ON CONFLICT(account_id, pr_id) DO UPDATE SET viewed = 0";
 const ASSOC_ISSUE: &str = "INSERT INTO account_issues (account_id, issue_id) \
                            VALUES (?1, ?2) ON CONFLICT DO NOTHING";
 const ASSOC_EVENT: &str = "INSERT INTO account_events (account_id, event_id) \

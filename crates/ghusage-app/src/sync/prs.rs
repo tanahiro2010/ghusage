@@ -73,7 +73,7 @@ async fn fetch_prs(
             continue;
         }
         if seen.insert(r.node_id.clone()) {
-            to_fetch.push((r.owner.clone(), r.name.clone(), r.number));
+            to_fetch.push((RepositoryRef::new(r.owner.clone(), r.name.clone()), r.number));
         }
     }
     for (id, key) in stale_open {
@@ -91,9 +91,9 @@ async fn fetch_prs(
         done,
         total,
     });
-    let mut stream = futures::stream::iter(to_fetch.into_iter().map(|(o, n, num)| async move {
-        let res = client.fetch_pull_request(&o, &n, num).await;
-        (o, n, num, res)
+    let mut stream = futures::stream::iter(to_fetch.into_iter().map(|(repo, num)| async move {
+        let res = client.fetch_pull_request(&repo.owner, &repo.name, num).await;
+        (repo.owner, repo.name, num, res)
     }))
     .buffer_unordered(opts.concurrency.clamp(1, 16));
     while let Some((o, n, num, res)) = stream.next().await {

@@ -145,6 +145,7 @@ fn coverage(start: Timestamp, end: Timestamp) -> Vec<CoverageRecord> {
             end,
             status: CoverageStatus::Complete,
             scope: "test".into(),
+            description: "test".into(),
             reason: None,
             recorded_at: now(),
         })

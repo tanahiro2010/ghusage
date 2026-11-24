@@ -120,7 +120,19 @@ fn coverage_for(conn: &Connection, account_id: i64) -> Result<Vec<CoverageRecord
                 start: time(r.get("start_at")?, r.get("start_at_ns")?)?,
                 end: time(r.get("end_at")?, r.get("end_at_ns")?)?,
                 status: CoverageStatus::parse(&r.get::<_, String>("status")?),
-                scope: r.get("scope")?,
+                scope: CoverageScope {
+                    visibility: match r.get::<_, String>("visibility")?.as_str() {
+                        "public_only" => CoverageVisibility::PublicOnly,
+                        _ => CoverageVisibility::All,
+                    },
+                    generation: match r.get::<_, String>("generation")?.as_str() {
+                        "commits_listing_search_v1" => CoverageGeneration::CommitsListingSearchV1,
+                        "pull_requests_v1" => CoverageGeneration::PullRequestsV1,
+                        "issues_v1" => CoverageGeneration::IssuesV1,
+                        _ => CoverageGeneration::LegacyUnusable,
+                    },
+                },
+                description: r.get("scope")?,
                 reason: r.get("reason")?,
                 recorded_at: time(r.get("recorded_at")?, r.get("recorded_at_ns")?)?,
             })

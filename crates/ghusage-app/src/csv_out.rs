@@ -74,7 +74,8 @@ fn bucket_coverage(r: &Report, start: Timestamp, end: Timestamp) -> CoverageStat
                 start: s.start,
                 end: s.end,
                 status: s.status,
-                scope: String::new(),
+                scope: "".into(),
+                description: String::new(),
                 reason: None,
                 recorded_at: start,
             })

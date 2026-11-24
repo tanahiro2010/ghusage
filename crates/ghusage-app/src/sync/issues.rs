@@ -4,7 +4,7 @@
 async fn sync_issues(
     sh: &Shared<'_, '_>,
     ranges: &[Period],
-    issue_repos: tokio::sync::oneshot::Sender<Vec<(String, String)>>,
+    issue_repos: tokio::sync::oneshot::Sender<Vec<RepositoryRef>>,
 ) -> Result<()> {
     let (client, subject, opts, progress) = (sh.client, sh.subject, sh.opts, sh.progress);
     let mut searched = Vec::new();
@@ -24,11 +24,12 @@ async fn sync_issues(
             .await?;
         searched.push((range, found));
     }
-    let mut repos: Vec<(String, String)> = Vec::new();
+    let mut repos: Vec<RepositoryRef> = Vec::new();
     let mut seen_names = HashSet::new();
     for r in searched.iter().flat_map(|(_, found)| &found.items) {
-        if seen_names.insert(format!("{}/{}", r.owner, r.name).to_ascii_lowercase()) {
-            repos.push((r.owner.clone(), r.name.clone()));
+        let repo = RepositoryRef::new(r.owner.clone(), r.name.clone());
+        if seen_names.insert(repo.clone()) {
+            repos.push(repo);
         }
     }
     let _ = issue_repos.send(repos);

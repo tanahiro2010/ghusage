@@ -70,6 +70,60 @@ pub enum DataKind {
     Issues,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoverageVisibility {
+    All,
+    PublicOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoverageGeneration {
+    LegacyUnusable,
+    CommitsListingSearchV1,
+    PullRequestsV1,
+    IssuesV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CoverageScope {
+    pub visibility: CoverageVisibility,
+    pub generation: CoverageGeneration,
+}
+
+impl CoverageScope {
+    pub fn as_label(self) -> &'static str {
+        match (self.visibility, self.generation) {
+            (CoverageVisibility::All, CoverageGeneration::LegacyUnusable) => "legacy_unusable",
+            (CoverageVisibility::PublicOnly, CoverageGeneration::LegacyUnusable) => {
+                "legacy_unusable_public_only"
+            }
+            (CoverageVisibility::All, CoverageGeneration::CommitsListingSearchV1) => "commits_v1",
+            (CoverageVisibility::PublicOnly, CoverageGeneration::CommitsListingSearchV1) => {
+                "commits_v1_public_only"
+            }
+            (CoverageVisibility::All, CoverageGeneration::PullRequestsV1) => "pull_requests_v1",
+            (CoverageVisibility::PublicOnly, CoverageGeneration::PullRequestsV1) => {
+                "pull_requests_v1_public_only"
+            }
+            (CoverageVisibility::All, CoverageGeneration::IssuesV1) => "issues_v1",
+            (CoverageVisibility::PublicOnly, CoverageGeneration::IssuesV1) => {
+                "issues_v1_public_only"
+            }
+        }
+    }
+}
+
+impl From<&str> for CoverageScope {
+    fn from(_: &str) -> Self {
+        Self {
+            visibility: CoverageVisibility::All,
+            generation: CoverageGeneration::LegacyUnusable,
+        }
+    }
+}
+
 impl DataKind {
     pub const ALL: [Self; 3] = [Self::Commits, Self::PullRequests, Self::Issues];
 
@@ -98,8 +152,10 @@ pub struct CoverageRecord {
     pub start: Timestamp,
     pub end: Timestamp,
     pub status: CoverageStatus,
-    /// What was fetched (event types and source range).
-    pub scope: String,
+    pub scope: CoverageScope,
+    /// Human-readable explanation retained for reports and legacy cache rows.
+    #[serde(default, skip_serializing)]
+    pub description: String,
     /// Why the status is not complete, when applicable.
     pub reason: Option<String>,
     pub recorded_at: Timestamp,
@@ -199,7 +255,7 @@ pub fn summarize(
     } else {
         CoverageStatus::combine(segments.iter().map(|s| s.status))
     };
-    let mut scopes: Vec<String> = relevant.iter().map(|r| r.scope.clone()).collect();
+    let mut scopes: Vec<String> = relevant.iter().map(|r| r.description.clone()).collect();
     scopes.sort();
     scopes.dedup();
     CoverageSummary {
@@ -224,6 +280,7 @@ mod tests {
             end: t(e),
             status,
             scope: "commits".into(),
+            description: "commits".into(),
             reason: None,
             recorded_at: t(at),
         }
