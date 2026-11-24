@@ -1,0 +1,104 @@
+name: Pull request guidance
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, edited]
+
+# This workflow uses only its base-branch definition and GitHub API. Never check
+# out or execute pull request content in this privileged event.
+permissions:
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: pr-guidance-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  comment:
+    name: Recommend pull request workflow
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update guidance comment
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const isReleasePullRequest =
+              pr.base.ref === "release" &&
+              pr.head.ref === "dev" &&
+              pr.head.repo?.id === pr.base.repo?.id;
+            const commits = await github.paginate(github.rest.pulls.listCommits, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+            const subjects = commits.map(({ commit }) => commit.message.split("\n", 1)[0]);
+            const conventional = /^[a-z]+(\([^)]+\))?!?: .+/;
+            const temporary = /^(fixup!|squash!|wip\b|address review\b|review fix\b)/i;
+            const nonConventional = subjects.filter((subject) => !conventional.test(subject));
+            const temporaryCommits = subjects.filter((subject) => temporary.test(subject));
+            const changedLines = pr.additions + pr.deletions;
+            const largeDiff = pr.changed_files >= 20 || changedLines >= 1000;
+
+            const lines = [
+              "<!-- ghusage-pr-guidance -->",
+              "## Pull request guidance",
+              "",
+            ];
+
+            if (pr.base.ref !== "dev" && !isReleasePullRequest) {
+              lines.push("- **Base branch:** Please target `dev`. Stacked pull requests are not used here; wait for prerequisite work to merge, then update your branch from `dev`.");
+            }
+
+            if (largeDiff) {
+              lines.push(`- **Scope:** This pull request changes ${pr.changed_files} files and ${changedLines.toLocaleString()} lines. Consider splitting it into focused pull requests. Large size alone does not determine the merge method.`);
+            }
+
+            if (isReleasePullRequest) {
+              lines.push("- **Merge method:** This is the release pull request from `dev`; use Create a merge commit to preserve the `dev` history.");
+            } else if (subjects.length <= 2) {
+              lines.push(`- **Merge method:** ${subjects.length} commit(s) found. Squash and merge is the default; use a merge commit only when each commit is independently useful and meets the repository's contribution rules.`);
+            } else if (subjects.length < 6) {
+              lines.push(`- **Commit history:** ${subjects.length} commits found. Review whether each is independently useful; combine temporary or overlapping commits with interactive rebase. Squash and merge remains the default.`);
+            } else {
+              lines.push(`- **Commit history:** ${subjects.length} commits found. Please curate the series with interactive rebase before merging. Preserve it with a merge commit only if every remaining commit is independently useful and meets the repository's contribution rules; otherwise squash.`);
+            }
+
+            if (temporaryCommits.length > 0) {
+              lines.push(`- **Temporary commits:** ${temporaryCommits.length} commit(s) look like work-in-progress or review-fix commits. Combine or reword them before merging.`);
+            }
+
+            if (nonConventional.length > 0) {
+              lines.push(`- **Commit messages:** ${nonConventional.length} commit(s) do not use the Conventional Commit format. Reword commits that will be preserved; Squash and merge is appropriate when the pull request is one cohesive change.`);
+            }
+
+            lines.push("", `See [CONTRIBUTING.md](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/dev/CONTRIBUTING.md) for the full policy. This is advisory: automation cannot judge whether commits are independently meaningful or pass tests individually.`);
+            const body = lines.join("\n");
+            const marker = "<!-- ghusage-pr-guidance -->";
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              per_page: 100,
+            });
+            const existing = comments.find((comment) =>
+              comment.user?.login === "github-actions[bot]" && comment.body?.startsWith(marker)
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body,
+              });
+            }
