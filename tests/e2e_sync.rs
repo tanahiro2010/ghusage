@@ -648,8 +648,9 @@ async fn viewing_an_unrelated_pull_request_keeps_its_detail_without_claiming_act
         .run(&["pr", url, "--timeline", "--format", "json"])
         .await;
     online.expect_code(0).assert_clean();
-    let online_timeline = online.json()["timeline"].clone();
-    assert!(!online_timeline.as_array().unwrap().is_empty());
+    let online_json = online.json();
+    let online_timeline = online_json["timeline"].clone();
+    assert!(timeline_ids(&online_json).contains(&"pr:PR_C:created".to_string()));
 
     let offline = env
         .run(&["pr", url, "--timeline", "--format", "json", "--offline"])
