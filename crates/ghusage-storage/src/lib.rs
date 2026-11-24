@@ -421,7 +421,7 @@ mod tests {
         let store = Store::open(&dir.path().join("t.db")).unwrap();
         let plan: Vec<String> = query_list(
             &store.conn,
-            &format!("EXPLAIN QUERY PLAN {}", pr_events_sql()),
+            &format!("EXPLAIN QUERY PLAN {}", pr_events_sql(1)),
             params![1, "PR_x"],
             |r| Ok(r.get::<_, String>(3)?),
         )
