@@ -232,13 +232,13 @@ fn viewed_only_pull_request_keeps_detail_events_out_of_account_activity() {
         .unwrap();
 
     assert!(
-        !store
+        store
             .pull_request_ids("alice", false)
             .unwrap()
             .contains("PR1")
     );
     assert!(
-        store
+        !store
             .pull_request_ids("alice", true)
             .unwrap()
             .contains("PR1")
@@ -258,6 +258,186 @@ fn viewed_only_pull_request_keeps_detail_events_out_of_account_activity() {
             .events
             .iter()
             .any(|e| e.event_id == viewed_event.event_id)
+    );
+}
+
+#[test]
+fn viewing_unrelated_pull_request_does_not_change_account_dataset() {
+    let mut store = store_with_base();
+    let before = alice_dataset(&store);
+    let mut viewed = comment_event("PR2", "C_VIEWED", t(4, 0));
+    viewed.actor = user("bob");
+    store
+        .apply(&WriteBatch {
+            account: "alice".into(),
+            repositories: vec![repo("R3", "bob", "unrelated")],
+            pull_requests: vec![{
+                let mut p = pr("PR2", "R3", 2);
+                p.author = user("bob");
+                p
+            }],
+            events: vec![viewed.clone()],
+            viewed_pull_requests: vec!["PR2".into()],
+            ..Default::default()
+        })
+        .unwrap();
+
+    let after = alice_dataset(&store);
+    assert_eq!(after.repositories, before.repositories);
+    assert_eq!(after.pull_requests, before.pull_requests);
+    assert_eq!(after.issues, before.issues);
+    assert_eq!(after.threads, before.threads);
+    assert_eq!(after.events, before.events);
+    assert_eq!(after.coverage, before.coverage);
+    assert_eq!(after.commit_stats, before.commit_stats);
+    assert_eq!(after.pr_diffs, before.pr_diffs);
+    let detail = store
+        .load_pr_dataset(&subject("alice"), true, "PR2")
+        .unwrap();
+    assert!(detail.events.iter().any(|e| e.event_id == viewed.event_id));
+    assert!(
+        store
+            .pull_request_ids("alice", true)
+            .unwrap()
+            .contains("PR2")
+    );
+
+    // Refreshes are idempotent and retain the offline detail cache.
+    store
+        .apply(&WriteBatch {
+            account: "alice".into(),
+            repositories: vec![repo("R3", "bob", "unrelated")],
+            pull_requests: vec![{
+                let mut p = pr("PR2", "R3", 2);
+                p.author = user("bob");
+                p
+            }],
+            events: vec![viewed],
+            viewed_pull_requests: vec!["PR2".into()],
+            ..Default::default()
+        })
+        .unwrap();
+    let after_refresh = alice_dataset(&store);
+    assert_eq!(after_refresh.repositories, before.repositories);
+    assert_eq!(after_refresh.pull_requests, before.pull_requests);
+    assert_eq!(after_refresh.events, before.events);
+
+    // A later normal sync proves participation and promotes the relationship.
+    let mut participated = comment_event("PR2", "C_ALICE", t(5, 0));
+    participated.actor = user("alice");
+    store
+        .apply(&WriteBatch {
+            account: "alice".into(),
+            repositories: vec![repo("R3", "bob", "unrelated")],
+            pull_requests: vec![{
+                let mut p = pr("PR2", "R3", 2);
+                p.author = user("bob");
+                p
+            }],
+            events: vec![participated.clone()],
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(
+        store
+            .pull_request_ids("alice", false)
+            .unwrap()
+            .contains("PR2")
+    );
+    assert!(
+        !store
+            .pull_request_ids("alice", true)
+            .unwrap()
+            .contains("PR2")
+    );
+    assert!(
+        alice_dataset(&store)
+            .events
+            .iter()
+            .any(|e| e.event_id == participated.event_id)
+    );
+
+    // A stale view after normal participation cannot demote it again.
+    store
+        .apply(&WriteBatch {
+            account: "alice".into(),
+            pull_requests: vec![{
+                let mut p = pr("PR2", "R3", 2);
+                p.author = user("bob");
+                p
+            }],
+            viewed_pull_requests: vec!["PR2".into()],
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(
+        store
+            .pull_request_ids("alice", false)
+            .unwrap()
+            .contains("PR2")
+    );
+}
+
+#[test]
+fn viewing_shared_pull_request_does_not_overwrite_another_accounts_activity() {
+    let mut store = Store::open_in_memory().unwrap();
+    let mut bob = base_batch();
+    bob.account = "bob".into();
+    for p in &mut bob.pull_requests {
+        p.author = user("bob");
+    }
+    for e in &mut bob.events {
+        e.actor = user("bob");
+    }
+    store.apply(&bob).unwrap();
+    let before = store.load_dataset(&subject("bob"), false, None).unwrap();
+
+    let mut stale_event = comment_event("PR1", "C1", t(1, 0));
+    stale_event.actor = user("alice");
+    let mut stale_pr = pr("PR1", "R1", 1);
+    stale_pr.author = user("bob");
+    stale_pr.title = "stale response".into();
+    stale_pr.state = PrState::Closed;
+    store
+        .apply(&WriteBatch {
+            account: "alice".into(),
+            repositories: vec![repo("R1", "other-owner", "renamed")],
+            pull_requests: vec![stale_pr],
+            events: vec![stale_event],
+            pr_snapshots: vec![PrSnapshot {
+                pr_id: "PR1".into(),
+                observed_at: t(10, 0),
+                complete_collections: ghusage_core::model::Collection::ALL.to_vec(),
+                present: HashSet::new(),
+                present_threads: HashSet::new(),
+            }],
+            viewed_pull_requests: vec!["PR1".into()],
+            ..Default::default()
+        })
+        .unwrap();
+
+    let after = store.load_dataset(&subject("bob"), false, None).unwrap();
+    assert_eq!(
+        after.pull_requests["PR1"].title,
+        before.pull_requests["PR1"].title
+    );
+    assert_eq!(
+        after.pull_requests["PR1"].state,
+        before.pull_requests["PR1"].state
+    );
+    assert_eq!(after.events, before.events);
+    assert_eq!(after.repositories, before.repositories);
+    assert!(
+        store
+            .pull_request_ids("bob", false)
+            .unwrap()
+            .contains("PR1")
+    );
+    assert!(
+        !store
+            .pull_request_ids("alice", false)
+            .unwrap()
+            .contains("PR1")
     );
 }
 
