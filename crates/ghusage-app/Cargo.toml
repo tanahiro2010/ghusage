@@ -28,5 +28,6 @@ tracing = "0.1.44"
 [dev-dependencies]
 ghusage-github = { version = "0.1.6", path = "../ghusage-github" }
 proptest = "1.11.0"
+rusqlite = { version = "0.43", features = ["bundled"] }
 tempfile = "3.27.0"
 wiremock = "0.6.5"
