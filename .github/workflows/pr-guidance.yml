@@ -4,8 +4,9 @@ on:
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review, edited]
 
+# This workflow uses only its base-branch definition and GitHub API. Never check
+# out or execute pull request content in this privileged event.
 permissions:
-  contents: read
   issues: write
   pull-requests: read
 
@@ -23,6 +24,10 @@ jobs:
         with:
           script: |
             const pr = context.payload.pull_request;
+            const isReleasePullRequest =
+              pr.base.ref === "release" &&
+              pr.head.ref === "dev" &&
+              pr.head.repo?.id === pr.base.repo?.id;
             const commits = await github.paginate(github.rest.pulls.listCommits, {
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -43,7 +48,7 @@ jobs:
               "",
             ];
 
-            if (pr.base.ref !== "dev" && !(pr.base.ref === "release" && pr.head.ref === "dev")) {
+            if (pr.base.ref !== "dev" && !isReleasePullRequest) {
               lines.push("- **Base branch:** Please target `dev`. Stacked pull requests are not used here; wait for prerequisite work to merge, then update your branch from `dev`.");
             }
 
@@ -51,7 +56,7 @@ jobs:
               lines.push(`- **Scope:** This pull request changes ${pr.changed_files} files and ${changedLines.toLocaleString()} lines. Consider splitting it into focused pull requests. Large size alone does not determine the merge method.`);
             }
 
-            if (pr.base.ref === "release" && pr.head.ref === "dev") {
+            if (isReleasePullRequest) {
               lines.push("- **Merge method:** This is the release pull request from `dev`; use Create a merge commit to preserve the `dev` history.");
             } else if (subjects.length <= 2) {
               lines.push(`- **Merge method:** ${subjects.length} commit(s) found. Squash and merge is the default; use a merge commit only when each commit is independently useful and meets the repository's contribution rules.`);
