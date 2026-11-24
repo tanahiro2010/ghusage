@@ -45,7 +45,7 @@ jobs:
           }
           # Assignments, so a failing digest stops the step (bash -e).
           rust=$(digest crates src tests benches Cargo.toml Cargo.lock .cargo rust-toolchain rust-toolchain.toml .github/actions/setup-rust scripts/tui-pty-smoke.py .github/workflows/ci.yml)
-          npm=$(digest npm scripts/bench-report.mjs scripts/bench-report.test.mjs .github/workflows/ci.yml)
+          npm=$(digest npm scripts/bench-report.mjs scripts/bench-report.test.mjs .github/scripts/pr-guidance.cjs .github/scripts/pr-guidance.test.cjs .github/workflows/ci.yml)
           echo "rust=$rust" >> "$GITHUB_OUTPUT"
           echo "npm=$npm" >> "$GITHUB_OUTPUT"
           cat "$GITHUB_OUTPUT"
@@ -237,6 +237,9 @@ jobs:
       - name: Benchmark report script tests
         if: steps.verified.outputs.cache-hit != 'true'
         run: node --test scripts/bench-report.test.mjs
+      - name: Pull request guidance script tests
+        if: steps.verified.outputs.cache-hit != 'true'
+        run: node --test .github/scripts/pr-guidance.test.cjs
       - name: Remember that these inputs passed
         if: steps.verified.outputs.cache-hit != 'true'
         shell: bash
