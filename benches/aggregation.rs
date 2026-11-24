@@ -36,6 +36,23 @@ fn benches(c: &mut Criterion) {
             ))
         });
     });
+    for (name, granularity) in [
+        ("weekly", Granularity::Week),
+        ("monthly", Granularity::Month),
+    ] {
+        c.bench_function(&format!("aggregate 100k events ({name}, 1 year)"), |b| {
+            b.iter(|| {
+                black_box(report::build(
+                    &ds,
+                    &ctx(366),
+                    ReportKind::Breakdown(granularity),
+                ))
+            });
+        });
+    }
+    c.bench_function("aggregate 100k events (repositories, 1 year)", |b| {
+        b.iter(|| black_box(report::build(&ds, &ctx(366), ReportKind::Repositories)));
+    });
 
     // Cached aggregation: load from SQLite + aggregate.
     let dir = tempfile::tempdir().unwrap();
@@ -51,6 +68,15 @@ fn benches(c: &mut Criterion) {
         .unwrap();
     for days in [7, 30] {
         let ctx = ctx(days);
+        c.bench_function(&format!("load 100k event dataset ({days} days)"), |b| {
+            b.iter(|| {
+                black_box(
+                    store
+                        .load_dataset(&subject(), true, Some(ctx.period))
+                        .unwrap(),
+                )
+            });
+        });
         c.bench_function(
             &format!("cached {days}-day aggregation (load + overview)"),
             |b| {
@@ -63,6 +89,9 @@ fn benches(c: &mut Criterion) {
             },
         );
     }
+    c.bench_function("load pull request detail (PR_0)", |b| {
+        b.iter(|| black_box(store.load_pr_dataset(&subject(), true, "PR_0").unwrap()));
+    });
 }
 
 criterion_group! {
