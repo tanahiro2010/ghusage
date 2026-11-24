@@ -1,8 +1,10 @@
 impl App {
+    /// Returns the active search query for a list.
     pub fn search_query(&self, list: ListId) -> &str {
-            self.search.get(&list).map(String::as_str).unwrap_or("")
+            self.search.get(&list).map_or("", String::as_str)
         }
 
+    /// Returns the selected row index for a list.
     pub fn selected(&self, list: ListId) -> usize {
             self.selection.get(&list).copied().unwrap_or(0)
         }
@@ -201,12 +203,10 @@ impl App {
                 return;
             };
             let len = self.visible(list).len();
-            let cur = self.selected(list) as isize;
-            let next = if len == 0 {
-                0
-            } else {
-                (cur + delta).clamp(0, len as isize - 1) as usize
-            };
+            let next = self
+                .selected(list)
+                .saturating_add_signed(delta)
+                .min(len.saturating_sub(1));
             self.selection.insert(list, next);
         }
 

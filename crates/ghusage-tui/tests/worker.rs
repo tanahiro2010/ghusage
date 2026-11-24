@@ -2,6 +2,10 @@
 //! they are computed, and results made stale by a reload or a newer request
 //! are thrown away.
 
+#[expect(
+    dead_code,
+    reason = "Shared fixtures are compiled separately for each integration test target, and this target uses only a subset."
+)]
 mod common;
 
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -79,7 +83,7 @@ fn ui_responds_and_shows_a_placeholder_while_a_report_is_computed() {
         let t = Instant::now();
         app.handle_key(key(k));
         app.poll_results();
-        let _ = render(&app, 120, 30);
+        drop(render(&app, 120, 30));
         assert!(
             t.elapsed() < Duration::from_millis(50),
             "key {k} took {:?}",

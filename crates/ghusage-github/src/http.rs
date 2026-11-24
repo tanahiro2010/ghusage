@@ -114,7 +114,9 @@ impl Transport {
             .map_err(|_| ApiError::Network("failed to initialize the HTTP client".into()))?;
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0x9E37_79B9_7F4A_7C15, |d| d.as_nanos() as u64)
+            .map_or(0x9E37_79B9_7F4A_7C15, |d| {
+                u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)
+            })
             | 1;
         Ok(Self {
             http,
@@ -185,13 +187,13 @@ impl Transport {
         seen.insert(first.to_string());
         let (value, mut headers) = self.get_json(&first).await?;
         take(&mut items, &first, &value)?;
-        let mut fetched_up_to = 1;
-        if let (Some(next), Some(last)) = (self.next_link(&headers)?, self.link(&headers, "last")?)
+        let fetched_up_to = if let (Some(next), Some(last)) =
+            (self.next_link(&headers)?, self.link(&headers, "last")?)
             && page_of(&next) == Some(2)
             && let Some(last_page) = page_of(&last)
             && last_page >= 2
         {
-            if last_page as usize > MAX_PAGES {
+            if usize::try_from(last_page).map_or(true, |page| page > MAX_PAGES) {
                 return Err(ApiError::InvalidResponse(format!(
                     "pagination of {} did not terminate",
                     first.path()
@@ -205,8 +207,10 @@ impl Transport {
                 take(&mut items, url, &value)?;
                 headers = h;
             }
-            fetched_up_to = last_page;
-        }
+            last_page
+        } else {
+            1
+        };
         while let Some(url) = self.next_link(&headers)? {
             if page_of(&url).is_some_and(|n| n <= fetched_up_to) {
                 break;
@@ -315,7 +319,7 @@ impl Transport {
                     }
                     tracing::debug!(
                         attempt,
-                        delay_ms = delay.as_millis() as u64,
+                        delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
                         path = url.path(),
                         "retrying GitHub request"
                     );
@@ -387,7 +391,7 @@ impl Transport {
         let result = tokio::time::timeout(self.config.request_timeout, fut)
             .await
             .unwrap_or_else(|_| Err(AttemptError::Timeout));
-        let elapsed = started.elapsed().as_millis() as u64;
+        let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let bytes = result.as_ref().map_or(0, |r| r.body.len() as u64);
         tracing::debug!(
             %method,
@@ -436,7 +440,8 @@ impl Transport {
                     header_str(&headers, "retry-after").and_then(|v| v.trim().parse::<u64>().ok())
                 {
                     let wait = Duration::from_secs(secs);
-                    let reset_at = Timestamp::now() + SignedDuration::from_secs(secs as i64);
+                    let reset_at = Timestamp::now()
+                        + SignedDuration::from_secs(i64::try_from(secs).unwrap_or(i64::MAX));
                     if wait > self.config.max_rate_limit_wait {
                         return Decision::Fail(ApiError::RateLimited {
                             reset_at: Some(reset_at),
@@ -500,10 +505,8 @@ impl Transport {
         let delay = reset_at.map_or_else(
             || self.backoff(attempt),
             |reset| {
-                let secs = reset
-                    .duration_since(Timestamp::now())
-                    .as_secs_f64()
-                    .max(0.0) as u64;
+                let secs = u64::try_from(reset.duration_since(Timestamp::now()).as_secs().max(0))
+                    .unwrap_or_default();
                 Duration::from_secs(secs + 1)
             },
         );
@@ -675,7 +678,7 @@ mod tests {
         assert_eq!(t.config.backoff_base, Duration::from_secs(1));
         let nominal = [1u64, 2, 4, 8, 16, 32, 60, 60, 60, 60];
         for (i, secs) in nominal.into_iter().enumerate() {
-            let attempt = i as u32 + 1;
+            let attempt = u32::try_from(i).unwrap_or(u32::MAX).saturating_add(1);
             let full = Duration::from_secs(secs);
             for _ in 0..200 {
                 let d = t.backoff(attempt);

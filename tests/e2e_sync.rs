@@ -284,8 +284,8 @@ async fn issues_report_lists_issues_closed_in_the_period() {
 /// The base world after more activity on PR A (acme/widget#10):
 /// - force push on 03-08 10:00 by me replaces sha 12 with sha 15 (me,
 ///   03-08 10:00), which is the new head
-/// - dave APPROVED on 03-08 09:00; bob commented IC_A4 on 03-08 12:00
-/// - bob's IC_A2 was edited on 03-08 13:00; my IC_A1 was deleted
+/// - dave APPROVED on 03-08 09:00; bob commented `IC_A4` on 03-08 12:00
+/// - bob's `IC_A2` was edited on 03-08 13:00; my `IC_A1` was deleted
 /// - bob merged it on 03-09 10:00 (merge and close at the same instant)
 fn world_after_merge() -> World {
     let mut w = World::base();
@@ -958,7 +958,7 @@ async fn empty_and_inaccessible_repositories_do_not_fail_the_commit_sync() {
     empty.name = "empty".into();
     empty.gql["id"] = json!("R_empty");
     empty.gql["name"] = json!("empty");
-    empty.rest = support::rest_repo("R_empty", "acme", "Organization", "empty", false);
+    empty.rest = rest_repo("R_empty", "acme", "Organization", "empty", false);
     empty.listed = listed_repo(&empty.rest, "push", "2024-03-06T00:00:00Z");
     world.repos.push(empty);
     let server = serve(&world).await;
@@ -1025,7 +1025,7 @@ async fn empty_and_inaccessible_repositories_do_not_fail_the_commit_sync() {
 /// committer date) on its default branch. Returns the repository and the
 /// commit search results that find those commits there.
 fn widget_copy(commits: &[(u64, &str)]) -> (RepoFixture, Vec<Value>) {
-    let rest = support::rest_repo("R_copy", "copier", "User", "widget-copy", false);
+    let rest = rest_repo("R_copy", "copier", "User", "widget-copy", false);
     let mine = Some((ME, ME_ID, "User"));
     let search = commits
         .iter()
@@ -1094,7 +1094,7 @@ async fn copies_found_by_search_are_skipped_and_other_search_results_kept() {
     // upstream/tool is not in my repository list either, but I opened
     // upstream/tool#9 (found by this sync): search finds my sha 61 there,
     // and its default branch also holds my sha 70, which search misses.
-    let tool_rest = support::rest_repo("R_tool", "upstream", "User", "tool", false);
+    let tool_rest = rest_repo("R_tool", "upstream", "User", "tool", false);
     world.commits.push(search_commit(
         &tool_rest,
         &sha(61),
@@ -1127,7 +1127,7 @@ async fn copies_found_by_search_are_skipped_and_other_search_results_kept() {
     world.issues.push(issue);
     // someone/patched has no known relation to me, and its sha 62 is not
     // found anywhere else: it counts, from search alone.
-    let patched = support::rest_repo("R_patched", "someone", "User", "patched", false);
+    let patched = rest_repo("R_patched", "someone", "User", "patched", false);
     world.commits.push(search_commit(
         &patched,
         &sha(62),
@@ -1286,7 +1286,7 @@ fn renamed_value(v: &Value) -> Value {
 }
 
 /// The base world after acme/widget was renamed to acme/gadget on GitHub.
-/// The repository keeps its node ID (R_widget), and so do its pull
+/// The repository keeps its node ID (`R_widget`), and so do its pull
 /// requests and issues; only names and URLs change.
 fn world_after_rename() -> World {
     let mut w = World::base();
@@ -1575,7 +1575,13 @@ async fn two_hundred_fifty_commits_over_three_search_pages_are_all_counted() {
                 .to_utc()
                 .format("%Y-%m-%dT%H:%M:%SZ")
                 .to_string();
-            search_commit(&w.rest, &sha(1000 + i as u64), mine, &t, 1)
+            search_commit(
+                &w.rest,
+                &sha(1000 + u64::try_from(i).expect("fixture index fits u64")),
+                mine,
+                &t,
+                1,
+            )
         })
         .collect();
     let page = |items: &[Value]| json!({ "total_count": 250, "incomplete_results": false, "items": items });

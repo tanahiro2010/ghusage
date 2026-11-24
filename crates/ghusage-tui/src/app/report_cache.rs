@@ -1,17 +1,20 @@
 impl App {
-    pub fn report_builds(&self) -> usize {
+    /// Number of report build operations performed by the app.
+    pub const fn report_builds(&self) -> usize {
             self.report_builds
         }
 
         /// Number of datasets read from the source so far.
-    pub fn dataset_loads(&self) -> usize {
+    pub const fn dataset_loads(&self) -> usize {
             self.dataset_loads
         }
 
+    /// Returns the effective repository filter.
     pub fn filter(&self) -> Filter {
             self.filter_preset.apply(&self.base_filter)
         }
 
+    /// Builds report query options from current UI state.
     pub fn query_context(&self) -> QueryContext {
             QueryContext {
                 period: self.period,
@@ -60,7 +63,7 @@ impl App {
             }
         }
 
-    fn key(&self, slot: Slot) -> CacheKey {
+    const fn key(&self, slot: Slot) -> CacheKey {
             CacheKey {
                 slot,
                 start: self.period.start,
@@ -78,7 +81,7 @@ impl App {
             })
         }
 
-    fn build_for(slot: &Slot) -> Build {
+    const fn build_for(slot: &Slot) -> Build {
             match slot {
                 Slot::Base => Build::Dashboard,
                 Slot::PullRequests => Build::Kind(ReportKind::PullRequests {
@@ -300,14 +303,17 @@ impl App {
             self.report(Slot::Base)
         }
 
+    /// Returns the cached pull request list report, when loaded.
     pub fn pr_list_report(&self) -> Option<&Report> {
             self.report(Slot::PullRequests)
         }
 
+    /// Returns the cached reviews report, when loaded.
     pub fn reviews_report(&self) -> Option<&Report> {
             self.report(Slot::Reviews)
         }
 
+    /// Returns the cached issues report, when loaded.
     pub fn issues_report(&self) -> Option<&Report> {
             self.report(Slot::Issues)
         }
@@ -368,9 +374,9 @@ impl App {
     pub fn coverage(&self) -> Option<CoverageStatus> {
             match self.screen {
                 Screen::PrDetail | Screen::PrTimeline => self.pr_report().map(|r| r.coverage),
-                Screen::IssueDetail => self.base_report().map(|r| r.overall_coverage()),
+                Screen::IssueDetail => self.base_report().map(Report::overall_coverage),
                 Screen::CommitDetail => None,
-                _ => self.current_report().map(|r| r.overall_coverage()),
+                _ => self.current_report().map(Report::overall_coverage),
             }
         }
 

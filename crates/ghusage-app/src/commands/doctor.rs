@@ -4,26 +4,38 @@ use crate::session::{SessionConfig, credentials};
 use ghusage_core::time::Zone;
 use ghusage_github::GitHubClient;
 
+/// Outcome of one diagnostic check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum DoctorState {
+    /// Check completed successfully.
     Passed,
+    /// Check found a problem.
     Failed,
+    /// Check was skipped by configuration.
     Skipped,
 }
 
+/// One diagnostic result and its display message.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct DoctorCheck {
+    /// Check outcome.
     pub state: DoctorState,
+    /// Human-readable diagnostic result.
     pub message: String,
 }
 
+/// Full diagnostic result for the cache and GitHub connection.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct DoctorReport {
+    /// Whether no diagnostic failed.
     pub ok: bool,
+    /// Suggested process exit code.
     pub exit_code: i32,
+    /// Individual diagnostic results.
     pub checks: Vec<DoctorCheck>,
 }
 
+/// Checks cache integrity, credentials, authentication, and rate limits.
 pub async fn doctor(cfg: &SessionConfig, zone: Zone) -> Result<DoctorReport> {
     let mut checks = Vec::new();
     match open(cfg) {

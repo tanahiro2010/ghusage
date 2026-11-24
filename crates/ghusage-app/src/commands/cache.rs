@@ -8,28 +8,45 @@ use crate::commands::open_cache::{lock, open};
 use crate::error::Result;
 use crate::session::SessionConfig;
 
+/// Summary of the most recent synchronization run.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct LastSync {
+    /// Time the run started.
     pub started_at: Timestamp,
+    /// Time the run finished, when complete.
     pub finished_at: Option<Timestamp>,
+    /// Run outcome.
     pub status: String,
+    /// Run message, when present.
     pub message: Option<String>,
 }
 
+/// Cache counts, sync metadata, and recent data coverage.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct CacheStatus {
+    /// Cache file path, when file-backed.
     pub path: Option<PathBuf>,
+    /// Database and WAL size in bytes.
     pub file_size_bytes: u64,
+    /// Current SQLite schema version.
     pub schema_version: u32,
+    /// Account associated with the status, when known.
     pub account: Option<String>,
+    /// Number of cached repositories.
     pub repositories: u64,
+    /// Number of cached pull requests.
     pub pull_requests: u64,
+    /// Number of cached issues.
     pub issues: u64,
+    /// Number of cached activity events.
     pub events: u64,
+    /// Most recent sync run for the account.
     pub last_sync: Option<LastSync>,
+    /// Coverage summaries for the previous 30 days.
     pub coverage_last_30_days: Vec<CoverageSummary>,
 }
 
+/// Reads cache status and recent coverage for the selected account.
 pub fn cache_status(
     cfg: &SessionConfig,
     user: Option<&str>,
@@ -76,6 +93,7 @@ pub fn cache_status(
     })
 }
 
+/// Deletes cached GitHub data while preserving credentials.
 pub fn clear_cache(cfg: &SessionConfig) -> Result<()> {
     let mut cache = open(cfg)?;
     let _lock = lock(cache.data_dir.as_ref())?;

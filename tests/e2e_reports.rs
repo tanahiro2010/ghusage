@@ -434,14 +434,14 @@ async fn user_option_counts_direct_collaborator_commits_found_by_search() {
     // default branch. GitHub does not include that repository in
     // GET /users/bob/repos, and Bob has no pull request or issue there, but
     // commit search still finds his commit.
-    let collab = support::rest_repo("R_collab", "acme", "Organization", "collab", false);
+    let collab = rest_repo("R_collab", "acme", "Organization", "collab", false);
     let bob = Some(("bob", "U_bob", "User"));
     Mock::given(method("GET"))
         .and(path("/search/commits"))
         .and(query_param_contains("q", "author:bob"))
         .respond_with(ResponseTemplate::new(200).set_body_json(search_page(vec![
             search_commit(
-                &support::rest_repo("R_widget", "acme", "Organization", "widget", false),
+                &rest_repo("R_widget", "acme", "Organization", "widget", false),
                 &sha(50),
                 bob,
                 "2024-03-05T10:00:00Z",
@@ -674,27 +674,27 @@ async fn no_cache_reports_match_cached_reports_and_leave_no_database() {
 // ---------------------------------------------------------------------------
 
 /// The base world with:
-/// - five more conversation comments by bob on #20 (IC_C2..IC_C6,
+/// - five more conversation comments by bob on #20 (`IC_C2..IC_C6`,
 ///   2024-03-05T12:00Z..12:04Z);
 /// - two approvals without a body on my #3: dave at 2024-03-06T08:30Z and
 ///   erin at 08:40Z;
 /// - acme/widget#30 by alice, opened 2024-02-01T09:00Z (before the period)
 ///   with a review request to me at 09:01Z; in the period only alice's
-///   commit sha 41 (03-06 10:00Z) and bob's comment IC_D1 (03-06 11:00Z).
+///   commit sha 41 (03-06 10:00Z) and bob's comment `IC_D1` (03-06 11:00Z).
 ///
 /// Per pull request in the period (events by anyone, CI excluded):
 /// - #10: opened, review request, commits 11/12/13/14, reviews by bob and
-///   carol, carol's summary, inline PRRC_A1/A2, comments IC_A1/A2/A3 = 14
+///   carol, carol's summary, inline `PRRC_A1/A2`, comments `IC_A1/A2/A3` = 14
 ///   events; 2 reviews; 6 comments; 4 commits; participants me, bob, carol,
 ///   dependabot, github-actions = 5 (sha 14 has no known author); 1 thread;
 ///   active on 03-04, 03-05, 03-06.
-/// - #20: opened, sha 31, IC_C1..IC_C6, my review, its summary, PRRC_C1 =
+/// - #20: opened, sha 31, `IC_C1..IC_C6`, my review, its summary, `PRRC_C1` =
 ///   11 events; 1 review; 8 comments; 1 commit; participants bob, me; 1
 ///   thread; active on 03-05 and 03-07.
 /// - #3: opened, sha 21, two approvals, merged, closed = 6 events; 2
 ///   reviews; 0 comments; 1 commit; participants me, dave, erin; active on
 ///   03-06.
-/// - #30: sha 41 and IC_D1 = 2 events, none of them mine.
+/// - #30: sha 41 and `IC_D1` = 2 events, none of them mine.
 fn world_for_pr_lists() -> World {
     let mut w = World::base();
     {
@@ -841,12 +841,12 @@ async fn prs_sort_orders_and_details_sections() {
 
     // Timing over my pull requests active in the period, #10 and #3:
     // - first review by someone else: #10 carol 03-05 14:00 - 03-04 09:00 =
-    //   29 h = 104400 s; #3 dave 08:30 - 08:00 = 1800 s
+    //   29 h = 104_400 s; #3 dave 08:30 - 08:00 = 1800 s
     // - creation to merge: only #3, 09:00 - 08:00 = 3600 s
     // - first review to my next event: #10 my inline reply 15:00 = 3600 s;
     //   #3 my merge 09:00 = 1800 s
     // - first to last event: #10 sha 11 03-04 08:30 to bob 03-06 10:00 =
-    //   49.5 h = 178200 s; #3 sha 21 07:50 to the merge 09:00 = 4200 s
+    //   49.5 h = 178_200 s; #3 sha 21 07:50 to the merge 09:00 = 4200 s
     let t = &r["timing"];
     assert_stats(
         &t["time_to_first_review"],
@@ -854,8 +854,8 @@ async fn prs_sort_orders_and_details_sections() {
         1800.0,
         53100.0,
         53100.0,
-        104400.0,
-        104400.0,
+        104_400.0,
+        104_400.0,
     );
     assert_stats(
         &t["creation_to_merge"],
@@ -881,8 +881,8 @@ async fn prs_sort_orders_and_details_sections() {
         4200.0,
         91200.0,
         91200.0,
-        178200.0,
-        178200.0,
+        178_200.0,
+        178_200.0,
     );
 
     // The table shows the extra sections only with --details.
@@ -1024,10 +1024,10 @@ async fn pr_json_has_all_detail_fields() {
     assert_eq!(
         a["timing"],
         json!({
-            "time_to_first_review_secs": 104400,
+            "time_to_first_review_secs": 104_400,
             "creation_to_merge_secs": null,
             "review_to_next_author_activity_secs": 3600,
-            "first_to_last_activity_secs": 178200
+            "first_to_last_activity_secs": 178_200
         })
     );
     assert!(a["timeline"].as_array().is_some_and(|t| !t.is_empty()));
@@ -1157,7 +1157,7 @@ async fn csv_output_of_every_report_parses_and_matches_json() {
     // prs: the same rows as JSON.
     let (rows, j) = &parsed["prs"];
     let mut numbers: Vec<u64> = rows.iter().map(|r| r["number"].parse().unwrap()).collect();
-    numbers.sort();
+    numbers.sort_unstable();
     assert_eq!(numbers, vec![3, 10, 20]);
     for p in j["pull_requests"].as_array().unwrap() {
         let r = rows
@@ -1377,10 +1377,7 @@ async fn table_numbers_match_json_metrics() {
             );
             lines.insert(
                 cells[0].to_string(),
-                cells[10..]
-                    .iter()
-                    .map(std::string::ToString::to_string)
-                    .collect(),
+                cells[10..].iter().map(ToString::to_string).collect(),
             );
         }
     }
@@ -1452,7 +1449,7 @@ async fn pr_timeline_names_actors_and_keeps_occurrence_and_observation_apart() {
         .map(|e| e["event_id"].as_str().unwrap())
         .collect();
     let n = ids.len();
-    ids.sort();
+    ids.sort_unstable();
     ids.dedup();
     assert_eq!(ids.len(), n, "duplicate event ids: {timeline:?}");
     assert_eq!(

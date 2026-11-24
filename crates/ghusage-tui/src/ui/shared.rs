@@ -1,4 +1,5 @@
-pub fn draw(f: &mut Frame, app: &App) {
+/// Draws the shared screen chrome and current view.
+pub fn draw(f: &mut Frame<'_>, app: &App) {
     let area = f.area();
     if area.width < 20 || area.height < 6 {
         f.render_widget(
@@ -49,7 +50,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
 }
 
-fn draw_header(f: &mut Frame, app: &App, area: Rect) {
+fn draw_header(f: &mut Frame<'_>, app: &App, area: Rect) {
     let z = &app.zone;
     let text = format!(
         " ghusage · {} · {} → {} ({}) · range: {} · repos: {}",
@@ -110,7 +111,7 @@ fn tab_spans(app: &App, width: usize) -> Vec<Span<'static>> {
     spans
 }
 
-fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
+fn draw_tabs(f: &mut Frame<'_>, app: &App, area: Rect) {
     let width = area.width as usize;
     let mut spans = tab_spans(app, width);
     let used: usize = spans.iter().map(|s| display_width(&s.content)).sum();
@@ -128,7 +129,8 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-pub fn key_hint(app: &App) -> &'static str {
+/// Returns the key hints for the current screen.
+pub const fn key_hint(app: &App) -> &'static str {
     match app.screen {
         Screen::Dashboard => "Tab pane · Enter open",
         Screen::Overview => "Tab pane · Enter repo",
@@ -146,7 +148,7 @@ pub fn key_hint(app: &App) -> &'static str {
     }
 }
 
-fn draw_status(f: &mut Frame, app: &App, area: Rect) {
+fn draw_status(f: &mut Frame<'_>, app: &App, area: Rect) {
     if app.search_mode {
         let q = app
             .current_list()
@@ -214,8 +216,8 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn empty(f: &mut Frame, area: Rect, title: String, lines: &[&str]) {
-    let text: Vec<Line> = lines.iter().map(|l| Line::raw(l.to_string())).collect();
+fn empty(f: &mut Frame<'_>, area: Rect, title: String, lines: &[&str]) {
+    let text: Vec<Line<'_>> = lines.iter().map(|l| Line::raw(l.to_string())).collect();
     f.render_widget(
         Paragraph::new(text)
             .wrap(Wrap { trim: true })
@@ -224,7 +226,7 @@ fn empty(f: &mut Frame, area: Rect, title: String, lines: &[&str]) {
     );
 }
 
-fn loading(f: &mut Frame, area: Rect, title: &str) {
+fn loading(f: &mut Frame<'_>, area: Rect, title: &str) {
     empty(
         f,
         area,
@@ -240,7 +242,14 @@ fn no_match(app: &App, list: ListId) -> String {
     )
 }
 
-fn stateful_table(f: &mut Frame, app: &App, area: Rect, list: ListId, table: Table, focused: bool) {
+fn stateful_table(
+    f: &mut Frame<'_>,
+    app: &App,
+    area: Rect,
+    list: ListId,
+    table: Table<'_>,
+    focused: bool,
+) {
     let sel = app.selected(list);
     let offset = app.offsets.borrow().get(&list).copied().unwrap_or(0);
     let mut state = TableState::new()
@@ -308,7 +317,7 @@ fn doc_line(r: &DocRow, width: usize) -> Line<'static> {
     }
 }
 
-fn headline(r: &Report) -> [(&'static str, &'static str, u64); 8] {
+const fn headline(r: &Report) -> [(&'static str, &'static str, u64); 8] {
     let s = &r.metrics;
     [
         ("Commits", "Commits", s.commits),
@@ -384,7 +393,7 @@ fn coverage_line(app: &App, r: &Report) -> String {
     parts.join(" · ")
 }
 
-fn dashboard_repos(f: &mut Frame, app: &App, r: &Report, area: Rect) {
+fn dashboard_repos(f: &mut Frame<'_>, app: &App, r: &Report, area: Rect) {
     let focused = app.dashboard_pane == DashboardPane::Repositories;
     let title = "Top repositories".to_string();
     if r.repositories.is_empty() {
@@ -393,7 +402,7 @@ fn dashboard_repos(f: &mut Frame, app: &App, r: &Report, area: Rect) {
     let wide = area.width >= 50;
     let fixed: &[u16] = if wide { &[7, 4, 7] } else { &[7] };
     let name_w = flex_width(area, fixed);
-    let rows: Vec<Row> = r
+    let rows: Vec<Row<'_>> = r
         .repositories
         .iter()
         .map(|x| {
@@ -417,7 +426,7 @@ fn dashboard_repos(f: &mut Frame, app: &App, r: &Report, area: Rect) {
     stateful_table(f, app, area, ListId::DashboardRepos, t, focused);
 }
 
-fn dashboard_prs(f: &mut Frame, app: &App, r: &Report, area: Rect) {
+fn dashboard_prs(f: &mut Frame<'_>, app: &App, r: &Report, area: Rect) {
     let focused = app.dashboard_pane == DashboardPane::PullRequests;
     let title = "Recently active pull requests".to_string();
     let rows_all = r.pull_requests.as_deref().unwrap_or(&[]);
@@ -434,7 +443,7 @@ fn dashboard_prs(f: &mut Frame, app: &App, r: &Report, area: Rect) {
     let flex = flex_width(area, fixed);
     let pr_w = (flex * 2 / 5).max(6);
     let title_w = flex.saturating_sub(pr_w + 1).max(4);
-    let rows: Vec<Row> = rows_all
+    let rows: Vec<Row<'_>> = rows_all
         .iter()
         .map(|p| {
             let mut cells = vec![
@@ -447,9 +456,7 @@ fn dashboard_prs(f: &mut Frame, app: &App, r: &Report, area: Rect) {
             ];
             if wide {
                 cells.push(Cell::from(
-                    p.last_activity
-                        .map(|t| app.zone.format(t, "%m-%d %H:%M"))
-                        .unwrap_or_else(|| "-".into()),
+                    p.last_activity.map_or_else(|| "-".into(), |t| app.zone.format(t, "%m-%d %H:%M")),
                 ));
             }
             Row::new(cells)
@@ -457,7 +464,7 @@ fn dashboard_prs(f: &mut Frame, app: &App, r: &Report, area: Rect) {
         .collect();
     let mut widths = vec![
         Constraint::Length(9),
-        Constraint::Length(pr_w as u16),
+        Constraint::Length(to_u16(pr_w)),
         Constraint::Min(4),
     ];
     if wide {
@@ -472,7 +479,7 @@ fn dashboard_prs(f: &mut Frame, app: &App, r: &Report, area: Rect) {
     stateful_table(f, app, area, ListId::DashboardPrs, t, focused);
 }
 
-fn issue_state_text(open: bool) -> &'static str {
+const fn issue_state_text(open: bool) -> &'static str {
     if open { "○ open" } else { "✓ closed" }
 }
 
@@ -481,7 +488,7 @@ fn issue_table<'a>(rows_all: &'a [IssueRow], vis: &[usize], area: Rect) -> Table
     let flex = flex_width(area, &fixed);
     let issue_w = (flex * 2 / 5).max(8);
     let title_w = flex.saturating_sub(issue_w + 1).max(8);
-    let rows: Vec<Row> = vis
+    let rows: Vec<Row<'_>> = vis
         .iter()
         .map(|&i| {
             let x = &rows_all[i];
@@ -499,7 +506,7 @@ fn issue_table<'a>(rows_all: &'a [IssueRow], vis: &[usize], area: Rect) -> Table
         rows,
         vec![
             Constraint::Length(9),
-            Constraint::Length(issue_w as u16),
+            Constraint::Length(to_u16(issue_w)),
             Constraint::Min(8),
             Constraint::Length(6),
             Constraint::Length(6),

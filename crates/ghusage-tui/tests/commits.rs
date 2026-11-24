@@ -1,7 +1,12 @@
 //! Commits on PR Detail, the commit screen and its diff.
 
+#[expect(
+    dead_code,
+    reason = "Shared fixtures are compiled separately for each integration test target, and this target uses only a subset."
+)]
 mod common;
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use common::*;
@@ -185,7 +190,8 @@ fn color_of(app: &App, w: u16, h: u16, needle: &str) -> Color {
     for y in 0..h {
         let line: String = (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect();
         if let Some(byte) = line.find(needle) {
-            let col = line[..byte].chars().count() as u16;
+            let col =
+                u16::try_from(line[..byte].chars().count()).expect("column fits terminal width");
             return buf[(col, y)].fg;
         }
     }
@@ -524,9 +530,9 @@ fn offline_and_failed_loads_explain_themselves() {
 #[test]
 fn large_diffs_are_cut_and_still_draw_quickly() {
     let mut d = detail();
-    let mut patch = String::from("@@ -1,60000 +1,60000 @@");
+    let mut patch = String::from("@@ -1,60000 +1,60000 @@\n");
     for i in 0..60_000 {
-        patch.push_str(&format!("\n+line {i}"));
+        let _ = writeln!(patch, "+line {i}");
     }
     d.files[0].patch = Some(patch.clone());
     d.files[0].additions = 60_000;

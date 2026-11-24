@@ -75,13 +75,19 @@ pub async fn run(
     match &result {
         Ok(report) => {
             let stats = serde_json::to_string(&report.api).ok();
-            let status = if report.is_complete() {
+            let sync_status = if report.is_complete() {
                 "success"
             } else {
                 "partial"
             };
             let msg = (!report.failures.is_empty()).then(|| report.failures.join("; "));
-            store.finish_sync_run(run_id, status, finished, stats.as_deref(), msg.as_deref())?;
+            store.finish_sync_run(
+                run_id,
+                sync_status,
+                finished,
+                stats.as_deref(),
+                msg.as_deref(),
+            )?;
         }
         Err(e) => {
             let stats = serde_json::to_string(&client.stats()).ok();
@@ -167,7 +173,7 @@ async fn run_inner(
                 pr_repos.push(repo);
             }
         }
-        let _ = pr_repos_tx.send(pr_repos);
+        drop(pr_repos_tx.send(pr_repos));
         fetch_prs(&shared, &refs, search_status, &pr_states, stale_open).await
     };
     // Commits: commit search plus the default branches of repositories the
@@ -251,6 +257,7 @@ fn stale_open_prs(
 
 /// Whether the subject took part in a pull request: author, any event,
 /// requested reviewer or assignee.
+#[must_use]
 pub fn involves(subject: &Subject, bundle: &PrBundle) -> bool {
     bundle.pull_request.author.is(subject)
         || bundle.events.iter().any(|e| {
@@ -266,7 +273,9 @@ pub fn involves(subject: &Subject, bundle: &PrBundle) -> bool {
         })
 }
 
-/// Builds the write batch for one fetched pull request. Commits in the pull
+/// Builds the write batch for a fetched pull request.
+///
+/// Commits in the pull
 /// request authored by the subject are also recorded as the subject's
 /// commits (deduplicated with commit search results by repository and SHA).
 pub fn pr_batch(subject: &Subject, bundle: PrBundle) -> WriteBatch {

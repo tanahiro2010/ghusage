@@ -85,6 +85,7 @@ fn bucket_coverage(r: &Report, start: Timestamp, end: Timestamp) -> CoverageStat
 }
 
 /// Renders a pull request timeline as CSV.
+#[must_use]
 pub fn pr_csv(r: &PrReport) -> String {
     let mut w = csv::Writer::from_writer(Vec::new());
     w.write_record([

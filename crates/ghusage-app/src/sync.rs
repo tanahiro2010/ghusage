@@ -29,15 +29,19 @@ use crate::error::{AppError, Result};
 
 /// Metadata keys remembering the authenticated user for offline use.
 pub const META_VIEWER_LOGIN: &str = "viewer_login";
+/// Key for the authenticated viewer's GitHub node ID.
 pub const META_VIEWER_ID: &str = "viewer_id";
 
+/// Controls which ranges and repositories a synchronization fetches.
 #[derive(Debug, Clone)]
 pub struct SyncOptions {
+    /// Requested time range.
     pub period: Period,
     /// Restrict to public repositories.
     pub public_only: bool,
     /// Refetch the whole period instead of only missing ranges.
     pub full: bool,
+    /// Current time used for freshness and coverage decisions.
     pub now: Timestamp,
     /// How far before a missing range to start refetching, to catch data
     /// GitHub indexed late.
@@ -54,7 +58,9 @@ pub struct SyncOptions {
 }
 
 impl SyncOptions {
-    pub fn new(period: Period, now: Timestamp) -> Self {
+    /// Creates default sync settings for the requested period.
+    #[must_use]
+    pub const fn new(period: Period, now: Timestamp) -> Self {
         Self {
             period,
             public_only: false,
@@ -71,30 +77,47 @@ impl SyncOptions {
 /// Progress notifications for interactive display.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyncProgress {
+    /// Searching GitHub for the selected data kind.
     Searching(DataKind),
+    /// Fetching the discovered records of a data kind.
     Fetching {
+        /// Data kind being fetched.
         kind: DataKind,
+        /// Number of records completed so far.
         done: usize,
+        /// Total number of records discovered.
         total: usize,
     },
     /// The latest step, e.g. a repository or pull request just fetched.
     Detail(String),
+    /// Synchronization completed.
     Finished,
 }
 
 /// What a sync did.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct SyncReport {
+    /// Overall result, such as `success`, `partial`, or `failed`.
     pub status: String,
+    /// Commits discovered during the run.
     pub commits_found: u64,
+    /// Pull requests discovered during the run.
     pub pull_requests_found: u64,
+    /// Pull requests fetched during the run.
     pub pull_requests_fetched: u64,
+    /// Pull requests skipped because cached data was current.
     pub pull_requests_unchanged: u64,
+    /// Issues discovered during the run.
     pub issues_found: u64,
+    /// Issues fetched during the run.
     pub issues_fetched: u64,
+    /// Issues skipped because cached data was current.
     pub issues_unchanged: u64,
+    /// Errors encountered while fetching individual resources.
     pub failures: Vec<String>,
+    /// Coverage records written by the run.
     pub coverage: Vec<CoverageRecord>,
+    /// API request statistics for the run.
     pub api: ApiStats,
     /// Line counts fetched with `--diff-stats`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -116,6 +139,8 @@ pub struct LineCountSync {
 }
 
 impl SyncReport {
+    /// Whether the run completed without failures or coverage gaps.
+    #[must_use]
     pub fn is_complete(&self) -> bool {
         self.failures.is_empty() && self.coverage.iter().all(|c| c.status.is_complete())
     }

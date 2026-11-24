@@ -1,4 +1,4 @@
-fn draw_pull_requests(f: &mut Frame, app: &App, area: Rect) {
+fn draw_pull_requests(f: &mut Frame<'_>, app: &App, area: Rect) {
     let Some(r) = app.pr_list_report() else {
         return loading(f, area, "Pull Requests");
     };
@@ -25,7 +25,7 @@ fn draw_pull_requests(f: &mut Frame, app: &App, area: Rect) {
     let flex = flex_width(area, &fixed);
     let repo_w = (flex * 2 / 5).max(8);
     let title_w = flex.saturating_sub(repo_w + 1).max(8);
-    let rows: Vec<Row> = vis
+    let rows: Vec<Row<'_>> = vis
         .iter()
         .map(|&i| {
             let p = &rows_all[i];
@@ -50,7 +50,7 @@ fn draw_pull_requests(f: &mut Frame, app: &App, area: Rect) {
         rows,
         vec![
             Constraint::Length(9),
-            Constraint::Length(repo_w as u16),
+            Constraint::Length(to_u16(repo_w)),
             Constraint::Min(8),
             Constraint::Length(6),
             Constraint::Length(5),
@@ -77,7 +77,7 @@ fn draw_pull_requests(f: &mut Frame, app: &App, area: Rect) {
     stateful_table(f, app, area, list, t, true);
 }
 
-fn draw_pr_detail(f: &mut Frame, app: &App, area: Rect) {
+fn draw_pr_detail(f: &mut Frame<'_>, app: &App, area: Rect) {
     let Some(r) = app.pr_report() else {
         if app.pr_lookup_done() {
             return empty(
@@ -103,7 +103,7 @@ fn draw_pr_detail(f: &mut Frame, app: &App, area: Rect) {
     let lines = pr_detail_lines(r, z, w, app, area, state, merged);
     let focus_commits = app.pr_pane == PrPane::Commits;
     let h = area.height;
-    let wanted = (r.commit_list.len() as u16).saturating_add(3).max(4);
+    let wanted = to_u16(r.commit_list.len()).saturating_add(3).max(4);
     let list_h = if h >= 12 {
         let cap = if focus_commits { h - 4 } else { h / 2 };
         wanted.min(cap).max(4)
@@ -207,9 +207,7 @@ fn pr_detail_lines(
         kv(
             "Latest CI",
             r.latest_ci
-                .as_deref()
-                .map(clean)
-                .unwrap_or_else(|| "-".into()),
+                .as_deref().map_or_else(|| "-".into(), clean),
         ),
         kv("Participants", fit(&r.participants.join(", "), w)),
         kv(
@@ -250,7 +248,7 @@ fn pr_detail_lines(
 }
 
 fn draw_pr_commits(
-    f: &mut Frame,
+    f: &mut Frame<'_>,
     app: &App,
     r: &ghusage_app::report::PrReport,
     area: Rect,
@@ -261,7 +259,7 @@ fn draw_pr_commits(
     let removed = all.iter().filter(|c| c.removed).count();
     let mut title = format!("Commits ({}", all.len());
     if removed > 0 {
-        title.push_str(&format!(", {removed} removed"));
+        let _ = write!(title, ", {removed} removed");
     }
     title.push(')');
     title.push_str(if focused {
@@ -284,7 +282,7 @@ fn draw_pr_commits(
     let wide = area.width >= 70;
     let fixed: &[u16] = if wide { &[8, 7, 11, 14, 13] } else { &[8, 7] };
     let msg_w = flex_width(area, fixed);
-    let rows: Vec<Row> = vis
+    let rows: Vec<Row<'_>> = vis
         .iter()
         .map(|&i| {
             let c = &all[i];
@@ -323,7 +321,7 @@ fn draw_pr_commits(
     stateful_table(f, app, area, list, t, focused);
 }
 
-fn draw_commit_detail(f: &mut Frame, app: &App, area: Rect) {
+fn draw_commit_detail(f: &mut Frame<'_>, app: &App, area: Rect) {
     let Some(key) = &app.detail_commit else {
         return empty(f, area, "Commit".into(), &["No commit selected."]);
     };
@@ -336,7 +334,7 @@ fn draw_commit_detail(f: &mut Frame, app: &App, area: Rect) {
         let top = app.commit_scroll.min(len.saturating_sub(inner_h));
         let end = (top + inner_h).min(len);
         // Only the rows on screen are turned into lines.
-        let lines: Vec<Line> = v.rows[top..end]
+        let lines: Vec<Line<'_>> = v.rows[top..end]
             .iter()
             .map(|r| doc_line(r, inner_w))
             .collect();
@@ -347,8 +345,12 @@ fn draw_commit_detail(f: &mut Frame, app: &App, area: Rect) {
             end
         );
         match v.file_at(top) {
-            Some(i) => title.push_str(&format!(" · file {}/{}", i + 1, v.file_rows.len())),
-            None => title.push_str(&format!(" · {} file(s)", v.file_rows.len())),
+            Some(i) => {
+                let _ = write!(title, " · file {}/{}", i + 1, v.file_rows.len());
+            }
+            None => {
+                let _ = write!(title, " · {} file(s)", v.file_rows.len());
+            }
         }
         f.render_widget(
             Paragraph::new(lines).block(block(fit(&title, inner_w.saturating_sub(4)), true)),
@@ -422,7 +424,7 @@ fn draw_commit_detail(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn draw_pr_timeline(f: &mut Frame, app: &App, area: Rect) {
+fn draw_pr_timeline(f: &mut Frame<'_>, app: &App, area: Rect) {
     let Some(r) = app.pr_report() else {
         if !app.pr_lookup_done() {
             return loading(f, area, "PR Timeline");
@@ -472,7 +474,7 @@ fn draw_pr_timeline(f: &mut Frame, app: &App, area: Rect) {
         return empty(f, table_area, title, &[&msg]);
     }
     let detail_w = flex_width(table_area, &[19, 24, 22]);
-    let rows: Vec<Row> = vis
+    let rows: Vec<Row<'_>> = vis
         .iter()
         .map(|&i| {
             let e = &r.timeline[i];

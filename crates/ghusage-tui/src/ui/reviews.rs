@@ -1,4 +1,4 @@
-fn draw_reviews(f: &mut Frame, app: &App, area: Rect) {
+fn draw_reviews(f: &mut Frame<'_>, app: &App, area: Rect) {
     let Some(r) = app.reviews_report() else {
         return loading(f, area, "Reviews");
     };
@@ -46,14 +46,12 @@ fn draw_reviews(f: &mut Frame, app: &App, area: Rect) {
     let flex = flex_width(table_area, &fixed);
     let pr_w = (flex * 2 / 5).max(8);
     let title_w = flex.saturating_sub(pr_w + 1).max(8);
-    let rows: Vec<Row> = vis
+    let rows: Vec<Row<'_>> = vis
         .iter()
         .map(|&i| {
             let x = &rows_all[i];
             let state = x
-                .state
-                .map(|s| s.as_str().to_ascii_lowercase().replace('_', " "))
-                .unwrap_or_else(|| "-".into());
+                .state.map_or_else(|| "-".into(), |s| s.as_str().to_ascii_lowercase().replace('_', " "));
             let pr = match x.pr_number {
                 Some(n) => format!("{}#{n}", x.repository),
                 None => x.repository.clone(),
@@ -73,7 +71,7 @@ fn draw_reviews(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(16),
             Constraint::Length(20),
             Constraint::Length(18),
-            Constraint::Length(pr_w as u16),
+            Constraint::Length(to_u16(pr_w)),
             Constraint::Min(8),
         ],
         &["Submitted", "Reviewer", "State", "PR", "Title"],

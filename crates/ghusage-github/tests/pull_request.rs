@@ -467,7 +467,7 @@ async fn multiple_reviews_including_pending_and_dismissed() {
     let b = fetch_rich().await;
     let reviews = of_type(&b, EventType::ReviewSubmitted);
     let mut ids: Vec<_> = reviews.iter().map(|e| e.entity_id.as_str()).collect();
-    ids.sort();
+    ids.sort_unstable();
     // The pending review is not a submission.
     assert_eq!(ids, vec!["PRR_1", "PRR_2", "PRR_3", "PRR_5"]);
     let state = |id: &str| find(&b, &EventId::review(id)).meta.review_state;
@@ -498,7 +498,7 @@ async fn inline_conversation_and_summary_comments_are_kept_apart() {
     // review and the thread.
     let inline = of_type(&b, EventType::InlineComment);
     let mut ids: Vec<_> = inline.iter().map(|e| e.entity_id.as_str()).collect();
-    ids.sort();
+    ids.sort_unstable();
     assert_eq!(ids, vec!["PRRC_1", "PRRC_2", "PRRC_3"]);
     let reply = find(&b, &EventId::comment("PRRC_2"));
     assert_eq!(reply.meta.thread_id.as_deref(), Some("PRRT_1"));
@@ -2142,7 +2142,7 @@ async fn threads_with_only_pending_comments_are_not_counted() {
         .await
         .unwrap();
     let mut ids: Vec<&str> = b.threads.iter().map(|t| t.id.as_str()).collect();
-    ids.sort();
+    ids.sort_unstable();
     // Only the two threads with submitted comments.
     assert_eq!(ids, vec!["PRRT_1", "PRRT_2"]);
     let t1 = b.threads.iter().find(|t| t.id == "PRRT_1").unwrap();

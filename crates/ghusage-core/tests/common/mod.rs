@@ -1,5 +1,4 @@
 //! Shared builders for the aggregation test suites.
-#![allow(dead_code)]
 
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::metrics::{CommitDateBasis, Dataset, Filter, Options};

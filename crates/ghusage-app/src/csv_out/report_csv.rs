@@ -1,3 +1,5 @@
+/// Renders the selected report section as CSV.
+#[must_use]
 pub fn report_csv(r: &Report, kind: ReportKind) -> String {
     let mut w = csv::Writer::from_writer(Vec::new());
     let overall = r.overall_coverage().as_str();

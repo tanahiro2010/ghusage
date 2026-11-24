@@ -1,15 +1,11 @@
-fn draw_scope_detail(f: &mut Frame, app: &App, area: Rect) {
+fn draw_scope_detail(f: &mut Frame<'_>, app: &App, area: Rect) {
     let name = match app.screen {
         Screen::DayDetail => app
             .detail_day
-            .as_ref()
-            .map(|d| format!("Day {}", d.label))
-            .unwrap_or_else(|| "Day".into()),
+            .as_ref().map_or_else(|| "Day".into(), |d| format!("Day {}", d.label)),
         _ => app
             .detail_repo
-            .as_ref()
-            .map(|r| format!("Repository {}", clean(&r.full_name)))
-            .unwrap_or_else(|| "Repository".into()),
+            .as_ref().map_or_else(|| "Repository".into(), |r| format!("Repository {}", clean(&r.full_name))),
     };
     let Some(r) = app.detail_report() else {
         return loading(f, area, app.screen.title());
@@ -47,7 +43,7 @@ fn draw_scope_detail(f: &mut Frame, app: &App, area: Rect) {
     let areas = Layout::vertical(constraints).split(area);
     let (tabs_area, list_area) = if show_summary {
         let inner = area.width.saturating_sub(2) as usize;
-        let lines: Vec<Line> = summary.iter().map(|l| Line::raw(fit(l, inner))).collect();
+        let lines: Vec<Line<'_>> = summary.iter().map(|l| Line::raw(fit(l, inner))).collect();
         f.render_widget(
             Paragraph::new(lines).block(block(fit(&name, inner.saturating_sub(4)), false)),
             areas[0],
@@ -112,7 +108,7 @@ let rows_all = r.activity.as_deref().unwrap_or(&[]);
             let flex = flex_width(list_area, &[11, 20, 18]);
             let where_w = (flex * 2 / 5).max(8);
             let title_w = flex.saturating_sub(where_w + 1).max(8);
-            let rows: Vec<Row> = vis
+            let rows: Vec<Row<'_>> = vis
                 .iter()
                 .map(|&i| {
                     let a = &rows_all[i];
@@ -135,7 +131,7 @@ let rows_all = r.activity.as_deref().unwrap_or(&[]);
                     Constraint::Length(11),
                     Constraint::Length(20),
                     Constraint::Length(18),
-                    Constraint::Length(where_w as u16),
+                    Constraint::Length(to_u16(where_w)),
                     Constraint::Min(8),
                 ],
                 &["Time", "Actor", "Event", "Where", "Title"],
@@ -145,7 +141,7 @@ let rows_all = r.activity.as_deref().unwrap_or(&[]);
 fn detail_commits_table<'a>(r: &'a Report, vis: &[usize], list_area: Rect, z: &Zone) -> Table<'a> {
 let rows_all = r.commits.as_deref().unwrap_or(&[]);
             let repo_w = flex_width(list_area, &[16, 12, 5]);
-            let rows: Vec<Row> = vis
+            let rows: Vec<Row<'_>> = vis
                 .iter()
                 .map(|&i| {
                     let c = &rows_all[i];
@@ -176,7 +172,7 @@ let rows_all = r.pull_requests.as_deref().unwrap_or(&[]);
             let flex = flex_width(list_area, &fixed);
             let pr_w = (flex * 2 / 5).max(8);
             let title_w = flex.saturating_sub(pr_w + 1).max(8);
-            let rows: Vec<Row> = vis
+            let rows: Vec<Row<'_>> = vis
                 .iter()
                 .map(|&i| {
                     let p = &rows_all[i];
@@ -192,9 +188,7 @@ let rows_all = r.pull_requests.as_deref().unwrap_or(&[]);
                         Cell::from(p.reviews.to_string()),
                         Cell::from(p.comments.to_string()),
                         Cell::from(
-                            p.last_activity
-                                .map(|t| z.format(t, "%m-%d %H:%M"))
-                                .unwrap_or_else(|| "-".into()),
+                            p.last_activity.map_or_else(|| "-".into(), |t| z.format(t, "%m-%d %H:%M")),
                         ),
                     ])
                 })
@@ -203,7 +197,7 @@ let rows_all = r.pull_requests.as_deref().unwrap_or(&[]);
                 rows,
                 vec![
                     Constraint::Length(9),
-                    Constraint::Length(pr_w as u16),
+                    Constraint::Length(to_u16(pr_w)),
                     Constraint::Min(8),
                     Constraint::Length(6),
                     Constraint::Length(5),
@@ -221,14 +215,12 @@ fn detail_reviews_table<'a>(app: &App, vis: &[usize], list_area: Rect, z: &Zone)
 let rows_all = app.detail_reviews();
             let flex = flex_width(list_area, &[9, 11, 18, 18]);
             let pr_w = (flex * 2 / 5).max(8);
-            let rows: Vec<Row> = vis
+            let rows: Vec<Row<'_>> = vis
                 .iter()
                 .map(|&i| {
                     let (dir, x) = rows_all[i];
                     let state = x
-                        .state
-                        .map(|s| s.as_str().to_ascii_lowercase().replace('_', " "))
-                        .unwrap_or_else(|| "-".into());
+                        .state.map_or_else(|| "-".into(), |s| s.as_str().to_ascii_lowercase().replace('_', " "));
                     let pr = match x.pr_number {
                         Some(n) => format!("{}#{n}", x.repository),
                         None => x.repository.clone(),
@@ -257,7 +249,7 @@ let rows_all = app.detail_reviews();
                     Constraint::Length(11),
                     Constraint::Length(18),
                     Constraint::Length(18),
-                    Constraint::Length(pr_w as u16),
+                    Constraint::Length(to_u16(pr_w)),
                     Constraint::Min(8),
                 ],
                 &["Direction", "Submitted", "Reviewer", "State", "PR", "Title"],
@@ -267,7 +259,7 @@ let rows_all = app.detail_reviews();
 fn detail_comments_table<'a>(r: &'a Report, vis: &[usize], list_area: Rect, z: &Zone) -> Table<'a> {
 let rows_all = r.comments.as_deref().unwrap_or(&[]);
             let pr_w = flex_width(list_area, &[11, 20, 15, 9]);
-            let rows: Vec<Row> = vis
+            let rows: Vec<Row<'_>> = vis
                 .iter()
                 .map(|&i| {
                     let c = &rows_all[i];
@@ -313,7 +305,7 @@ let rows_all = r.issues.as_deref().unwrap_or(&[]);
 
 // ----- System ----------------------------------------------------------------
 
-fn draw_system(f: &mut Frame, app: &App, area: Rect) {
+fn draw_system(f: &mut Frame<'_>, app: &App, area: Rect) {
     let z = &app.zone;
     let s = &app.system;
     let w = area.width.saturating_sub(26) as usize;
@@ -354,9 +346,7 @@ fn draw_system(f: &mut Frame, app: &App, area: Rect) {
             "Rate limit",
             app.sync
                 .rate_limit
-                .as_deref()
-                .map(clean)
-                .unwrap_or_else(|| "unknown".into()),
+                .as_deref().map_or_else(|| "unknown".into(), clean),
         ),
         kv(
             "Last sync",
@@ -405,9 +395,7 @@ fn draw_system(f: &mut Frame, app: &App, area: Rect) {
         kv(
             "Data directory",
             s.data_dir
-                .as_ref()
-                .map(|d| fit(&d.display().to_string(), w))
-                .unwrap_or_else(|| "in memory".into()),
+                .as_ref().map_or_else(|| "in memory".into(), |d| fit(&d.display().to_string(), w)),
         ),
         Line::raw(""),
         Line::styled("Coverage for the selected period", bold()),
@@ -434,18 +422,17 @@ fn draw_system(f: &mut Frame, app: &App, area: Rect) {
     }
     lines.push(Line::raw(""));
     lines.push(Line::styled("Warnings and errors", bold()));
-    let mut any = false;
+    let any = s.error.is_some()
+        || app.sync.last_error.is_some()
+        || !app.sync.warnings.is_empty();
     if let Some(e) = &s.error {
         lines.push(Line::raw(format!("  ! cache: {}", fit(e, w))));
-        any = true;
     }
     if let Some(e) = &app.sync.last_error {
         lines.push(Line::raw(format!("  ! sync failed: {}", fit(e, w))));
-        any = true;
     }
     for warn in app.sync.warnings.iter().take(20) {
         lines.push(Line::raw(format!("  ! {}", fit(warn, w))));
-        any = true;
     }
     if app.sync.warnings.len() > 20 {
         lines.push(Line::raw(format!(

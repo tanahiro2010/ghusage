@@ -5,6 +5,10 @@
 //! Failing cases are saved under `proptest-regressions/` and replayed first on
 //! the next run.
 
+#[expect(
+    dead_code,
+    reason = "Shared fixtures are compiled separately for each integration test target, and this target uses only a subset."
+)]
 mod common;
 
 use common::*;
@@ -477,11 +481,11 @@ proptest! {
                     0 => {}
                     1 => {
                         copy.source = Source::Rest;
-                        copy.observed_at = utc("2027-01-01T00:00:00Z") + SignedDuration::from_hours(k as i64);
+                        copy.observed_at = utc("2027-01-01T00:00:00Z") + SignedDuration::from_hours(i64::try_from(k).expect("test index fits i64"));
                     }
                     _ => {
                         copy.source = Source::Search;
-                        copy.observed_at = utc(OBSERVED) + SignedDuration::from_hours(k as i64 + 1);
+                        copy.observed_at = utc(OBSERVED) + SignedDuration::from_hours(i64::try_from(k).expect("test index fits i64") + 1);
                     }
                 }
                 events.push(copy);
@@ -505,7 +509,7 @@ proptest! {
         let len = (o.period.end - o.period.start).as_secs();
         let mut points: BTreeSet<Timestamp> = cuts
             .iter()
-            .map(|c| o.period.start + SignedDuration::from_secs(c.index(len as usize) as i64))
+            .map(|c| o.period.start + SignedDuration::from_secs(i64::try_from(c.index(usize::try_from(len).expect("test period fits usize"))).expect("test index fits i64")))
             .filter(|t| *t > o.period.start)
             .collect();
         points.insert(o.period.start);
@@ -655,8 +659,8 @@ proptest! {
         at in any::<prop::sample::Index>(),
         kind in 0..3usize,
     ) {
-        let len = (o.period.end - o.period.start).as_secs() as usize;
-        let t = o.period.start + SignedDuration::from_secs(at.index(len) as i64);
+        let len = usize::try_from((o.period.end - o.period.start).as_secs()).expect("test period fits usize");
+        let t = o.period.start + SignedDuration::from_secs(i64::try_from(at.index(len)).expect("test index fits i64"));
         let (pr_id, repo_id, _) = PRS[pr];
         let (ty, id) = match kind {
             0 => (EventType::ReviewSubmitted, EventId::review("added")),
@@ -696,7 +700,7 @@ proptest! {
     ) {
         let (pr_id, repo_id, author) = PRS[pr];
         let pr_is_mine = is_me(&actors()[author]);
-        let len = (o.period.end - o.period.start).as_secs() as usize;
+        let len = usize::try_from((o.period.end - o.period.start).as_secs()).expect("test period fits usize");
         let states = [
             ReviewState::Approved,
             ReviewState::ChangesRequested,
@@ -723,7 +727,7 @@ proptest! {
                 actor,
                 repo_id,
                 Some(pr_id),
-                o.period.start + SignedDuration::from_secs(at.index(len) as i64),
+                o.period.start + SignedDuration::from_secs(i64::try_from(at.index(len)).expect("test index fits i64")),
             );
             e.meta.review_state = Some(state);
             events.push(e);
@@ -870,7 +874,7 @@ fn records(raw: &[RawRecord]) -> Vec<CoverageRecord> {
             description: format!("scope-{}", r.kind),
             reason: None,
             // distinct recording times; later records were recorded later
-            recorded_at: hour(10_000 + i as i64),
+            recorded_at: hour(10_000 + i64::try_from(i).expect("test index fits i64")),
         })
         .collect()
 }

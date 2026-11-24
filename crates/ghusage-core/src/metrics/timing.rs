@@ -3,13 +3,17 @@
 pub struct PrTiming {
     /// Creation to the first submitted review by someone other than the author.
     pub time_to_first_review_secs: Option<i64>,
+    /// Creation to merge.
     pub creation_to_merge_secs: Option<i64>,
     /// First review by another participant to the author's next observed
     /// event of any kind. This is not necessarily a response to the review.
     pub review_to_next_author_activity_secs: Option<i64>,
+    /// First observed human event to last observed human event.
     pub first_to_last_activity_secs: Option<i64>,
 }
 
+/// Computes lifecycle timings from a pull request's observed events.
+#[must_use]
 pub fn pr_timing(ds: &Dataset, pr: &PullRequest) -> PrTiming {
     let events: Vec<&ActivityEvent> = ds
         .events
@@ -34,9 +38,9 @@ fn timing_of(pr: &PullRequest, all: &[&ActivityEvent]) -> PrTiming {
         events
             .iter()
             .find(|e| e.occurred_at > r.occurred_at && same_actor(&e.actor, &pr.author))
-            .map(|e| e.occurred_at.duration_since(r.occurred_at).as_secs_f64() as i64)
+            .map(|e| e.occurred_at.duration_since(r.occurred_at).as_secs())
     });
-    let secs = |d: SignedDuration| d.as_secs_f64() as i64;
+    let secs = |d: SignedDuration| d.as_secs();
     PrTiming {
         time_to_first_review_secs: first_review.map(|r| secs(r.occurred_at - pr.created_at)),
         creation_to_merge_secs: pr.merged_at.map(|m| secs(m - pr.created_at)),
@@ -65,12 +69,18 @@ fn same_actor(a: &Actor, b: &Actor) -> bool {
 /// the period.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TimingStats {
+    /// Distribution of creation-to-first-review times.
     pub time_to_first_review: Option<Stats>,
+    /// Distribution of creation-to-merge times.
     pub creation_to_merge: Option<Stats>,
+    /// Distribution of first-review-to-next-author-event times.
     pub review_to_next_author_activity: Option<Stats>,
+    /// Distribution of first-to-last-activity times.
     pub first_to_last_activity: Option<Stats>,
 }
 
+/// Computes timing distributions for subject-authored pull requests in the period.
+#[must_use]
 pub fn timing_stats(ds: &Dataset, opts: &Options) -> TimingStats {
     let rows = pr_rows(ds, opts, Participation::All, None, PrSort::Activity);
     let wanted: HashSet<&str> = rows

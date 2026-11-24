@@ -2,6 +2,10 @@
 //! boundaries, Monday-start weeks, calendar months, month/year ends, leap
 //! days and daylight-saving transitions.
 
+#[expect(
+    dead_code,
+    reason = "Shared fixtures are compiled separately for each integration test target, and this target uses only a subset."
+)]
 mod common;
 
 use common::*;
@@ -10,7 +14,7 @@ use ghusage_core::model::Visibility;
 use ghusage_core::time::{Granularity, Period, bucket_key, buckets, parse_bound, resolve_period};
 use jiff::SignedDuration;
 
-fn commits_dataset(times: &[&str]) -> ghusage_core::metrics::Dataset {
+fn commits_dataset(times: &[&str]) -> metrics::Dataset {
     let events = times
         .iter()
         .enumerate()
@@ -24,11 +28,7 @@ fn commits_dataset(times: &[&str]) -> ghusage_core::metrics::Dataset {
     )
 }
 
-fn per_bucket(
-    ds: &ghusage_core::metrics::Dataset,
-    opts: &ghusage_core::metrics::Options,
-    g: Granularity,
-) -> Vec<u64> {
+fn per_bucket(ds: &metrics::Dataset, opts: &metrics::Options, g: Granularity) -> Vec<u64> {
     metrics::breakdown(ds, opts, g)
         .iter()
         .map(|b| b.summary.commits)

@@ -1,10 +1,12 @@
 //! Synthetic data shared by the benchmarks.
-#![allow(dead_code)]
 
 use ghusage_app::report::QueryContext;
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::metrics::{CommitDateBasis, Filter};
-use ghusage_core::model::*;
+use ghusage_core::model::{
+    ActivityEvent, Actor, ActorKind, EventId, EventMeta, EventType, PrState, PullRequest,
+    Repository, ReviewState, Source, Subject, Visibility,
+};
 use ghusage_core::time::{Period, Zone};
 use jiff::{SignedDuration, Timestamp};
 
@@ -56,10 +58,18 @@ pub(crate) fn data() -> (Vec<Repository>, Vec<PullRequest>, Vec<ActivityEvent>) 
             author: actor(i),
             state: PrState::Merged,
             is_draft: false,
-            created_at: start + SignedDuration::from_secs(i as i64 * 4 * 60 * 60),
+            created_at: start
+                + SignedDuration::from_secs(
+                    i64::try_from(i).expect("fixture index fits i64") * 4 * 60 * 60,
+                ),
             updated_at: None,
             closed_at: None,
-            merged_at: Some(start + SignedDuration::from_secs((i as i64 * 4 + 20) * 60 * 60)),
+            merged_at: Some(
+                start
+                    + SignedDuration::from_secs(
+                        (i64::try_from(i).expect("fixture index fits i64") * 4 + 20) * 60 * 60,
+                    ),
+            ),
             merged_by: None,
             head_sha: None,
             latest_ci: None,
@@ -72,7 +82,10 @@ pub(crate) fn data() -> (Vec<Repository>, Vec<PullRequest>, Vec<ActivityEvent>) 
         .map(|i| {
             let t = types[i % types.len()];
             let pr = (i % 2000).to_string();
-            let at = start + SignedDuration::from_secs((i as i64) * 315);
+            let at = start
+                + SignedDuration::from_secs(
+                    i64::try_from(i).expect("fixture index fits i64") * 315,
+                );
             let mut meta = EventMeta::default();
             if matches!(t, EventType::CommitAuthored | EventType::PrCommit) {
                 meta.sha = Some(format!("{i:040x}"));

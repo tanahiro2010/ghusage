@@ -1,5 +1,9 @@
 //! Key presses and the state changes they cause.
 
+#[expect(
+    dead_code,
+    reason = "Shared fixtures are compiled separately for each integration test target, and this target uses only a subset."
+)]
 mod common;
 
 use common::*;
@@ -104,7 +108,7 @@ fn moving_the_selection_does_not_recompute_reports() {
     for _ in 0..20 {
         app.handle_key(key('j'));
         app.handle_key(key('k'));
-        let _ = render(&app, 120, 30);
+        drop(render(&app, 120, 30));
     }
     assert_eq!(app.report_builds(), builds);
     assert_eq!(app.dataset_loads(), loads);
@@ -224,11 +228,15 @@ fn filter_cycles_through_repository_presets() {
     // public: R1 (2 commits); private: R3 (1); owned: R1+R3 (3); external: R2 (0).
     assert_eq!(commits, vec![2, 1, 3, 0, 3]);
     assert_eq!(
-        FilterPreset::Public.apply(&Default::default()).visibility,
+        FilterPreset::Public
+            .apply(&ghusage_core::metrics::Filter::default())
+            .visibility,
         Some(VisibilityFilter::Public)
     );
     assert_eq!(
-        FilterPreset::External.apply(&Default::default()).ownership,
+        FilterPreset::External
+            .apply(&ghusage_core::metrics::Filter::default())
+            .ownership,
         Some(Ownership::External)
     );
 }

@@ -23,6 +23,10 @@ pub(crate) struct Cli {
 }
 
 #[derive(Debug, Clone, Args)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "Each boolean is an independent command-line switch with its own meaning."
+)]
 pub(crate) struct GlobalArgs {
     /// Start of the period: YYYY-MM-DD, RFC 3339, today, yesterday, or Nd/Nw/Nm/Ny (last N days/weeks/months/years).
     #[arg(long, global = true)]
@@ -60,7 +64,7 @@ pub(crate) struct GlobalArgs {
     /// Exit with code 6 if any data for the period is incomplete.
     #[arg(long, global = true)]
     pub require_complete: bool,
-    /// Disable colors (also honors NO_COLOR).
+    /// Disable colors (also honors `NO_COLOR`).
     #[arg(long, global = true)]
     pub no_color: bool,
     /// Include private repository names and titles in JSON/CSV output.
@@ -75,7 +79,7 @@ pub(crate) struct GlobalArgs {
     /// Read the GitHub token from this file (must not be readable by others).
     #[arg(long, global = true, value_name = "PATH")]
     pub token_file: Option<PathBuf>,
-    /// Directory for the cache database (default: OS user data directory, or GHUSAGE_DATA_DIR).
+    /// Directory for the cache database (default: OS user data directory, or `GHUSAGE_DATA_DIR`).
     #[arg(long, global = true, value_name = "PATH")]
     pub data_dir: Option<PathBuf>,
     /// Reports skip syncing when the cache was synced this recently and show
@@ -192,19 +196,19 @@ pub(crate) struct PrsArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct PrArgs {
-    /// Pull request URL, e.g. https://github.com/owner/repo/pull/123
+    /// Pull request URL, e.g. <https://github.com/owner/repo/pull/123>
     pub url: String,
     /// Show the full activity timeline.
     #[arg(long)]
     pub timeline: bool,
-    /// Only these event types in the timeline (e.g. review_submitted,inline_comment). Repeatable.
+    /// Only these event types in the timeline (e.g. `review_submitted,inline_comment`). Repeatable.
     #[arg(long = "event-type", value_delimiter = ',')]
     pub event_types: Vec<String>,
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct CommitArgs {
-    /// The commit: OWNER/REPO@SHA or https://github.com/OWNER/REPO/commit/SHA
+    /// The commit: OWNER/REPO@SHA or <https://github.com/OWNER/REPO/commit/SHA>
     #[arg(value_name = "COMMIT")]
     pub reference: String,
     /// Include the diff of each file.

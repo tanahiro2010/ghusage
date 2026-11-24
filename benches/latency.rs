@@ -3,7 +3,7 @@
 //! `cargo bench --bench latency`.
 
 mod common;
-use common::*;
+use common::{EVENTS, ctx, data, subject};
 
 use ghusage_app::report::{self, ReportKind};
 use ghusage_core::metrics::Dataset;
@@ -16,6 +16,11 @@ const WARMUP: usize = 5;
 const RUNS: usize = 50;
 
 /// Nearest-rank percentile.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "The benchmark passes positive percentiles over a nonempty, small fixed sample."
+)]
 fn percentile(sorted: &[Duration], p: f64) -> Duration {
     let rank = ((p * sorted.len() as f64).ceil() as usize).clamp(1, sorted.len());
     sorted[rank - 1]

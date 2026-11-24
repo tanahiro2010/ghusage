@@ -1,14 +1,21 @@
+/// Normalized activity and current GitHub state used by report calculations.
 #[derive(Debug, Clone)]
 pub struct Dataset {
+    /// Account whose activity is summarized.
     pub subject: Subject,
     /// Whether the subject is the authenticated viewer (affects ownership).
     pub subject_is_viewer: bool,
+    /// Repository snapshots indexed by GitHub node ID.
     pub repositories: BTreeMap<String, Repository>,
+    /// Pull request snapshots indexed by GitHub node ID.
     pub pull_requests: BTreeMap<String, PullRequest>,
+    /// Issue snapshots indexed by GitHub node ID.
     pub issues: BTreeMap<String, Issue>,
+    /// Current review threads indexed by GitHub node ID.
     pub threads: BTreeMap<String, ReviewThread>,
     /// Events, deduplicated by event id and sorted by (time, rank, id).
     pub events: Vec<ActivityEvent>,
+    /// Coverage records from synchronization runs.
     pub coverage: Vec<CoverageRecord>,
     /// Lines added and deleted per commit, keyed by the commit's event id
     /// ([`EventId::commit`](crate::model::EventId::commit)). Commits without
@@ -25,7 +32,9 @@ pub struct Dataset {
 /// merge commit: against its first parent).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LineCounts {
+    /// Lines added by the commit.
     pub additions: u64,
+    /// Lines deleted by the commit.
     pub deletions: u64,
 }
 
@@ -34,17 +43,20 @@ pub struct LineCounts {
 /// the pull request at `observed_at`, not activity in a period.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrDiff {
+    /// Lines added in the observed pull request diff.
     pub additions: u64,
+    /// Lines deleted in the observed pull request diff.
     pub deletions: u64,
+    /// Number of changed files in the observed diff.
     pub changed_files: u64,
+    /// Time the diff snapshot was fetched.
     pub observed_at: Timestamp,
 }
 
 impl Dataset {
     /// Builds a dataset. Duplicate events (same id) are collapsed; the most
     /// recently observed copy is kept so a resync's state wins.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
+        pub fn new(
         subject: Subject,
         subject_is_viewer: bool,
         repositories: impl IntoIterator<Item = Repository>,
@@ -91,6 +103,7 @@ impl Dataset {
     }
 
     /// Adds commit statistics and pull request diffs.
+    #[must_use]
     pub fn with_diff_stats(
         mut self,
         commit_stats: HashMap<String, LineCounts>,
@@ -113,6 +126,7 @@ impl Dataset {
     /// pull request count. The rule depends only on pull requests, not on
     /// how a commit was found, so fetching the same data again never
     /// changes it.
+    #[must_use]
     pub fn with_line_count_rule(mut self, merged_by_merge_commit: &HashSet<String>) -> Self {
         // Commit event id -> whether any appearance keeps it counted.
         let mut appearances: HashMap<String, bool> = HashMap::new();
@@ -142,14 +156,16 @@ impl Dataset {
     }
 
     /// Whether a commit's line counts go into the totals.
+    #[must_use]
     pub fn counts_lines(&self, commit_event_id: &str) -> bool {
         !self.lines_excluded.contains(commit_event_id)
     }
 
+    /// Returns the repository's display name, using an ID placeholder if unknown.
     pub fn repo_name(&self, repository_id: &str) -> String {
         self.repositories.get(repository_id).map_or_else(
             || format!("unknown:{repository_id}"),
-            super::model::Repository::full_name,
+            Repository::full_name,
         )
     }
 

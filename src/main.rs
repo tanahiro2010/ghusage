@@ -1,7 +1,10 @@
+//! Command-line entry point for ghusage.
+
 mod cli;
 mod progress;
 mod render;
 
+use std::fmt::Write as _;
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
@@ -30,8 +33,8 @@ fn main() -> ExitCode {
             } else {
                 0
             };
-            let _ = e.print();
-            return ExitCode::from(code as u8);
+            drop(e.print());
+            return ExitCode::from(u8::try_from(code).unwrap_or(u8::MAX));
         }
     };
     init_logging();
@@ -42,14 +45,14 @@ fn main() -> ExitCode {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: cannot start runtime: {e}");
-            return ExitCode::from(exit::GENERAL as u8);
+            return ExitCode::from(u8::try_from(exit::GENERAL).unwrap_or(u8::MAX));
         }
     };
     match runtime.block_on(run(cli)) {
-        Ok(code) => ExitCode::from(code as u8),
+        Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(u8::MAX)),
         Err(e) => {
             eprintln!("error: {}", clean(&e));
-            ExitCode::from(e.exit_code() as u8)
+            ExitCode::from(u8::try_from(e.exit_code()).unwrap_or(u8::MAX))
         }
     }
 }
@@ -57,11 +60,13 @@ fn main() -> ExitCode {
 fn init_logging() {
     let filter = tracing_subscriber::EnvFilter::try_from_env("GHUSAGE_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .try_init();
+    drop(
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .with_ansi(false)
+            .try_init(),
+    );
 }
 
 fn style(g: &GlobalArgs, stream_is_tty: bool) -> Style {
@@ -98,14 +103,14 @@ fn filter(g: &GlobalArgs) -> Filter {
     }
 }
 
-fn commit_basis(g: &GlobalArgs) -> CommitDateBasis {
+const fn commit_basis(g: &GlobalArgs) -> CommitDateBasis {
     match g.commit_date {
         cli::CommitDateArg::Committer => CommitDateBasis::Committer,
         cli::CommitDateArg::Author => CommitDateBasis::Author,
     }
 }
 
-fn default_since(cmd: &Command) -> &'static str {
+const fn default_since(cmd: &Command) -> &'static str {
     match cmd {
         Command::Weekly => "8w",
         Command::Monthly => "6m",
@@ -133,7 +138,7 @@ fn clean(e: &dyn std::fmt::Display) -> String {
 
 fn print_stdout(s: &str) -> Result<()> {
     let mut out = std::io::stdout().lock();
-    match out.write_all(s.as_bytes()).and_then(|_| out.flush()) {
+    match out.write_all(s.as_bytes()).and_then(|()| out.flush()) {
         Ok(()) => Ok(()),
         // A closed pipe (e.g. `| head`) is not an error.
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
@@ -148,7 +153,7 @@ fn to_json<T: serde::Serialize>(v: &T) -> Result<String> {
 }
 
 /// The command as typed, for messages.
-fn command_name(cmd: &Command) -> &'static str {
+const fn command_name(cmd: &Command) -> &'static str {
     match cmd {
         Command::Overview => "overview",
         Command::Daily => "daily",
@@ -352,7 +357,8 @@ async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<
     }
     if !s.is_offline() && s.needs_sync(period)? {
         let now = Timestamp::now();
-        let max_age = SignedDuration::from_secs(g.max_age.as_secs().min(i64::MAX as u64) as i64);
+        let max_age =
+            SignedDuration::from_secs(i64::try_from(g.max_age.as_secs()).unwrap_or(i64::MAX));
         if let Some(until) = s.synced_until(period)?
             && until < period.end
             && until.duration_until(now) <= max_age
@@ -449,15 +455,14 @@ async fn pr_cmd(g: &GlobalArgs, a: &cli::PrArgs, zone: Zone) -> Result<i32> {
     };
     let mut types = Vec::new();
     for t in &a.event_types {
-        match EventType::parse(t.trim()) {
-            Some(t) => types.push(t),
-            None => {
-                let valid: Vec<&str> = EventType::ALL.iter().map(|t| t.as_str()).collect();
-                return Err(AppError::InvalidArgs(format!(
-                    "unknown event type {t}; valid types: {}",
-                    valid.join(", ")
-                )));
-            }
+        if let Some(t) = EventType::parse(t.trim()) {
+            types.push(t);
+        } else {
+            let valid: Vec<&str> = EventType::ALL.iter().map(|t| t.as_str()).collect();
+            return Err(AppError::InvalidArgs(format!(
+                "unknown event type {t}; valid types: {}",
+                valid.join(", ")
+            )));
         }
     }
     let mut s = Session::open(session_config(g)).await?;
@@ -569,53 +574,52 @@ async fn sync_cmd(
     };
     drop(progress);
     let mut r = synced?;
-    let out = match g.format {
-        Format::Json => {
-            if !g.include_private {
-                let public = report::public_names(&s.dataset(Some(period))?);
-                for f in &mut r.failures {
-                    *f = report::scrub_names(f, &public);
-                }
-                for c in &mut r.coverage {
-                    if let Some(reason) = &c.reason {
-                        c.reason = Some(report::scrub_names(reason, &public));
-                    }
+    let out = if g.format == Format::Json {
+        if !g.include_private {
+            let public = report::public_names(&s.dataset(Some(period))?);
+            for f in &mut r.failures {
+                *f = report::scrub_names(f, &public);
+            }
+            for c in &mut r.coverage {
+                if let Some(reason) = &c.reason {
+                    c.reason = Some(report::scrub_names(reason, &public));
                 }
             }
-            to_json(&r)?
         }
-        _ => {
-            let mut o = format!(
-                "Synced {} for {} → {}\n  commits found: {}\n  pull requests found: {} (fetched {}, unchanged {})\n  issues found: {} (fetched {}, unchanged {})\n  API requests: {} (retries {}, {} ms)\n",
-                ghusage_core::sanitize::sanitize_line(&s.identity().login),
-                zone.format(period.start, "%Y-%m-%d %H:%M"),
-                zone.format(period.end, "%Y-%m-%d %H:%M"),
-                r.commits_found,
-                r.pull_requests_found,
-                r.pull_requests_fetched,
-                r.pull_requests_unchanged,
-                r.issues_found,
-                r.issues_fetched,
-                r.issues_unchanged,
-                r.api.requests,
-                r.api.retries,
-                r.api.total_api_time_ms,
+        to_json(&r)?
+    } else {
+        let mut o = format!(
+            "Synced {} for {} → {}\n  commits found: {}\n  pull requests found: {} (fetched {}, unchanged {})\n  issues found: {} (fetched {}, unchanged {})\n  API requests: {} (retries {}, {} ms)\n",
+            ghusage_core::sanitize::sanitize_line(&s.identity().login),
+            zone.format(period.start, "%Y-%m-%d %H:%M"),
+            zone.format(period.end, "%Y-%m-%d %H:%M"),
+            r.commits_found,
+            r.pull_requests_found,
+            r.pull_requests_fetched,
+            r.pull_requests_unchanged,
+            r.issues_found,
+            r.issues_fetched,
+            r.issues_unchanged,
+            r.api.requests,
+            r.api.retries,
+            r.api.total_api_time_ms,
+        );
+        let _ = writeln!(o, "  status: {}", r.status);
+        if let Some(d) = &r.diff_stats {
+            let _ = writeln!(
+                o,
+                "  line counts: {} commits (already known {}, fetched {}, unavailable {})",
+                d.commits, d.already_known, d.fetched, d.unavailable
             );
-            o.push_str(&format!("  status: {}\n", r.status));
-            if let Some(d) = &r.diff_stats {
-                o.push_str(&format!(
-                    "  line counts: {} commits (already known {}, fetched {}, unavailable {})\n",
-                    d.commits, d.already_known, d.fetched, d.unavailable
-                ));
-            }
-            for f in &r.failures {
-                o.push_str(&format!(
-                    "  incomplete: {}\n",
-                    ghusage_core::sanitize::sanitize_line(f)
-                ));
-            }
-            o
         }
+        for f in &r.failures {
+            let _ = writeln!(
+                o,
+                "  incomplete: {}",
+                ghusage_core::sanitize::sanitize_line(f)
+            );
+        }
+        o
     };
     print_stdout(&out)?;
     let status = if r.is_complete() {
@@ -667,49 +671,47 @@ async fn tui_cmd(g: &GlobalArgs, cmd: &Command, zone: Zone) -> Result<i32> {
 
 async fn auth_status_cmd(g: &GlobalArgs) -> Result<i32> {
     let status = commands::auth_status(&session_config(g)).await?;
-    match g.format {
-        Format::Json => {
-            #[derive(serde::Serialize)]
-            struct Out {
-                authenticated: bool,
-                source: String,
-                login: String,
-                id: String,
-                scopes: Option<Vec<String>>,
-                rate_limit: Option<commands::RateLimit>,
-            }
-            print_stdout(&to_json(&Out {
-                authenticated: true,
-                source: status.source,
-                login: status.login,
-                id: status.id,
-                scopes: status.scopes,
-                rate_limit: status.rate_limit,
-            })?)?;
+    if g.format == Format::Json {
+        #[derive(serde::Serialize)]
+        struct Out {
+            authenticated: bool,
+            source: String,
+            login: String,
+            id: String,
+            scopes: Option<Vec<String>>,
+            rate_limit: Option<commands::RateLimit>,
         }
-        _ => {
-            let mut o = format!(
-                "Logged in as {} (credentials from {})\n",
-                ghusage_core::sanitize::sanitize_line(&status.login),
-                status.source
+        print_stdout(&to_json(&Out {
+            authenticated: true,
+            source: status.source,
+            login: status.login,
+            id: status.id,
+            scopes: status.scopes,
+            rate_limit: status.rate_limit,
+        })?)?;
+    } else {
+        let mut o = format!(
+            "Logged in as {} (credentials from {})\n",
+            ghusage_core::sanitize::sanitize_line(&status.login),
+            status.source
+        );
+        if let Some(scopes) = status.scopes {
+            let _ = writeln!(o, "  token scopes: {}", scopes.join(", "));
+        }
+        if let Some(r) = status.rate_limit {
+            let _ = writeln!(
+                o,
+                "  rate limit: core {}/{} (resets {}), search {}/{}, graphql {}/{}",
+                r.core_remaining,
+                r.core_limit,
+                r.core_reset.strftime("%Y-%m-%dT%H:%M:%S%.f%:z"),
+                r.search_remaining,
+                r.search_limit,
+                r.graphql_remaining,
+                r.graphql_limit
             );
-            if let Some(scopes) = status.scopes {
-                o.push_str(&format!("  token scopes: {}\n", scopes.join(", ")));
-            }
-            if let Some(r) = status.rate_limit {
-                o.push_str(&format!(
-                    "  rate limit: core {}/{} (resets {}), search {}/{}, graphql {}/{}\n",
-                    r.core_remaining,
-                    r.core_limit,
-                    r.core_reset.strftime("%Y-%m-%dT%H:%M:%S%.f%:z"),
-                    r.search_remaining,
-                    r.search_limit,
-                    r.graphql_remaining,
-                    r.graphql_limit
-                ));
-            }
-            print_stdout(&o)?;
         }
+        print_stdout(&o)?;
     }
     Ok(exit::SUCCESS)
 }
@@ -723,64 +725,64 @@ fn cache_cmd(g: &GlobalArgs, c: CacheCommand, zone: Zone) -> Result<i32> {
         }
         CacheCommand::Status => {
             let status = commands::cache_status(&cfg, g.user.as_deref(), Timestamp::now())?;
-            match g.format {
-                Format::Json => {
-                    let v = serde_json::json!({
-                        "path": status.path,
-                        "file_size_bytes": status.file_size_bytes,
-                        "schema_version": status.schema_version,
-                        "account": status.account,
-                        "repositories": status.repositories,
-                        "pull_requests": status.pull_requests,
-                        "issues": status.issues,
-                        "events": status.events,
-                        "last_sync": status.last_sync.as_ref().map(|r| serde_json::json!({
-                            "started_at": r.started_at,
-                            "finished_at": r.finished_at,
-                            "status": r.status,
-                            "message": r.message,
-                        })),
-                        "coverage_last_30_days": status.coverage_last_30_days,
-                    });
-                    print_stdout(&to_json(&v)?)?;
-                }
-                _ => {
-                    let style = style(g, std::io::stdout().is_terminal());
-                    let mut o = format!(
-                        "Cache: {}\n  size: {:.1} MiB, schema version {}\n  repositories {}, pull requests {}, issues {}, events {}\n",
-                        status.path.as_ref().map_or_else(
-                            || "(in memory)".into(),
-                            |path| path.display().to_string()
-                        ),
-                        status.file_size_bytes as f64 / (1024.0 * 1024.0),
-                        status.schema_version,
-                        status.repositories,
-                        status.pull_requests,
-                        status.issues,
-                        status.events
-                    );
-                    match &status.last_sync {
-                        Some(r) => o.push_str(&format!(
-                            "  last sync: {} ({})\n",
+            if g.format == Format::Json {
+                let v = serde_json::json!({
+                    "path": status.path,
+                    "file_size_bytes": status.file_size_bytes,
+                    "schema_version": status.schema_version,
+                    "account": status.account,
+                    "repositories": status.repositories,
+                    "pull_requests": status.pull_requests,
+                    "issues": status.issues,
+                    "events": status.events,
+                    "last_sync": status.last_sync.as_ref().map(|r| serde_json::json!({
+                        "started_at": r.started_at,
+                        "finished_at": r.finished_at,
+                        "status": r.status,
+                        "message": r.message,
+                    })),
+                    "coverage_last_30_days": status.coverage_last_30_days,
+                });
+                print_stdout(&to_json(&v)?)?;
+            } else {
+                let style = style(g, std::io::stdout().is_terminal());
+                let mut o = format!(
+                    "Cache: {}\n  size: {:.1} MiB, schema version {}\n  repositories {}, pull requests {}, issues {}, events {}\n",
+                    status
+                        .path
+                        .as_ref()
+                        .map_or_else(|| "(in memory)".into(), |path| path.display().to_string()),
+                    status.file_size_bytes as f64 / (1024.0 * 1024.0),
+                    status.schema_version,
+                    status.repositories,
+                    status.pull_requests,
+                    status.issues,
+                    status.events
+                );
+                match &status.last_sync {
+                    Some(r) => {
+                        let _ = writeln!(
+                            o,
+                            "  last sync: {} ({})",
                             r.finished_at.map_or_else(
                                 || "not finished".into(),
                                 |t| zone.format(t, "%Y-%m-%d %H:%M")
                             ),
                             r.status
-                        )),
-                        None => o.push_str("  last sync: never\n"),
+                        );
                     }
-                    if !status.coverage_last_30_days.is_empty() {
-                        o.push_str("Last 30 days:\n");
-                        o.push_str(&render::coverage_lines(
-                            &status.coverage_last_30_days,
-                            status.last_sync.as_ref().and_then(|r| r.finished_at),
-                            &zone,
-                            style,
-                        ));
-                    }
-                    print_stdout(&o)?;
+                    None => o.push_str("  last sync: never\n"),
                 }
+                if !status.coverage_last_30_days.is_empty() {
+                    o.push_str("Last 30 days:\n");
+                    o.push_str(&render::coverage_lines(
+                        &status.coverage_last_30_days,
+                        status.last_sync.as_ref().and_then(|r| r.finished_at),
+                        &zone,
+                        style,
+                    ));
+                }
+                print_stdout(&o)?;
             }
         }
     }
@@ -789,28 +791,25 @@ fn cache_cmd(g: &GlobalArgs, c: CacheCommand, zone: Zone) -> Result<i32> {
 
 async fn doctor_cmd(g: &GlobalArgs, zone: Zone) -> Result<i32> {
     let report = commands::doctor(&session_config(g), zone).await?;
-    match g.format {
-        Format::Json => {
-            let v = serde_json::json!({
-                "ok": report.ok,
-                "checks": report.checks.iter().map(|check| serde_json::json!({
-                    "ok": check.state != commands::DoctorState::Failed,
-                    "message": check.message,
-                })).collect::<Vec<_>>(),
-            });
-            print_stdout(&to_json(&v)?)?;
+    if g.format == Format::Json {
+        let v = serde_json::json!({
+            "ok": report.ok,
+            "checks": report.checks.iter().map(|check| serde_json::json!({
+                "ok": check.state != commands::DoctorState::Failed,
+                "message": check.message,
+            })).collect::<Vec<_>>(),
+        });
+        print_stdout(&to_json(&v)?)?;
+    } else {
+        let mut o = String::new();
+        for check in &report.checks {
+            let label = match check.state {
+                commands::DoctorState::Passed | commands::DoctorState::Skipped => "ok  ",
+                commands::DoctorState::Failed => "FAIL",
+            };
+            let _ = writeln!(o, "{label} {}", check.message);
         }
-        _ => {
-            let mut o = String::new();
-            for check in &report.checks {
-                let label = match check.state {
-                    commands::DoctorState::Passed | commands::DoctorState::Skipped => "ok  ",
-                    commands::DoctorState::Failed => "FAIL",
-                };
-                o.push_str(&format!("{label} {}\n", check.message));
-            }
-            print_stdout(&o)?;
-        }
+        print_stdout(&o)?;
     }
     Ok(report.exit_code)
 }

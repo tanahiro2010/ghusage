@@ -13,6 +13,7 @@ use serde_json::Value;
 pub struct InFlight {
     /// What the request is for, e.g. `search commits p3` or `octo/app#12`.
     pub label: String,
+    /// Elapsed time since the request started.
     pub elapsed: Duration,
 }
 
@@ -49,6 +50,7 @@ impl Activity {
         }
     }
 
+    /// Returns a point-in-time snapshot of in-flight and completed requests.
     pub fn snapshot(&self) -> ActivitySnapshot {
         let Ok(inner) = self.inner.lock() else {
             return ActivitySnapshot::default();
@@ -98,7 +100,7 @@ impl Drop for Running<'_> {
 pub(crate) fn label(url: &Url, body: Option<&[u8]>) -> String {
     let segments: Vec<&str> = url
         .path_segments()
-        .map(std::iter::Iterator::collect)
+        .map(Iterator::collect)
         .unwrap_or_default();
     let page = url
         .query_pairs()
@@ -111,7 +113,7 @@ pub(crate) fn label(url: &Url, body: Option<&[u8]>) -> String {
         ["user"] => "account".to_string(),
         ["user", "repos"] | ["users", _, "repos"] => "repository list".to_string(),
         ["repos", owner, name] => format!("{owner}/{name}"),
-        ["repos", owner, name, "pulls", n, ..] | ["repos", owner, name, "issues", n, ..] => {
+        ["repos", owner, name, "pulls" | "issues", n, ..] => {
             format!("{owner}/{name}#{n}")
         }
         ["repos", owner, name, "commits"] => format!("{owner}/{name} commits"),

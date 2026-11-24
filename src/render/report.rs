@@ -23,7 +23,7 @@ fn render_overview(out: &mut String, r: &Report, zone: &Zone, style: Style) {
         out.push_str(&style.bold("Top repositories\n"));
         out.push_str(&repo_table(r, Some(5)).render(style));
         out.push_str(&style.dim(&line_note(
-            r.repositories.iter().take(5).map(|x| &x.summary.diff_stats),
+            r.repositories.iter().take(5).map(|x| x.summary.diff_stats),
         )));
     }
 }
@@ -46,8 +46,8 @@ fn render_breakdown(
     out.push_str(&style.dim(&line_note(
         r.activity_breakdown
             .iter()
-            .map(|b| &b.summary.diff_stats)
-            .chain([&r.metrics.diff_stats]),
+            .map(|b| b.summary.diff_stats)
+            .chain([r.metrics.diff_stats]),
     )));
 }
 
@@ -60,7 +60,7 @@ fn render_repositories(out: &mut String, r: &Report, zone: &Zone, style: Style) 
         out.push_str(&t.render(style));
         out.push_str(&style.dim("* owned by you\n"));
         out.push_str(&style.dim(&line_note(
-            r.repositories.iter().map(|x| &x.summary.diff_stats),
+            r.repositories.iter().map(|x| x.summary.diff_stats),
         )));
     }
 }

@@ -33,8 +33,8 @@ impl Store {
                  stats_observed_at_ns = ?4 WHERE sha = ?5 AND repository_id IN \
                  (SELECT id FROM repositories WHERE owner || '/' || name = ?6 COLLATE NOCASE)",
                 params![
-                    d.stats.additions as i64,
-                    d.stats.deletions as i64,
+                    to_i64(d.stats.additions)?,
+                    to_i64(d.stats.deletions)?,
                     secs(d.fetched_at),
                     nanos(d.fetched_at),
                     d.sha.to_ascii_lowercase(),
@@ -298,8 +298,8 @@ fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
             params![
                 c.repository_id,
                 c.sha.to_ascii_lowercase(),
-                c.counts.additions as i64,
-                c.counts.deletions as i64,
+                to_i64(c.counts.additions)?,
+                to_i64(c.counts.deletions)?,
                 secs(c.observed_at),
                 nanos(c.observed_at)
             ],
@@ -312,7 +312,7 @@ fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
         require_pull_request(tx, pr_id, &format!("pull request merge {pr_id:?}"))?;
         tx.execute(
             "UPDATE pull_requests SET merge_commit_parents = ?2 WHERE id = ?1",
-            params![pr_id, *parents as i64],
+            params![pr_id, to_i64(*parents)?],
         )?;
     }
     for (pr_id, d) in &b.pr_diffs {
@@ -328,9 +328,9 @@ fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
              OR (diff_observed_at, diff_observed_at_ns) <= (?5, ?6))",
             params![
                 pr_id,
-                d.additions as i64,
-                d.deletions as i64,
-                d.changed_files as i64,
+                to_i64(d.additions)?,
+                to_i64(d.deletions)?,
+                to_i64(d.changed_files)?,
                 secs(d.observed_at),
                 nanos(d.observed_at)
             ],
@@ -468,7 +468,7 @@ fn upsert_pull_request(
             opt_nanos(p.merged_at),
             opt_to_json(p.merged_by.as_ref())?,
             p.head_sha,
-            p.latest_ci.map(ghusage_core::model::CheckOutcome::as_str),
+            p.latest_ci.map(CheckOutcome::as_str),
             p.coverage.as_str(),
             opt_secs(p.synced_at),
             opt_nanos(p.synced_at),
@@ -616,7 +616,7 @@ fn upsert_event(
 
 /// Maintains the entity projections (commits, reviews, comments, checks).
 fn project_event(tx: &Transaction<'_>, e: &ActivityEvent) -> Result<()> {
-    use EventType::*;
+    use EventType::{CommitAuthored, PrCommit, ReviewSubmitted, ConversationComment, InlineComment, ReviewSummary, CheckRun, CommitStatus};
     let id = e.event_id.as_str();
     match e.event_type {
         CommitAuthored | PrCommit => {
@@ -861,14 +861,14 @@ fn insert_coverage(tx: &Transaction<'_>, account_id: i64, c: &CoverageRecord) ->
             secs(c.recorded_at),
             nanos(c.recorded_at),
             match c.scope.visibility {
-                ghusage_core::coverage::CoverageVisibility::All => "all",
-                ghusage_core::coverage::CoverageVisibility::PublicOnly => "public_only",
+                CoverageVisibility::All => "all",
+                CoverageVisibility::PublicOnly => "public_only",
             },
             match c.scope.generation {
-                ghusage_core::coverage::CoverageGeneration::LegacyUnusable => "legacy_unusable",
-                ghusage_core::coverage::CoverageGeneration::CommitsListingSearchV1 => "commits_listing_search_v1",
-                ghusage_core::coverage::CoverageGeneration::PullRequestsV1 => "pull_requests_v1",
-                ghusage_core::coverage::CoverageGeneration::IssuesV1 => "issues_v1",
+                CoverageGeneration::LegacyUnusable => "legacy_unusable",
+                CoverageGeneration::CommitsListingSearchV1 => "commits_listing_search_v1",
+                CoverageGeneration::PullRequestsV1 => "pull_requests_v1",
+                CoverageGeneration::IssuesV1 => "issues_v1",
             },
         ],
     )?;

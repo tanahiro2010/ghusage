@@ -89,6 +89,7 @@ impl Store {
             .is_ok()
     }
 
+    /// Opens a temporary in-memory database with the current schema.
     pub fn open_in_memory() -> Result<Self> {
         let mut conn = Connection::open_in_memory()?;
         configure(&conn)?;
@@ -97,10 +98,12 @@ impl Store {
     }
 
     /// Highest schema version this build can read and write.
-    pub fn supported_schema_version() -> u32 {
+    #[must_use]
+    pub const fn supported_schema_version() -> u32 {
         schema::CURRENT_VERSION
     }
 
+    /// Returns the schema version of this database.
     pub fn schema_version(&self) -> Result<u32> {
         schema::user_version(&self.conn)
             .map_err(StorageError::from)

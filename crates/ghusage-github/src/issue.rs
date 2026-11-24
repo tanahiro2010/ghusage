@@ -186,18 +186,17 @@ async fn collect_timeline(
             }
         };
         complete &= resp.errors.is_empty();
-        match resp
+        if let Some(v) = resp
             .data
             .as_ref()
             .and_then(|d| d.get("node"))
             .and_then(|n| n.get("timelineItems"))
             .filter(|v| !v.is_null())
         {
-            Some(v) => conn = gql::from_value(Some(v)),
-            None => {
-                complete = false;
-                break;
-            }
+            conn = gql::from_value(Some(v));
+        } else {
+            complete = false;
+            break;
         }
     }
     Ok((nodes, complete))

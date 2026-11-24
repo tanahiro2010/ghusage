@@ -7,6 +7,7 @@
 /// accepted. URLs with credentials, a port, another host, a non-numeric or
 /// zero number, or a path other than `/pull/` (e.g. `/issues/`, `/pulls/`)
 /// are rejected.
+#[must_use]
 pub fn parse_pr_url(url: &str) -> Option<(String, String, u64)> {
     let url = url.trim();
     let scheme_end = url.find("://")?;
@@ -37,11 +38,14 @@ pub fn parse_pr_url(url: &str) -> Option<(String, String, u64)> {
     Some((owner.to_string(), repo.to_string(), number))
 }
 
-/// Parses a commit reference: `owner/repo@sha`,
+/// Parses a commit reference in shorthand or GitHub URL form.
+///
+/// Accepted forms are `owner/repo@sha`,
 /// `https://github.com/{owner}/{repo}/commit/{sha}` or
 /// `https://github.com/{owner}/{repo}/pull/{n}/commits/{sha}` (optionally
 /// followed by a query or a fragment). The SHA must be 7 to 40 hexadecimal
 /// digits and is returned in lower case.
+#[must_use]
 pub fn parse_commit_ref(input: &str) -> Option<(String, String, String)> {
     let input = input.trim();
     let (owner, repo, sha) = if let Some(scheme_end) = input.find("://") {
@@ -101,6 +105,10 @@ fn valid_repo(s: &str) -> bool {
 mod tests {
     use super::*;
 
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "The fixture mirrors the parser's optional tuple result in assertions."
+    )]
     fn ok(owner: &str, repo: &str, n: u64) -> Option<(String, String, u64)> {
         Some((owner.into(), repo.into(), n))
     }
@@ -133,6 +141,10 @@ mod tests {
         );
     }
 
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "The fixture mirrors the parser's optional tuple result in assertions."
+    )]
     fn commit(owner: &str, repo: &str, sha: &str) -> Option<(String, String, String)> {
         Some((owner.into(), repo.into(), sha.into()))
     }

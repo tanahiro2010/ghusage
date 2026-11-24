@@ -20,12 +20,15 @@ const MAX_LINE_CHARS: usize = 1_000;
 /// Identifies a commit: `owner/name` and a full or abbreviated SHA.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CommitKey {
+    /// Repository owner and name.
     pub repository: String,
+    /// Commit SHA.
     pub sha: String,
 }
 
 impl CommitKey {
     /// The commit's page on GitHub.
+    #[must_use]
     pub fn github_url(&self) -> String {
         format!("https://github.com/{}/commit/{}", self.repository, self.sha)
     }
@@ -35,12 +38,17 @@ impl CommitKey {
 /// before (or instead of) the fetched detail.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CommitSeed {
+    /// First line of the commit message.
     pub headline: Option<String>,
+    /// Commit author login or display name.
     pub author: Option<String>,
+    /// Commit author date.
     pub date: Option<Timestamp>,
+    /// GitHub commit URL.
     pub url: Option<String>,
     /// No longer part of the pull request it was listed in.
     pub removed: bool,
+    /// Whether the commit has multiple parents.
     pub is_merge: bool,
 }
 
@@ -49,46 +57,60 @@ pub struct CommitSeed {
 pub struct CommitFailure {
     /// Not cached, and GitHub is not used or cannot be reached.
     pub offline: bool,
+    /// Human-readable load failure.
     pub message: String,
 }
 
 /// The result of loading a commit.
 #[derive(Debug, Clone)]
 pub struct CommitMsg {
+    /// Commit requested by the UI.
     pub key: CommitKey,
+    /// Loaded detail or failure result.
     pub result: Result<Arc<CommitView>, CommitFailure>,
 }
 
 /// How a row is drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowKind {
+    /// Main commit title row.
     Title,
+    /// Section heading.
     Heading,
     /// `key` in bold, then the text.
     Field,
+    /// Commit message text.
     Message,
+    /// Changed file entry.
     FileEntry,
+    /// Total line statistics.
     Total,
+    /// Warning or explanatory message.
     Warning,
     /// The start of one file's diff.
     FileHeader,
+    /// Unified diff hunk header.
     Hunk,
+    /// Added diff line.
     Added,
+    /// Removed diff line.
     Removed,
+    /// Unchanged diff context line.
     Context,
     /// Explanations such as a missing diff or cut lines.
     Note,
+    /// Empty separator row.
     Blank,
 }
 
 impl RowKind {
-    fn of(k: DiffLineKind) -> Self {
+    const fn of(k: DiffLineKind) -> Self {
         match k {
-            DiffLineKind::Hunk => RowKind::Hunk,
-            DiffLineKind::Added => RowKind::Added,
-            DiffLineKind::Removed => RowKind::Removed,
-            DiffLineKind::Context => RowKind::Context,
-            DiffLineKind::Note => RowKind::Note,
+            DiffLineKind::Hunk => Self::Hunk,
+            DiffLineKind::Added => Self::Added,
+            DiffLineKind::Removed => Self::Removed,
+            DiffLineKind::Context => Self::Context,
+            DiffLineKind::Note => Self::Note,
         }
     }
 }
@@ -96,17 +118,24 @@ impl RowKind {
 /// One row of the commit screen. `text` is sanitized.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
+    /// Visual category used to style this row.
     pub kind: RowKind,
+    /// Optional label shown before the text.
     pub key: &'static str,
+    /// Sanitized text displayed in the terminal.
     pub text: String,
 }
 
 /// A commit ready to draw.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitView {
+    /// Repository owner and name.
     pub repository: String,
+    /// Commit SHA.
     pub sha: String,
+    /// GitHub URL, when available.
     pub url: Option<String>,
+    /// Prepared rows to render.
     pub rows: Vec<Row>,
     /// Row index of each file's diff header, in file order.
     pub file_rows: Vec<usize>,
@@ -135,8 +164,7 @@ fn who(p: &CommitPerson) -> String {
 }
 
 fn when(zone: &Zone, t: Option<Timestamp>) -> String {
-    t.map(|t| zone.format(t, "%Y-%m-%d %H:%M:%S %Z"))
-        .unwrap_or_else(|| "-".into())
+    t.map_or_else(|| "-".into(), |t| zone.format(t, "%Y-%m-%d %H:%M:%S %Z"))
 }
 
 struct DiffRows {
@@ -346,6 +374,7 @@ impl CommitView {
     /// Turns a commit into rows: facts, message, files, then each file's
     /// diff. Diffs longer than [`MAX_FILE_LINES`] per file or
     /// [`MAX_DIFF_LINES`] in total are cut, with a note.
+    #[must_use]
     pub fn build(d: &CommitDetail, source: CommitSource, zone: Zone) -> Self {
         let mut rows = DiffRows::new(d.files.len());
         append_header(&mut rows, d, source, &zone);
@@ -360,6 +389,7 @@ impl CommitView {
         }
     }
     /// The file whose diff contains row `row` (0-based), if any.
+    #[must_use]
     pub fn file_at(&self, row: usize) -> Option<usize> {
         match self.file_rows.binary_search(&row) {
             Ok(i) => Some(i),
@@ -369,11 +399,13 @@ impl CommitView {
     }
 
     /// First row of the next file after `row`.
+    #[must_use]
     pub fn next_file(&self, row: usize) -> Option<usize> {
         self.file_rows.iter().copied().find(|r| *r > row)
     }
 
     /// First row of the file before the one at `row`.
+    #[must_use]
     pub fn prev_file(&self, row: usize) -> Option<usize> {
         self.file_rows.iter().copied().rev().find(|r| *r < row)
     }

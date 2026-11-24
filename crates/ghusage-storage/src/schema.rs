@@ -22,6 +22,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     v5_repair_viewed_participation,
 ];
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "The migration list is a compile-time constant with five entries."
+)]
 pub(crate) const CURRENT_VERSION: u32 = MIGRATIONS.len() as u32;
 
 /// Data tables, children before parents, so they can be emptied in order.
@@ -49,8 +53,11 @@ pub(crate) const DATA_TABLES: &[&str] = &[
 ];
 
 pub(crate) fn user_version(conn: &Connection) -> rusqlite::Result<u32> {
-    conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
-        .map(|v| v.max(0) as u32)
+    conn.query_row("PRAGMA user_version", [], |r| {
+        let version = r.get::<_, i64>(0)?;
+        u32::try_from(version.max(0))
+            .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, version))
+    })
 }
 
 /// Migrates `conn` to `steps.len()`. When `backup_dir_file` is given and the
@@ -61,7 +68,8 @@ pub(crate) fn migrate(
     steps: &[Migration],
     backup_of: Option<&Path>,
 ) -> Result<()> {
-    let target = steps.len() as u32;
+    let target = u32::try_from(steps.len())
+        .map_err(|_| StorageError::Data("too many schema migrations".into()))?;
     let from = user_version(conn)?;
     if from > target {
         return Err(StorageError::TooNew {
@@ -78,8 +86,13 @@ pub(crate) fn migrate(
         backup(conn, path, from)?;
     }
     let tx = conn.transaction()?;
-    for (i, step) in steps.iter().enumerate().skip(from as usize) {
-        let to = i as u32 + 1;
+    for (i, step) in steps
+        .iter()
+        .enumerate()
+        .skip(usize::try_from(from).unwrap_or(usize::MAX))
+    {
+        let to = u32::try_from(i + 1)
+            .map_err(|_| StorageError::Data("too many schema migrations".into()))?;
         step(&tx).map_err(|e| StorageError::Migration {
             from,
             to,
@@ -125,7 +138,7 @@ fn v1_initial(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
 /// never affects counts.
 fn v2_commit_details(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
     tx.execute_batch(
-        r#"
+        r"
 CREATE TABLE commit_details (
     repository     TEXT NOT NULL COLLATE NOCASE,
     sha            TEXT NOT NULL,
@@ -134,7 +147,7 @@ CREATE TABLE commit_details (
     detail         TEXT NOT NULL,
     PRIMARY KEY (repository, sha)
 ) WITHOUT ROWID;
-"#,
+",
     )
 }
 
@@ -143,7 +156,7 @@ CREATE TABLE commit_details (
 /// (never zero by default).
 fn v3_diff_stats(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
     tx.execute_batch(
-        r#"
+        r"
 ALTER TABLE commits ADD COLUMN additions INTEGER;
 ALTER TABLE commits ADD COLUMN deletions INTEGER;
 ALTER TABLE commits ADD COLUMN stats_observed_at INTEGER;
@@ -154,7 +167,7 @@ ALTER TABLE pull_requests ADD COLUMN changed_files INTEGER;
 ALTER TABLE pull_requests ADD COLUMN diff_observed_at INTEGER;
 ALTER TABLE pull_requests ADD COLUMN diff_observed_at_ns INTEGER;
 ALTER TABLE pull_requests ADD COLUMN merge_commit_parents INTEGER;
-"#,
+",
     )
 }
 
@@ -162,7 +175,7 @@ ALTER TABLE pull_requests ADD COLUMN merge_commit_parents INTEGER;
 /// synthetic `+viewed` accounts into their real account without moving events.
 fn v4_domain_models(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
     tx.execute_batch(
-        r#"
+        r"
 ALTER TABLE coverage_intervals ADD COLUMN visibility TEXT NOT NULL DEFAULT 'all';
 ALTER TABLE coverage_intervals ADD COLUMN generation TEXT NOT NULL DEFAULT 'legacy_unusable';
 ALTER TABLE account_pull_requests ADD COLUMN viewed INTEGER NOT NULL DEFAULT 0;
@@ -192,7 +205,7 @@ JOIN accounts real ON real.login = substr(old.login, 1, length(old.login) - leng
 ON CONFLICT(account_id, pr_id) DO UPDATE SET
     viewed = min(account_pull_requests.viewed, excluded.viewed);
 DELETE FROM accounts WHERE login LIKE '%+viewed';
-"#,
+",
     )
 }
 
@@ -200,7 +213,7 @@ DELETE FROM accounts WHERE login LIKE '%+viewed';
 /// data proves participation. Ambiguous viewed relationships are retained.
 fn v5_repair_viewed_participation(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
     tx.execute_batch(
-        r#"
+        r"
 UPDATE account_pull_requests AS ap
 SET viewed = 0
 FROM accounts AS a, pull_requests AS p
@@ -240,11 +253,11 @@ WHERE ap.account_id = a.id
             AND json_extract(e.meta, '$.target') = a.login COLLATE NOCASE
       )
   );
-"#,
+",
     )
 }
 
-const V1_SQL: &str = r#"
+const V1_SQL: &str = r"
 CREATE TABLE accounts (
     id          INTEGER PRIMARY KEY,
     login       TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -476,7 +489,7 @@ CREATE TABLE cache_metadata (
     key    TEXT PRIMARY KEY,
     value  TEXT NOT NULL
 );
-"#;
+";
 
 #[cfg(test)]
 mod tests {
@@ -614,7 +627,7 @@ mod tests {
         )
         .unwrap();
         conn.execute_batch(
-            r#"
+            r"
 INSERT INTO repositories(id, owner, name, owner_kind, visibility, is_fork, accessible)
 VALUES ('R1', 'owner', 'repo', 'User', 'public', 0, 1),
        ('R2', 'owner', 'viewed-only', 'User', 'public', 0, 1);
@@ -668,7 +681,7 @@ FROM accounts CROSS JOIN (
         'commits authored by alice on the default branches of repositories alice pushed to or contributed to (repository listing + commit search; other repositories by commit search alone, copies excluded), plus commits of synced pull requests (public repositories only)'
 ) legacy_scopes
 WHERE accounts.login = 'alice';
-"#,
+",
         ).unwrap();
 
         migrate(&mut conn, MIGRATIONS, None).unwrap();

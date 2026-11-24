@@ -1,7 +1,10 @@
-//! Rendering. Pure functions of [`App`] state: nothing here reads the cache
-//! or the network. Every string that came from GitHub goes through
+//! Terminal rendering for cached reports.
+//!
+//! These pure functions read [`App`] state. Every string from GitHub goes through
 //! `sanitize_line` / `truncate_width` before it reaches the terminal, and
 //! no information is carried by color alone.
+
+use std::fmt::Write as _;
 
 use ghusage_app::report::Report;
 use ghusage_core::coverage::CoverageStatus;
@@ -26,6 +29,10 @@ use crate::commit_view::{Row as DocRow, RowKind};
 
 const SELECT_SYMBOL: &str = "▶ ";
 
+fn to_u16(value: usize) -> u16 {
+    u16::try_from(value).unwrap_or(u16::MAX)
+}
+
 fn clean(s: &str) -> String {
     sanitize_line(s)
 }
@@ -35,8 +42,7 @@ fn fit(s: &str, width: usize) -> String {
 }
 
 fn ts(zone: &Zone, t: Option<Timestamp>) -> String {
-    t.map(|t| zone.format(t, "%Y-%m-%d %H:%M"))
-        .unwrap_or_else(|| "-".into())
+    t.map_or_else(|| "-".into(), |t| zone.format(t, "%Y-%m-%d %H:%M"))
 }
 
 fn dur(secs: Option<i64>) -> String {
@@ -63,7 +69,7 @@ fn bytes(n: u64) -> String {
     }
 }
 
-fn coverage_text(c: CoverageStatus) -> &'static str {
+const fn coverage_text(c: CoverageStatus) -> &'static str {
     match c {
         CoverageStatus::Complete => "complete",
         CoverageStatus::Partial => "partial",
@@ -73,7 +79,7 @@ fn coverage_text(c: CoverageStatus) -> &'static str {
     }
 }
 
-fn pr_state_text(state: PrState, draft: bool) -> &'static str {
+const fn pr_state_text(state: PrState, draft: bool) -> &'static str {
     match (state, draft) {
         (PrState::Open, true) => "◌ draft",
         (PrState::Open, false) => "○ open",
@@ -82,7 +88,7 @@ fn pr_state_text(state: PrState, draft: bool) -> &'static str {
     }
 }
 
-fn pr_state_style(state: PrState) -> Style {
+const fn pr_state_style(state: PrState) -> Style {
     match state {
         PrState::Open => Style::new().fg(Color::Green),
         PrState::Merged => Style::new().fg(Color::Magenta),
@@ -92,15 +98,16 @@ fn pr_state_style(state: PrState) -> Style {
 
 /// Activity measure used for the timeline chart (the same measure that
 /// ranks repositories).
-pub fn activity(s: &Summary) -> u64 {
+#[must_use]
+pub const fn activity(s: &Summary) -> u64 {
     ghusage_core::metrics::activity_weight(s)
 }
 
-fn bold() -> Style {
+const fn bold() -> Style {
     Style::new().add_modifier(Modifier::BOLD)
 }
 
-fn dim() -> Style {
+const fn dim() -> Style {
     Style::new().add_modifier(Modifier::DIM)
 }
 
@@ -141,14 +148,17 @@ fn detail_count(r: &Report, tab: DetailTab) -> usize {
 
 include!("ui/draw_scope_detail.rs");
 
-fn draw_help(f: &mut Frame, area: Rect) {
+fn draw_help(f: &mut Frame<'_>, area: Rect) {
     let w = area.width.saturating_sub(4).min(112);
-    let h = area.height.saturating_sub(2).min(HELP.len() as u16 + 4);
+    let h = area
+        .height
+        .saturating_sub(2)
+        .min(to_u16(HELP.len()).saturating_add(4));
     let x = area.x + (area.width - w) / 2;
     let y = area.y + (area.height - h) / 2;
     let rect = Rect::new(x, y, w, h);
     f.render_widget(Clear, rect);
-    let mut lines: Vec<Line> = HELP
+    let mut lines: Vec<Line<'_>> = HELP
         .iter()
         .map(|(k, v)| {
             Line::from(vec![

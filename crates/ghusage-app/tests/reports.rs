@@ -475,7 +475,7 @@ fn viewing_unrelated_pr_preserves_all_reports_and_offline_detail() {
             issues: baseline.issues.values().cloned().collect(),
             threads: baseline.threads.values().cloned().collect(),
             events: baseline.events.clone(),
-            coverage: baseline.coverage.clone(),
+            coverage: baseline.coverage,
             ..Default::default()
         })
         .unwrap();
@@ -1095,10 +1095,7 @@ fn keys(v: &serde_json::Value) -> Vec<String> {
 
 #[track_caller]
 fn assert_keys(v: &serde_json::Value, expected: &[&str]) {
-    let mut e: Vec<String> = expected
-        .iter()
-        .map(std::string::ToString::to_string)
-        .collect();
+    let mut e: Vec<String> = expected.iter().map(ToString::to_string).collect();
     e.sort();
     assert_eq!(keys(v), e, "{v}");
 }

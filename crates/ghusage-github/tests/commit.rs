@@ -32,7 +32,7 @@ fn rest_file(name: &str, status: &str, add: u64, del: u64, patch: Option<&str>) 
 
 /// A response of `GET /repos/{owner}/{repo}/commits/{sha}` as GitHub sends it.
 fn commit_body(files: Vec<Value>, parents: usize) -> Value {
-    let full = sha(0xabcdef0);
+    let full = sha(0x0abc_def0);
     json!({
         "sha": full,
         "node_id": "C_abc",
@@ -97,10 +97,10 @@ async fn commit_with_message_people_parents_stats_and_files() {
         .await
         .unwrap();
     assert_eq!(d.repository, "acme/widget");
-    assert_eq!(d.sha, sha(0xabcdef0));
+    assert_eq!(d.sha, sha(0x0abc_def0));
     assert_eq!(
         d.url.as_deref(),
-        Some(format!("https://github.com/acme/widget/commit/{}", sha(0xabcdef0)).as_str())
+        Some(format!("https://github.com/acme/widget/commit/{}", sha(0x0abc_def0)).as_str())
     );
     assert_eq!(d.headline(), "fix(parser): handle empty input");
     assert!(d.message.contains("The parser crashed on empty files."));

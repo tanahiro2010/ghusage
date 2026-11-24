@@ -1,3 +1,5 @@
+/// An exclusive lock preventing overlapping cache syncs.
+#[derive(Debug)]
 pub struct SyncLock {
     file: File,
     path: PathBuf,
@@ -21,12 +23,13 @@ impl SyncLock {
         }
         // Best effort: record the holder's process id for diagnostics.
         if file.set_len(0).is_ok() {
-            let _ = writeln!(file, "{}", std::process::id());
+            drop(writeln!(file, "{}", std::process::id()));
         }
         Ok(Self { file, path })
     }
 
     /// Path of the lock file.
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -34,6 +37,6 @@ impl SyncLock {
 
 impl Drop for SyncLock {
     fn drop(&mut self) {
-        let _ = fs4::FileExt::unlock(&self.file);
+        drop(fs4::FileExt::unlock(&self.file));
     }
 }

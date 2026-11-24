@@ -4,20 +4,33 @@ use jiff::{SignedDuration, Timestamp, ToSpan, civil::Date, tz::TimeZone};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+/// A time zone used to interpret report dates and calendar buckets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Zone(pub TimeZone);
 
 impl Zone {
-    pub fn utc() -> Self {
+    /// Creates the UTC time zone.
+    #[must_use]
+    pub const fn utc() -> Self {
         Self(TimeZone::UTC)
     }
 
+    /// Parses an IANA time zone name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeError::UnknownZone`] when the name is not recognized.
     pub fn parse(name: &str) -> Result<Self, TimeError> {
         TimeZone::get(name.trim())
             .map(Self)
             .map_err(|_| TimeError::UnknownZone(name.to_string()))
     }
 
+    /// Resolves an explicit zone, the `TZ` environment variable, or the system zone.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when the explicitly supplied zone is unknown.
     pub fn resolve(explicit: Option<&str>) -> Result<Self, TimeError> {
         if let Some(name) = explicit {
             return Self::parse(name);
@@ -35,28 +48,41 @@ impl Zone {
         Ok(Self::utc())
     }
 
+    /// Returns the IANA name, or `UTC` when the zone has no IANA name.
+    #[must_use]
     pub fn name(&self) -> &str {
         self.0.iana_name().unwrap_or("UTC")
     }
 
+    /// Converts an instant to its calendar date in this zone.
+    #[must_use]
     pub fn local_date(&self, t: Timestamp) -> Date {
         t.to_zoned_datetime(self.0.clone()).date()
     }
 
     /// Jiff's compatible disambiguation advances through a midnight gap and
     /// selects the earlier occurrence in a fold.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the date cannot be represented in this time zone.
+    #[must_use]
     pub fn start_of_day(&self, date: Date) -> Timestamp {
         date.to_zoned_datetime(self.0.clone())
             .expect("valid calendar date")
             .timestamp()
     }
 
+    /// Formats an instant using a Jiff strftime pattern in this zone.
+    #[must_use]
     pub fn format(&self, t: Timestamp, fmt: &str) -> String {
         t.to_zoned_datetime(self.0.clone())
             .strftime(fmt)
             .to_string()
     }
 
+    /// Formats an instant as RFC 3339 with this zone's offset.
+    #[must_use]
     pub fn rfc3339(&self, t: Timestamp) -> String {
         self.format(t, "%Y-%m-%dT%H:%M:%S%.f%:z")
     }
@@ -68,25 +94,43 @@ impl fmt::Display for Zone {
     }
 }
 
+/// Errors produced while resolving time zones and period boundaries.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TimeError {
+    /// The requested time zone name is not recognized.
     #[error("unknown time zone: {0}")]
     UnknownZone(String),
+    /// A period boundary could not be parsed.
     #[error(
         "invalid date or time: {0} (use YYYY-MM-DD, RFC 3339, today, yesterday, or Nd/Nw/Nm/Ny)"
     )]
     InvalidBound(String),
+    /// The start of a period is not before its end.
     #[error("empty period: start {start} is not before end {end}")]
-    EmptyPeriod { start: String, end: String },
+    EmptyPeriod {
+        /// Supplied start boundary.
+        start: String,
+        /// Supplied end boundary.
+        end: String,
+    },
 }
 
+/// A half-open interval between two instants.
+/// Calendar unit used to partition a period into report buckets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Period {
+    /// Inclusive start instant.
     pub start: Timestamp,
+    /// Exclusive end instant.
     pub end: Timestamp,
 }
 
 impl Period {
+    /// Creates a non-empty half-open time period.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeError::EmptyPeriod`] when `start` is not before `end`.
     pub fn new(start: Timestamp, end: Timestamp) -> Result<Self, TimeError> {
         if start >= end {
             return Err(TimeError::EmptyPeriod {
@@ -96,15 +140,27 @@ impl Period {
         }
         Ok(Self { start, end })
     }
+    /// Whether the instant lies inside this half-open interval.
+    #[must_use]
     pub fn contains(&self, t: Timestamp) -> bool {
         self.start <= t && t < self.end
     }
+    /// Whether this interval shares any instants with another interval.
+    #[must_use]
     pub fn overlaps(&self, other: &Self) -> bool {
         self.start < other.end && other.start < self.end
     }
+    /// Returns the elapsed duration of this interval.
+    #[must_use]
     pub fn duration(&self) -> SignedDuration {
         self.end.duration_since(self.start)
     }
+    /// Returns the first and last local date covered by the period.
+    ///
+    /// # Panics
+    ///
+    /// Panics if subtracting one nanosecond from the end is out of range.
+    #[must_use]
     pub fn local_dates(&self, zone: &Zone) -> (Date, Date) {
         let last = self
             .end
@@ -114,16 +170,27 @@ impl Period {
     }
 }
 
+/// Calendar unit used to partition a period into report buckets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Granularity {
+    /// One calendar day per bucket.
     Day,
+    /// One ISO week per bucket.
     Week,
+    /// One calendar month per bucket.
     Month,
+    /// One calendar year per bucket.
     Year,
 }
 
 impl Granularity {
+    /// Returns the bucket's first date.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the bucket start would be outside Jiff's supported date range.
+    #[must_use]
     pub fn bucket_start(self, date: Date) -> Date {
         match self {
             Self::Day => date,
@@ -134,6 +201,12 @@ impl Granularity {
             Self::Year => Date::new(date.year(), 1, 1).expect("January 1 exists"),
         }
     }
+    /// Returns the first date after the bucket.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the next bucket would be outside Jiff's supported date range.
+    #[must_use]
     pub fn next(self, start: Date) -> Date {
         match self {
             Self::Day => start.checked_add(1.days()).expect("date in range"),
@@ -142,6 +215,8 @@ impl Granularity {
             Self::Year => start.checked_add(1.years()).expect("date in range"),
         }
     }
+    /// Formats the bucket start as a day, ISO week, month, or year label.
+    #[must_use]
     pub fn label(self, start: Date) -> String {
         match self {
             Self::Day => start.strftime("%Y-%m-%d").to_string(),
@@ -155,14 +230,21 @@ impl Granularity {
     }
 }
 
+/// A calendar bucket clipped to the requested period.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bucket {
+    /// Local date identifying the calendar bucket.
     pub key: Date,
+    /// Human-readable bucket label.
     pub label: String,
+    /// Inclusive instant at the start of the clipped bucket.
     pub start: Timestamp,
+    /// Exclusive instant at the end of the clipped bucket.
     pub end: Timestamp,
 }
 
+/// Splits a period into calendar buckets in the selected time zone.
+#[must_use]
 pub fn buckets(period: Period, zone: &Zone, gran: Granularity) -> Vec<Bucket> {
     let (first, _) = period.local_dates(zone);
     let mut key = gran.bucket_start(first);
@@ -187,10 +269,17 @@ pub fn buckets(period: Period, zone: &Zone, gran: Granularity) -> Vec<Bucket> {
     out
 }
 
+/// Returns the calendar bucket key for an instant.
+#[must_use]
 pub fn bucket_key(t: Timestamp, zone: &Zone, gran: Granularity) -> Date {
     gran.bucket_start(zone.local_date(t))
 }
 
+/// Parses a timestamp, calendar date, relative date, or duration bound.
+///
+/// # Errors
+///
+/// Returns [`TimeError::InvalidBound`] when the input cannot be resolved.
 pub fn parse_bound(
     s: &str,
     zone: &Zone,
@@ -243,6 +332,11 @@ pub fn parse_bound(
     Ok(zone.start_of_day(start))
 }
 
+/// Resolves a report period from optional user supplied boundaries.
+///
+/// # Errors
+///
+/// Returns a time error when either boundary is invalid or the period is empty.
 pub fn resolve_period(
     since: Option<&str>,
     until: Option<&str>,
@@ -293,7 +387,7 @@ mod tests {
         .unwrap();
         let hours: Vec<i64> = buckets(p, &z, Granularity::Day)
             .iter()
-            .map(|b| b.end.duration_since(b.start).as_secs_f64() as i64 / 3600)
+            .map(|b| b.end.duration_since(b.start).as_secs() / 3600)
             .collect();
         assert_eq!(hours, vec![24, 23, 24]);
         let p = Period::new(
@@ -303,7 +397,7 @@ mod tests {
         .unwrap();
         let hours: Vec<i64> = buckets(p, &z, Granularity::Day)
             .iter()
-            .map(|b| b.end.duration_since(b.start).as_secs_f64() as i64 / 3600)
+            .map(|b| b.end.duration_since(b.start).as_secs() / 3600)
             .collect();
         assert_eq!(hours, vec![24, 25, 24]);
     }

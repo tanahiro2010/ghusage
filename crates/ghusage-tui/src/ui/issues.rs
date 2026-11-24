@@ -1,4 +1,4 @@
-fn draw_issues(f: &mut Frame, app: &App, area: Rect) {
+fn draw_issues(f: &mut Frame<'_>, app: &App, area: Rect) {
     let Some(r) = app.issues_report() else {
         return loading(f, area, "Issues");
     };
@@ -25,7 +25,7 @@ fn draw_issues(f: &mut Frame, app: &App, area: Rect) {
     stateful_table(f, app, area, list, t, true);
 }
 
-fn draw_issue_detail(f: &mut Frame, app: &App, area: Rect) {
+fn draw_issue_detail(f: &mut Frame<'_>, app: &App, area: Rect) {
     let Some(r) = app.issue_report() else {
         if app.issue_lookup_done() {
             return empty(
@@ -54,7 +54,7 @@ fn draw_issue_detail(f: &mut Frame, app: &App, area: Rect) {
         kv("Closed", ts(z, r.closed_at)),
         kv("URL", fit(&r.url, w)),
     ];
-    let info_h = (lines.len() as u16 + 2).min(area.height);
+    let info_h = to_u16(lines.len()).saturating_add(2).min(area.height);
     let [info, events] =
         Layout::vertical([Constraint::Length(info_h), Constraint::Min(0)]).areas(area);
     f.render_widget(
@@ -82,7 +82,7 @@ fn draw_issue_detail(f: &mut Frame, app: &App, area: Rect) {
     if vis.is_empty() {
         return empty(f, events, title, &[&no_match(app, list)]);
     }
-    let rows: Vec<Row> = vis
+    let rows: Vec<Row<'_>> = vis
         .iter()
         .map(|&i| {
             let e = &r.events[i];

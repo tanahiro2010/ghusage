@@ -1,6 +1,10 @@
 //! Listings behind the detail views (commits, activity, issue detail).
 //! Expected values are worked out by hand from the dataset below.
 
+#[expect(
+    dead_code,
+    reason = "Shared fixtures are compiled separately for each integration test target, and this target uses only a subset."
+)]
 mod common;
 
 use common::*;

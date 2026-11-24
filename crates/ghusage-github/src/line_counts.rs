@@ -2,6 +2,7 @@
 //! query per batch instead of one REST request per commit.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use ghusage_core::metrics::LineCounts;
 use serde_json::Value;
@@ -17,8 +18,11 @@ pub(crate) const BATCH: usize = 100;
 /// A commit to look up.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CommitRef {
+    /// Repository owner login.
     pub owner: String,
+    /// Repository name.
     pub name: String,
+    /// Full commit SHA.
     pub sha: String,
 }
 
@@ -38,13 +42,15 @@ fn is_sha(s: &str) -> bool {
 fn query(groups: &[(&str, &str, Vec<&str>)]) -> String {
     let mut q = String::from("query CommitLineCounts {\n");
     for (i, (owner, name, shas)) in groups.iter().enumerate() {
-        q.push_str(&format!(
-            "  r{i}: repository(owner: \"{owner}\", name: \"{name}\") {{\n"
-        ));
+        let _ = writeln!(
+            q,
+            "  r{i}: repository(owner: \"{owner}\", name: \"{name}\") {{"
+        );
         for (j, sha) in shas.iter().enumerate() {
-            q.push_str(&format!(
-                "    c{j}: object(oid: \"{sha}\") {{ ... on Commit {{ additions deletions }} }}\n"
-            ));
+            let _ = writeln!(
+                q,
+                "    c{j}: object(oid: \"{sha}\") {{ ... on Commit {{ additions deletions }} }}"
+            );
         }
         q.push_str("  }\n");
     }

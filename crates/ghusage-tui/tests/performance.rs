@@ -1,6 +1,10 @@
 //! Timing of the first render and of key handling on a large cache.
 //! Prints measurements; bounds are generous so slow machines pass.
 
+#[expect(
+    dead_code,
+    reason = "Shared fixtures are compiled separately for each integration test target, and this target uses only a subset."
+)]
 mod common;
 
 use std::time::{Duration, Instant};
@@ -72,7 +76,10 @@ fn big_dataset(events: usize) -> Dataset {
         let t = types[i % types.len()];
         let pr = i % 2000;
         let actor: Actor = if i % 3 == 0 { alice() } else { bob() };
-        let at = p.start + SignedDuration::from_secs((i as i64 * 7919) % span);
+        let at = p.start
+            + SignedDuration::from_secs(
+                (i64::try_from(i).expect("fixture index fits i64") * 7919) % span,
+            );
         let meta = EventMeta {
             sha: Some(format!("{i:040x}")),
             ..EventMeta::default()
@@ -99,7 +106,7 @@ fn big_dataset(events: usize) -> Dataset {
         prs,
         vec![],
         vec![],
-        evs.collect::<Vec<_>>(),
+        evs,
         vec![],
     )
 }
@@ -113,7 +120,7 @@ fn percentile(samples: &mut [Duration], p: usize) -> Duration {
 fn frame(app: &mut ghusage_tui::app::App) -> Duration {
     let t = Instant::now();
     app.poll_results();
-    let _ = render(app, 160, 50);
+    drop(render(app, 160, 50));
     t.elapsed()
 }
 
@@ -122,13 +129,13 @@ fn first_render_and_interaction_latency_on_100k_events() {
     let source = MemorySource::new(big_dataset(100_000));
     let started = Instant::now();
     let mut app = threaded_app(Box::new(source));
-    let _ = render(&app, 160, 50);
+    drop(render(&app, 160, 50));
     let first_frame = started.elapsed();
     while app.base_report().is_none() {
         frame(&mut app);
         std::thread::sleep(Duration::from_millis(2));
     }
-    let _ = render(&app, 160, 50);
+    drop(render(&app, 160, 50));
     let first_data = started.elapsed();
 
     // First visits to every screen, PR detail and timeline, and time range
@@ -151,7 +158,7 @@ fn first_render_and_interaction_latency_on_100k_events() {
         let t = Instant::now();
         app.handle_key(code(k));
         app.poll_results();
-        let _ = render(&app, 160, 50);
+        drop(render(&app, 160, 50));
         let d = t.elapsed();
         keys.push(d);
         all.push(d);

@@ -44,7 +44,7 @@ fn commit(repo: &str, sha: &str, t: &str, actor: Actor, merge: bool) -> Activity
     }
 }
 
-fn lines(additions: u64, deletions: u64) -> LineCounts {
+const fn lines(additions: u64, deletions: u64) -> LineCounts {
     LineCounts {
         additions,
         deletions,

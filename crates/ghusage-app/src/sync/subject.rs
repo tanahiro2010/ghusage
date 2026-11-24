@@ -5,29 +5,26 @@ pub async fn resolve_subject(
     store: &mut Store,
     user: Option<&str>,
 ) -> Result<(Subject, bool)> {
-    match user {
-        Some(login) => {
-            let u = client.user(login).await?;
-            Ok((
-                Subject {
-                    id: Some(u.id),
-                    login: u.login,
-                },
-                false,
-            ))
-        }
-        None => {
-            let v = client.viewer().await?;
-            store.set_meta(META_VIEWER_LOGIN, &v.login)?;
-            store.set_meta(META_VIEWER_ID, &v.id)?;
-            Ok((
-                Subject {
-                    id: Some(v.id),
-                    login: v.login,
-                },
-                true,
-            ))
-        }
+    if let Some(login) = user {
+        let u = client.user(login).await?;
+        Ok((
+            Subject {
+                id: Some(u.id),
+                login: u.login,
+            },
+            false,
+        ))
+    } else {
+        let v = client.viewer().await?;
+        store.set_meta(META_VIEWER_LOGIN, &v.login)?;
+        store.set_meta(META_VIEWER_ID, &v.id)?;
+        Ok((
+            Subject {
+                id: Some(v.id),
+                login: v.login,
+            },
+            true,
+        ))
     }
 }
 

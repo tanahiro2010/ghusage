@@ -1,5 +1,9 @@
 //! Messages from the background sync update the UI without blocking it.
 
+#[expect(
+    dead_code,
+    reason = "Shared fixtures are compiled separately for each integration test target, and this target uses only a subset."
+)]
 mod common;
 
 use std::sync::mpsc;
@@ -96,7 +100,7 @@ fn draining_messages_never_blocks() {
     }
     // An empty channel returns immediately.
     assert!(rx.try_recv().is_err());
-    let _ = render(&app, 120, 30);
+    drop(render(&app, 120, 30));
     assert!(started.elapsed() < Duration::from_secs(2));
     assert_eq!(
         app.sync.progress.as_deref(),
