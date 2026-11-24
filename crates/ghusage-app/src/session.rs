@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use ghusage_core::coverage::{self, DataKind};
 use ghusage_core::metrics::Dataset;
-use ghusage_core::model::{EventType, Subject, Visibility};
+use ghusage_core::model::{Subject, Visibility};
 use ghusage_core::time::Period;
 use ghusage_github::{ClientConfig, Credentials, GitHubClient, TokenSource};
 use ghusage_storage::{Store, SyncLock};
@@ -340,10 +340,7 @@ impl Session {
                     let involved = sync::involves(&self.subject, &bundle);
                     let mut batch = sync::pr_batch(&self.subject, bundle);
                     if !involved {
-                        batch.account = format!("{}{}", self.subject.login, sync::VIEWED_SUFFIX);
-                        batch
-                            .events
-                            .retain(|event| event.event_type != EventType::CommitAuthored);
+                        batch.viewed_pull_requests.push(pr_id.clone());
                     }
                     self.store.apply(&batch)?;
                     return Ok(PrLoadResult {

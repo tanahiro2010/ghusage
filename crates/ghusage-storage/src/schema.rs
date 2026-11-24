@@ -14,7 +14,12 @@ use crate::{Result, StorageError};
 pub(crate) type Migration = fn(&rusqlite::Transaction<'_>) -> rusqlite::Result<()>;
 
 /// Every migration step, in order. The current schema version is its length.
-pub(crate) const MIGRATIONS: &[Migration] = &[v1_initial, v2_commit_details, v3_diff_stats];
+pub(crate) const MIGRATIONS: &[Migration] = &[
+    v1_initial,
+    v2_commit_details,
+    v3_diff_stats,
+    v4_domain_models,
+];
 
 pub(crate) const CURRENT_VERSION: u32 = MIGRATIONS.len() as u32;
 
@@ -148,6 +153,47 @@ ALTER TABLE pull_requests ADD COLUMN changed_files INTEGER;
 ALTER TABLE pull_requests ADD COLUMN diff_observed_at INTEGER;
 ALTER TABLE pull_requests ADD COLUMN diff_observed_at_ns INTEGER;
 ALTER TABLE pull_requests ADD COLUMN merge_commit_parents INTEGER;
+"#,
+    )
+}
+
+/// Adds explicit coverage dimensions and viewed state, then folds legacy
+/// synthetic `+viewed` accounts into their real account without moving events.
+fn v4_domain_models(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        r#"
+ALTER TABLE coverage_intervals ADD COLUMN visibility TEXT NOT NULL DEFAULT 'all';
+ALTER TABLE coverage_intervals ADD COLUMN generation TEXT NOT NULL DEFAULT 'legacy_unusable';
+ALTER TABLE account_pull_requests ADD COLUMN viewed INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX account_pull_requests_account_viewed
+    ON account_pull_requests(account_id, viewed, pr_id);
+DROP INDEX coverage_intervals_unique;
+UPDATE coverage_intervals SET visibility = CASE
+    WHEN scope LIKE '%(public repositories only)' THEN 'public_only' ELSE 'all' END;
+UPDATE coverage_intervals SET generation = CASE
+    WHEN data_kind = 'commits' AND scope LIKE '%(repository listing + commit search; other repositories by commit search alone, copies excluded)%' THEN 'commits_listing_search_v1'
+    WHEN data_kind = 'pull_requests' AND scope LIKE 'pull requests involving or reviewed by %' THEN 'pull_requests_v1'
+    WHEN data_kind = 'issues' AND scope LIKE 'issues involving %' THEN 'issues_v1'
+    ELSE 'legacy_unusable' END;
+CREATE UNIQUE INDEX coverage_intervals_unique ON coverage_intervals(
+    account_id, data_kind, start_at, start_at_ns, end_at, end_at_ns, status, scope,
+    visibility, generation, ifnull(reason, ''), recorded_at, recorded_at_ns
+);
+UPDATE account_pull_requests SET viewed = 1 WHERE account_id IN
+    (SELECT id FROM accounts WHERE login LIKE '%+viewed');
+INSERT OR IGNORE INTO accounts(login, created_at)
+SELECT substr(login, 1, length(login) - length('+viewed')), created_at
+FROM accounts WHERE login LIKE '%+viewed';
+INSERT INTO account_pull_requests (account_id, pr_id, viewed)
+SELECT real.id, ap.pr_id, 1 FROM account_pull_requests ap
+JOIN accounts old ON old.id = ap.account_id AND old.login LIKE '%+viewed'
+JOIN accounts real ON real.login = substr(old.login, 1, length(old.login) - length('+viewed'))
+ON CONFLICT(account_id, pr_id) DO UPDATE SET viewed = 1;
+INSERT OR IGNORE INTO account_repositories (account_id, repository_id)
+SELECT real.id, ar.repository_id FROM account_repositories ar
+JOIN accounts old ON old.id = ar.account_id AND old.login LIKE '%+viewed'
+JOIN accounts real ON real.login = substr(old.login, 1, length(old.login) - length('+viewed'));
+DELETE FROM accounts WHERE login LIKE '%+viewed';
 "#,
     )
 }
@@ -498,7 +544,7 @@ mod tests {
         )
         .unwrap();
         migrate(&mut conn, MIGRATIONS, None).unwrap();
-        assert_eq!(user_version(&conn).unwrap(), 3);
+        assert_eq!(user_version(&conn).unwrap(), CURRENT_VERSION);
         // Existing commits keep their data; their statistics are unknown
         // (NULL), not zero.
         let (login, additions): (String, Option<i64>) = conn
@@ -510,6 +556,76 @@ mod tests {
             .unwrap();
         assert_eq!(login, "me");
         assert_eq!(additions, None);
+    }
+
+    #[test]
+    fn v3_upgrade_structures_coverage_and_merges_viewed_account() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(
+            &mut conn,
+            &[v1_initial, v2_commit_details, v3_diff_stats],
+            None,
+        )
+        .unwrap();
+        conn.execute_batch(
+            r#"
+INSERT INTO repositories(id, owner, name, owner_kind, visibility, is_fork, accessible)
+VALUES ('R1', 'owner', 'repo', 'User', 'public', 0, 1);
+INSERT INTO accounts(login, created_at) VALUES ('alice', 1), ('alice+viewed', 2);
+INSERT INTO pull_requests(id, repository_id, number, title, url, author_kind, state,
+    is_draft, created_at, created_at_ns, coverage)
+VALUES ('P1', 'R1', 1, 'title', 'url', 'User', 'open', 0, 1, 0, 'complete');
+INSERT INTO account_pull_requests(account_id, pr_id)
+SELECT id, 'P1' FROM accounts WHERE login = 'alice';
+INSERT INTO account_pull_requests(account_id, pr_id)
+SELECT id, 'P1' FROM accounts WHERE login = 'alice+viewed';
+INSERT INTO account_repositories(account_id, repository_id)
+SELECT id, 'R1' FROM accounts WHERE login = 'alice+viewed';
+INSERT INTO coverage_intervals(account_id, data_kind, start_at, start_at_ns, end_at,
+    end_at_ns, status, scope, recorded_at, recorded_at_ns)
+SELECT id, 'commits', 1, 0, 2, 0, 'complete',
+    'commits authored (repository listing + commit search; other repositories by commit search alone, copies excluded)', 3, 0
+FROM accounts WHERE login = 'alice';
+INSERT INTO coverage_intervals(account_id, data_kind, start_at, start_at_ns, end_at,
+    end_at_ns, status, scope, recorded_at, recorded_at_ns)
+SELECT id, 'commits', 2, 0, 3, 0, 'complete', 'unknown scope', 3, 1
+FROM accounts WHERE login = 'alice';
+"#,
+        ).unwrap();
+
+        migrate(&mut conn, MIGRATIONS, None).unwrap();
+        let (viewed, account_count): (i64, i64) = conn
+            .query_row(
+                "SELECT ap.viewed, (SELECT count(*) FROM accounts WHERE login = 'alice+viewed') \
+             FROM account_pull_requests ap JOIN accounts a ON a.id = ap.account_id \
+             WHERE a.login = 'alice' AND ap.pr_id = 'P1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(viewed, 1);
+        assert_eq!(account_count, 0);
+        let repo_count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM account_repositories ar \
+                 JOIN accounts a ON a.id = ar.account_id \
+                 WHERE a.login = 'alice' AND ar.repository_id = 'R1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(repo_count, 1);
+        let generations: Vec<String> = conn
+            .prepare("SELECT generation FROM coverage_intervals ORDER BY start_at")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            generations,
+            ["commits_listing_search_v1", "legacy_unusable"]
+        );
     }
 
     #[test]

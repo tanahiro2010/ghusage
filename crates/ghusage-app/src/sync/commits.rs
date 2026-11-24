@@ -27,7 +27,7 @@ async fn persist_commit_range(
     known_repos: &mut HashMap<String, Repository>,
     mut statuses: Vec<CoverageStatus>,
     mut reasons: Vec<String>,
-    inaccessible: Vec<(String, String)>,
+    inaccessible: Vec<RepositoryRef>,
     failed: Vec<String>,
 ) -> Result<()> {
     let (client, subject, opts, progress) = (sh.client, sh.subject, sh.opts, sh.progress);
@@ -64,12 +64,15 @@ async fn persist_commit_range(
         .map(|c| (c.repository_id.clone(), c.sha.clone()))
         .collect();
     if !inaccessible.is_empty() {
-        for (owner, name) in &inaccessible {
+        for repo in &inaccessible {
             sh.store
                 .borrow_mut()
-                .set_repository_accessible(owner, name, false)?;
+                .set_repository_accessible(&repo.owner, &repo.name, false)?;
         }
-        let names: Vec<String> = inaccessible.iter().map(|(o, n)| format!("{o}/{n}")).collect();
+        let names: Vec<String> = inaccessible
+            .iter()
+            .map(|repo| format!("{}/{}", repo.owner, repo.name))
+            .collect();
         statuses.push(CoverageStatus::Partial);
         reasons.push(format!(
             "{} repositories not accessible: {}",
@@ -171,11 +174,12 @@ async fn resolve_pr_repositories(
     client: &GitHubClient,
     known_repos: &mut HashMap<String, Repository>,
     pushed: &[PushedRepository],
-    pr_repos: &[(String, String)],
+    pr_repos: &[RepositoryRef],
 ) -> Result<(HashSet<String>, Vec<String>)> {
     let mut ids = HashSet::new();
     let mut unresolved = Vec::new();
-    for (owner, name) in pr_repos {
+    for reference in pr_repos {
+        let (owner, name) = (&reference.owner, &reference.name);
         let local = find_repo(known_repos, owner, name).cloned().or_else(|| {
             pushed
                 .iter()
@@ -221,8 +225,8 @@ async fn sync_commits(
     ranges: &[Period],
     cached_prs: &[CachedPr],
     cached_issue_repos: &HashSet<String>,
-    pr_repos: tokio::sync::oneshot::Receiver<Vec<(String, String)>>,
-    issue_repos: tokio::sync::oneshot::Receiver<Vec<(String, String)>>,
+    pr_repos: tokio::sync::oneshot::Receiver<Vec<RepositoryRef>>,
+    issue_repos: tokio::sync::oneshot::Receiver<Vec<RepositoryRef>>,
     mut known_repos: HashMap<String, Repository>,
 ) -> Result<()> {
     let (client, subject, opts, progress) = (sh.client, sh.subject, sh.opts, sh.progress);
@@ -272,7 +276,7 @@ async fn sync_commits(
         names: unresolved
             .iter()
             .cloned()
-            .chain(issue_repos.iter().map(|(o, n)| format!("{o}/{n}")))
+            .chain(issue_repos.iter().map(|repo| format!("{}/{}", repo.owner, repo.name)))
             .map(|n| n.to_ascii_lowercase())
             .collect(),
     };
@@ -375,7 +379,7 @@ async fn sync_commit_range(
         for c in items {
             found.insert(c.event.event_id.clone(), c);
         }
-        let mut inaccessible: Vec<(String, String)> = Vec::new();
+        let mut inaccessible: Vec<RepositoryRef> = Vec::new();
         let mut failed: Vec<String> = Vec::new();
         let mut stream = futures::stream::iter(to_list.into_iter().map(|repo| async move {
             let res = client
@@ -411,7 +415,7 @@ async fn sync_commit_range(
                 }
                 Err(e @ ApiError::Unauthorized) => return Err(e.into()),
                 Err(ApiError::NotFound(_) | ApiError::Forbidden(_)) => {
-                    inaccessible.push((repo.owner.clone(), repo.name));
+                    inaccessible.push(RepositoryRef::new(repo.owner.clone(), repo.name));
                 }
                 Err(e) => failed.push(format!("{}: {e}", repo.full_name())),
             }

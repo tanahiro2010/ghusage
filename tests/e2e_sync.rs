@@ -634,6 +634,39 @@ async fn pr_timeline_is_sorted_deterministic_and_filterable() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn viewing_an_unrelated_pull_request_keeps_its_detail_without_claiming_activity() {
+    let mut world = World::base();
+    let viewed = world.pr_mut(20);
+    viewed.reviewed_by_me = false;
+    viewed.gql["reviews"] = connection(vec![]);
+    viewed.gql["reviewThreads"] = connection(vec![]);
+    let server = serve(&world).await;
+    let env = Env::new(&server);
+    let url = "https://github.com/acme/widget/pull/20";
+
+    let online = env
+        .run(&["pr", url, "--timeline", "--format", "json"])
+        .await;
+    online.expect_code(0).assert_clean();
+    let online_timeline = online.json()["timeline"].clone();
+    assert!(!online_timeline.as_array().unwrap().is_empty());
+
+    let offline = env
+        .run(&["pr", url, "--timeline", "--format", "json", "--offline"])
+        .await;
+    offline.expect_code(0).assert_clean();
+    assert_eq!(offline.json()["timeline"], online_timeline);
+
+    let sync = env.sync(&[]).await;
+    sync.expect_code(0).assert_clean();
+    assert_eq!(sync.json()["pull_requests_found"], 2);
+    assert_eq!(sync.json()["pull_requests_fetched"], 2);
+    let overview = env.offline_json(&["overview"]).await;
+    overview.expect_code(0);
+    assert_eq!(overview.json()["metrics"]["reviews_submitted"]["total"], 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn bot_and_unknown_actor_commits_are_not_counted_as_mine() {
     // Only commits by a bot and by an unlinked git identity, both in commit
     // search and inside a pull request I opened.

@@ -607,6 +607,52 @@ impl Visibility {
     }
 }
 
+/// GitHub API reference to a repository. Identity ignores ASCII case while
+/// retaining the original spelling for display and requests.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepositoryRef {
+    pub owner: String,
+    pub name: String,
+}
+
+impl RepositoryRef {
+    pub fn new(owner: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            owner: owner.into(),
+            name: name.into(),
+        }
+    }
+}
+
+impl PartialEq for RepositoryRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.owner.eq_ignore_ascii_case(&other.owner) && self.name.eq_ignore_ascii_case(&other.name)
+    }
+}
+impl Eq for RepositoryRef {}
+impl std::hash::Hash for RepositoryRef {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.owner.to_ascii_lowercase().hash(state);
+        self.name.to_ascii_lowercase().hash(state);
+    }
+}
+
+#[cfg(test)]
+mod repository_ref_tests {
+    use super::RepositoryRef;
+    use std::collections::HashSet;
+
+    #[test]
+    fn repository_ref_identity_is_case_insensitive_and_keeps_display_case() {
+        let original = RepositoryRef::new("Tanahiro2010", "GhusAGE");
+        let equivalent = RepositoryRef::new("tanahiro2010", "ghusage");
+        assert_eq!(original, equivalent);
+        assert_eq!(original.owner, "Tanahiro2010");
+        assert_eq!(original.name, "GhusAGE");
+        assert_eq!(HashSet::from([original, equivalent]).len(), 1);
+    }
+}
+
 /// Current repository metadata. Identified by `id`; the name may change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Repository {

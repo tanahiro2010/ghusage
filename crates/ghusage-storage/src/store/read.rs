@@ -1,4 +1,21 @@
 impl Store {
+    /// Pull request IDs associated with `account`, optionally limited to
+    /// relationships marked as viewed-only.
+    pub fn pull_request_ids(&self, account: &str, viewed_only: bool) -> Result<HashSet<String>> {
+        let Some(account_id) = account_id(&self.conn, account)? else {
+            return Ok(HashSet::new());
+        };
+        let viewed = i64::from(viewed_only);
+        query_list(
+            &self.conn,
+            "SELECT pr_id FROM account_pull_requests WHERE account_id = ?1 AND viewed = ?2",
+            params![account_id, viewed],
+            |r| Ok(r.get(0)?),
+        )
+        .map(|ids| ids.into_iter().collect())
+        .map_err(classify)
+    }
+
     /// Loads the dataset for `subject`. With `range`, only events whose
     /// `occurred_at` or commit author date falls in the range are loaded;
     /// all repositories, pull requests, issues, threads and coverage records

@@ -866,7 +866,8 @@ fn records(raw: &[RawRecord]) -> Vec<CoverageRecord> {
             start: hour(r.start),
             end: hour(r.start + r.len),
             status: STATUSES[r.status],
-            scope: format!("scope-{}", r.kind),
+            scope: format!("scope-{}", r.kind).as_str().into(),
+            description: format!("scope-{}", r.kind),
             reason: None,
             // distinct recording times; later records were recorded later
             recorded_at: hour(10_000 + i as i64),

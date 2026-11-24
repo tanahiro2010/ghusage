@@ -2,10 +2,10 @@
 
 use ghusage_app::csv_out;
 use ghusage_app::report::{self, QueryContext, ReportKind};
-use ghusage_app::sync::{
-    COMMIT_LISTING_SCOPE, PUBLIC_ONLY_SCOPE, SyncOptions, applicable_coverage, ranges_to_fetch,
+use ghusage_app::sync::{SyncOptions, applicable_coverage, ranges_to_fetch};
+use ghusage_core::coverage::{
+    CoverageGeneration, CoverageRecord, CoverageScope, CoverageStatus, CoverageVisibility, DataKind,
 };
-use ghusage_core::coverage::{CoverageRecord, CoverageStatus, DataKind};
 use ghusage_core::metrics::{CommitDateBasis, Dataset, Filter, Participation, PrSort};
 use ghusage_core::model::*;
 use ghusage_core::time::{Granularity, Period, Zone};
@@ -159,6 +159,7 @@ fn dataset() -> Dataset {
             end: t(10, 0),
             status: CoverageStatus::Complete,
             scope: "commits".into(),
+            description: "commits".into(),
             reason: None,
             recorded_at: t(21, 0),
         }],
@@ -287,7 +288,8 @@ fn only_missing_ranges_are_fetched() {
         start: t(1, 0),
         end: t(10, 0),
         status: CoverageStatus::Complete,
-        scope: String::new(),
+        scope: "".into(),
+        description: String::new(),
         reason: None,
         recorded_at: t(10, 0),
     }];
@@ -307,29 +309,41 @@ fn only_missing_ranges_are_fetched() {
 
 #[test]
 fn commit_coverage_from_search_alone_is_synced_again() {
-    let rec = |kind: DataKind, scope: String| CoverageRecord {
+    let rec = |kind: DataKind, scope: CoverageScope| CoverageRecord {
         kind,
         start: t(1, 0),
         end: t(10, 0),
         status: CoverageStatus::Complete,
         scope,
+        description: "coverage test".into(),
         reason: None,
         recorded_at: t(10, 0),
     };
+    let scope = |generation, visibility| CoverageScope {
+        generation,
+        visibility,
+    };
     let search_only = rec(
         DataKind::Commits,
-        "commits authored by me found by GitHub commit search (default branches of indexed repositories), plus commits of synced pull requests".into(),
+        scope(CoverageGeneration::LegacyUnusable, CoverageVisibility::All),
     );
     let listed = rec(
         DataKind::Commits,
-        format!(
-            "commits authored by me on the default branches of repositories me pushed to or contributed to {COMMIT_LISTING_SCOPE}, plus commits of synced pull requests"
+        scope(
+            CoverageGeneration::CommitsListingSearchV1,
+            CoverageVisibility::All,
         ),
     );
-    let prs = rec(DataKind::PullRequests, "pull requests".into());
+    let prs = rec(
+        DataKind::PullRequests,
+        scope(CoverageGeneration::PullRequestsV1, CoverageVisibility::All),
+    );
     let public = rec(
         DataKind::Commits,
-        format!("{} {COMMIT_LISTING_SCOPE}{PUBLIC_ONLY_SCOPE}", "commits"),
+        scope(
+            CoverageGeneration::CommitsListingSearchV1,
+            CoverageVisibility::PublicOnly,
+        ),
     );
     let all = vec![search_only, listed.clone(), prs.clone(), public.clone()];
     assert_eq!(
@@ -339,7 +353,13 @@ fn commit_coverage_from_search_alone_is_synced_again() {
     assert_eq!(applicable_coverage(all, true), vec![listed, prs, public]);
     // Without applicable commit coverage, the whole period is fetched again.
     let opts = SyncOptions::new(Period::new(t(1, 0), t(10, 0)).unwrap(), t(10, 0));
-    let old = applicable_coverage(vec![rec(DataKind::Commits, "commit search".into())], false);
+    let old = applicable_coverage(
+        vec![rec(
+            DataKind::Commits,
+            scope(CoverageGeneration::LegacyUnusable, CoverageVisibility::All),
+        )],
+        false,
+    );
     assert_eq!(
         ranges_to_fetch(&old, DataKind::Commits, &opts),
         vec![opts.period]
@@ -348,7 +368,7 @@ fn commit_coverage_from_search_alone_is_synced_again() {
     // repositories were still taken are synced again too.
     let unfiltered = rec(
         DataKind::Commits,
-        "commits authored by me on the default branches of repositories me pushed to or contributed to (repository listing + commit search), plus commits of synced pull requests".into(),
+        scope(CoverageGeneration::LegacyUnusable, CoverageVisibility::All),
     );
     assert_eq!(applicable_coverage(vec![unfiltered], false), vec![]);
 }
@@ -675,6 +695,7 @@ fn missing_values_are_null_and_zero_counts_are_numbers() {
                 end: t(10, 0),
                 status: CoverageStatus::Complete,
                 scope: "everything".into(),
+                description: "everything".into(),
                 reason: None,
                 recorded_at: t(21, 0),
             })

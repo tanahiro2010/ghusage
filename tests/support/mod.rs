@@ -1121,7 +1121,27 @@ impl World {
         let pr_items = |only_reviewed: bool| -> Vec<Value> {
             self.prs
                 .iter()
-                .filter(|p| !only_reviewed || p.reviewed_by_me)
+                .filter(|p| {
+                    if only_reviewed {
+                        p.reviewed_by_me
+                    } else {
+                        let authored = p.gql["author"]["login"].as_str() == Some(ME);
+                        let participated = ["reviews", "comments"]
+                            .iter()
+                            .filter_map(|key| p.gql[*key]["nodes"].as_array())
+                            .flatten()
+                            .any(|node| node["author"]["login"].as_str() == Some(ME));
+                        let requested =
+                            p.gql["timelineItems"]["nodes"]
+                                .as_array()
+                                .is_some_and(|nodes| {
+                                    nodes.iter().any(|node| {
+                                        node["requestedReviewer"]["login"].as_str() == Some(ME)
+                                    })
+                                });
+                        p.reviewed_by_me || authored || participated || requested
+                    }
+                })
                 .map(|p| search_issue(&p.owner, &p.name, p.number, &p.node_id, true, &p.updated_at))
                 .collect()
         };

@@ -190,6 +190,7 @@ fn base_batch() -> WriteBatch {
             end: t(8, 0),
             status: CoverageStatus::Complete,
             scope: "commit search".into(),
+            description: "commit search".into(),
             reason: None,
             recorded_at: t(10, 0),
         }],
@@ -213,6 +214,51 @@ fn event_by_id<'a>(ds: &'a ghusage_core::metrics::Dataset, id: &EventId) -> &'a 
         .iter()
         .find(|e| &e.event_id == id)
         .unwrap_or_else(|| panic!("event {id} not loaded"))
+}
+
+#[test]
+fn viewed_only_pull_request_keeps_detail_events_out_of_account_activity() {
+    let mut store = store_with_base();
+    let viewed_event = comment_event("PR1", "C_VIEWED", t(4, 0));
+    store
+        .apply(&WriteBatch {
+            account: "alice".into(),
+            repositories: vec![repo("R1", "o", "r")],
+            pull_requests: vec![pr("PR1", "R1", 1)],
+            events: vec![viewed_event.clone()],
+            viewed_pull_requests: vec!["PR1".into()],
+            ..Default::default()
+        })
+        .unwrap();
+
+    assert!(
+        !store
+            .pull_request_ids("alice", false)
+            .unwrap()
+            .contains("PR1")
+    );
+    assert!(
+        store
+            .pull_request_ids("alice", true)
+            .unwrap()
+            .contains("PR1")
+    );
+    let activity = store.load_dataset(&subject("alice"), true, None).unwrap();
+    assert!(
+        !activity
+            .events
+            .iter()
+            .any(|e| e.event_id == viewed_event.event_id)
+    );
+    let detail = store
+        .load_pr_dataset(&subject("alice"), true, "PR1")
+        .unwrap();
+    assert!(
+        detail
+            .events
+            .iter()
+            .any(|e| e.event_id == viewed_event.event_id)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -960,6 +1006,7 @@ fn failing_batch_persists_nothing() {
             end: t(2, 0),
             status: CoverageStatus::Partial,
             scope: "issues".into(),
+            description: "issues".into(),
             reason: Some("rate limited".into()),
             recorded_at: t(11, 0),
         }],

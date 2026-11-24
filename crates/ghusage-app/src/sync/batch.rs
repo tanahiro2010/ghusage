@@ -11,9 +11,53 @@ fn record(
         start: p.start,
         end: p.end,
         status,
-        scope: scope(kind, &subject.login, opts),
+        scope: CoverageScope {
+            visibility: if opts.public_only { CoverageVisibility::PublicOnly } else { CoverageVisibility::All },
+            generation: match kind {
+                DataKind::Commits => CoverageGeneration::CommitsListingSearchV1,
+                DataKind::PullRequests => CoverageGeneration::PullRequestsV1,
+                DataKind::Issues => CoverageGeneration::IssuesV1,
+            },
+        },
+        description: coverage_description(kind, subject, opts),
         reason,
         recorded_at: opts.now,
+    }
+}
+
+fn coverage_description(kind: DataKind, subject: &Subject, opts: &SyncOptions) -> String {
+    let visibility = if opts.public_only {
+        " (public repositories only)"
+    } else {
+        ""
+    };
+    match kind {
+        DataKind::Commits => {
+            let relation = if opts.subject_is_viewer {
+                "pushed to or contributed to"
+            } else {
+                "owns or contributed to"
+            };
+            format!(
+                "commits authored by {} on the default branches of repositories {} {}, plus commits of synced pull requests{}",
+                subject.login,
+                subject.login,
+                relation,
+                visibility
+            )
+            .replace(
+                "plus commits of synced pull requests",
+                "(repository listing + commit search; other repositories by commit search alone, copies excluded), plus commits of synced pull requests",
+            )
+        }
+        DataKind::PullRequests => format!(
+            "pull requests involving or reviewed by {} updated in range, with commits, reviews, comments, review threads, timeline events and head-commit checks{}",
+            subject.login, visibility
+        ),
+        DataKind::Issues => format!(
+            "issues involving {} updated in range, with open/close/reopen history{}",
+            subject.login, visibility
+        ),
     }
 }
 
@@ -68,7 +112,7 @@ async fn run_inner(
     // Pull requests already linked to this account. One cached for another
     // account (another `--user`, or only viewed) still has to be fetched
     // for this one, even if it has not changed.
-    let linked_prs: HashSet<String> = cached.pull_requests.keys().cloned().collect();
+    let linked_prs = store.pull_request_ids(&subject.login, false)?;
     let cached_issue_repos: HashSet<String> = cached
         .issues
         .values()
@@ -76,7 +120,9 @@ async fn run_inner(
         .collect();
     let cached_prs: Vec<CachedPr> = cached
         .pull_requests
-        .into_values()
+        .into_iter()
+        .filter(|(id, _)| linked_prs.contains(id))
+        .map(|(_, p)| p)
         .map(|p| (p.repository_id, p.created_at, p.updated_at))
         .collect();
     let pr_ranges = ranges_to_fetch(&existing, DataKind::PullRequests, opts);
@@ -113,11 +159,12 @@ async fn run_inner(
     let (issue_repos_tx, issue_repos_rx) = tokio::sync::oneshot::channel();
     let prs = async {
         let (refs, search_status) = search_prs(&shared, &pr_ranges).await?;
-        let mut pr_repos: Vec<(String, String)> = Vec::new();
+        let mut pr_repos: Vec<RepositoryRef> = Vec::new();
         let mut seen_names = HashSet::new();
         for r in refs.values() {
-            if seen_names.insert(format!("{}/{}", r.owner, r.name).to_ascii_lowercase()) {
-                pr_repos.push((r.owner.clone(), r.name.clone()));
+            let repo = RepositoryRef::new(r.owner.clone(), r.name.clone());
+            if seen_names.insert(repo.clone()) {
+                pr_repos.push(repo);
             }
         }
         let _ = pr_repos_tx.send(pr_repos);
@@ -173,7 +220,7 @@ fn add_commits(batch: &mut WriteBatch, commits: Vec<CommitRecord>) {
 }
 
 /// Owner, name and number of a pull request.
-type PrKey = (String, String, u64);
+type PrKey = (RepositoryRef, u64);
 
 fn stale_open_prs(
     store: &Store,
@@ -182,9 +229,11 @@ fn stale_open_prs(
 ) -> Result<Vec<(String, PrKey)>> {
     let probe = Period::new(opts.now, opts.now + SignedDuration::from_secs(1))?;
     let ds = store.load_dataset(subject, false, Some(probe))?;
+    let viewed_prs = store.pull_request_ids(&subject.login, true)?;
     Ok(ds
         .pull_requests
         .values()
+        .filter(|pr| !viewed_prs.contains(&pr.id))
         .filter(|pr| pr.state == PrState::Open)
         .filter(|pr| {
             pr.synced_at
@@ -194,14 +243,11 @@ fn stale_open_prs(
             let repo = ds.repositories.get(&pr.repository_id)?;
             Some((
                 pr.id.clone(),
-                (repo.owner.clone(), repo.name.clone(), pr.number),
+                (RepositoryRef::new(repo.owner.clone(), repo.name.clone()), pr.number),
             ))
         })
         .collect())
 }
-
-/// Account suffix for pull requests fetched only for viewing.
-pub const VIEWED_SUFFIX: &str = "+viewed";
 
 /// Whether the subject took part in a pull request: author, any event,
 /// requested reviewer or assignee.

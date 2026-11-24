@@ -9,9 +9,13 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use futures::StreamExt;
-use ghusage_core::coverage::{self, CoverageRecord, CoverageStatus, DataKind};
+use ghusage_core::coverage::{
+    self, CoverageGeneration, CoverageRecord, CoverageScope, CoverageStatus, CoverageVisibility,
+    DataKind,
+};
 use ghusage_core::model::{
-    ActivityEvent, Collection, EventId, EventType, PrState, Repository, Source, Subject,
+    ActivityEvent, Collection, EventId, EventType, PrState, Repository, RepositoryRef, Source,
+    Subject,
 };
 use ghusage_core::time::Period;
 use ghusage_github::{

@@ -1679,6 +1679,7 @@ fn coverage_with_equal_recording_times_does_not_depend_on_record_order() {
         end: utc("2026-12-01T00:00:00Z"),
         status,
         scope: "commits".into(),
+        description: "commits".into(),
         reason: None,
         recorded_at: utc("2026-11-21T00:00:00Z"),
     };
@@ -1704,6 +1705,7 @@ fn conflicting_coverage_records_with_equal_recording_times_are_not_complete() {
         end: utc("2026-12-01T00:00:00Z"),
         status,
         scope: "commits".into(),
+        description: "commits".into(),
         reason: None,
         recorded_at: utc("2026-11-21T00:00:00Z"),
     };
