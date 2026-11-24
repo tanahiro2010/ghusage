@@ -1,8 +1,4 @@
 //! Synthetic data shared by the benchmarks.
-#![allow(
-    dead_code,
-    reason = "Benchmark targets share fixture helpers, and each target uses only a subset."
-)]
 
 use ghusage_app::report::QueryContext;
 use ghusage_core::coverage::CoverageStatus;

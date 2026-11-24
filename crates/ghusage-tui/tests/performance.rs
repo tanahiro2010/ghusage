@@ -1,6 +1,10 @@
 //! Timing of the first render and of key handling on a large cache.
 //! Prints measurements; bounds are generous so slow machines pass.
 
+#[expect(
+    dead_code,
+    reason = "Shared fixtures are compiled separately for each integration test target, and this target uses only a subset."
+)]
 mod common;
 
 use std::time::{Duration, Instant};

@@ -1,6 +1,10 @@
 //! Dashboard, detail screens (day, repository, issue) and the navigation
 //! between them.
 
+#[expect(
+    dead_code,
+    reason = "Shared fixtures are compiled separately for each integration test target, and this target uses only a subset."
+)]
 mod common;
 
 use common::*;

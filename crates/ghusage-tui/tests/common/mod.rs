@@ -1,8 +1,4 @@
 //! Synthetic activity used by the UI tests.
-#![allow(
-    dead_code,
-    reason = "Integration test targets share fixture helpers, and each target uses only a subset."
-)]
 
 use ghusage_core::coverage::{CoverageRecord, CoverageStatus, DataKind};
 use ghusage_core::metrics::{Dataset, Filter};
@@ -53,7 +49,7 @@ pub(crate) fn bot() -> Actor {
     )
 }
 
-fn repo(id: &str, owner: &str, name: &str, vis: Visibility) -> Repository {
+pub(crate) fn repo(id: &str, owner: &str, name: &str, vis: Visibility) -> Repository {
     Repository {
         id: id.into(),
         owner: owner.into(),
@@ -67,7 +63,7 @@ fn repo(id: &str, owner: &str, name: &str, vis: Visibility) -> Repository {
     }
 }
 
-fn pr(
+pub(crate) fn pr(
     id: &str,
     repo: &str,
     number: u64,
@@ -125,21 +121,21 @@ pub(crate) fn event(
     }
 }
 
-fn sha(s: &str) -> EventMeta {
+pub(crate) fn sha(s: &str) -> EventMeta {
     EventMeta {
         sha: Some(s.into()),
         ..EventMeta::default()
     }
 }
 
-fn review(state: ReviewState) -> EventMeta {
+pub(crate) fn review(state: ReviewState) -> EventMeta {
     EventMeta {
         review_state: Some(state),
         ..EventMeta::default()
     }
 }
 
-fn coverage(start: Timestamp, end: Timestamp) -> Vec<CoverageRecord> {
+pub(crate) fn coverage(start: Timestamp, end: Timestamp) -> Vec<CoverageRecord> {
     DataKind::ALL
         .iter()
         .map(|k| CoverageRecord {

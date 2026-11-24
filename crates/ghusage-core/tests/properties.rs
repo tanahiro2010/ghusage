@@ -5,6 +5,10 @@
 //! Failing cases are saved under `proptest-regressions/` and replayed first on
 //! the next run.
 
+#[expect(
+    dead_code,
+    reason = "Shared fixtures are compiled separately for each integration test target, and this target uses only a subset."
+)]
 mod common;
 
 use common::*;
