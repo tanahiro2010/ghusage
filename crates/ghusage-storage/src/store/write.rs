@@ -153,17 +153,65 @@ fn associate(tx: &Transaction<'_>, sql: &str, account_id: i64, id: &str) -> Resu
 
 fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
     let account_id = ensure_account(tx, &b.account)?;
-    let viewed_only = !b.viewed_pull_requests.is_empty();
+    let viewed_prs: HashSet<&str> = b.viewed_pull_requests.iter().map(String::as_str).collect();
+    let mut existing_viewed_prs = HashSet::new();
+    for id in &viewed_prs {
+        if row_exists(tx, "SELECT 1 FROM pull_requests WHERE id = ?1", id)? {
+            existing_viewed_prs.insert(*id);
+        }
+    }
+    let viewed_repositories: HashSet<&str> = b
+        .pull_requests
+        .iter()
+        .filter(|p| viewed_prs.contains(p.id.as_str()))
+        .map(|p| p.repository_id.as_str())
+        .collect();
+    let viewed_commit_events: HashSet<String> = b
+        .pr_commits
+        .iter()
+        .filter(|link| viewed_prs.contains(link.pr_id.as_str()))
+        .map(|link| EventId::commit(&link.repository_id, &link.sha).0)
+        .collect();
+    let viewed_commit_keys: HashSet<(String, String)> = b
+        .pr_commits
+        .iter()
+        .filter(|link| viewed_prs.contains(link.pr_id.as_str()))
+        .map(|link| (link.repository_id.clone(), link.sha.to_ascii_lowercase()))
+        .collect();
+    let active_repositories: HashSet<&str> = b
+        .pull_requests
+        .iter()
+        .filter(|p| !viewed_prs.contains(p.id.as_str()))
+        .map(|p| p.repository_id.as_str())
+        .chain(b.issues.iter().map(|i| i.repository_id.as_str()))
+        .chain(
+            b.events
+                .iter()
+                .filter(|e| {
+                    e.parent_pr_id
+                        .as_deref()
+                        .is_none_or(|id| !viewed_prs.contains(id))
+                        && !viewed_commit_events.contains(e.event_id.as_str())
+                })
+                .map(|e| e.repository_id.as_str()),
+        )
+        .collect();
 
     for r in &b.repositories {
-        upsert_repository(tx, r)?;
-        associate(tx, ASSOC_REPO, account_id, &r.id)?;
+        upsert_repository(tx, r, viewed_repositories.contains(r.id.as_str()))?;
+        if !viewed_repositories.contains(r.id.as_str())
+            || active_repositories.contains(r.id.as_str())
+        {
+            associate(tx, ASSOC_REPO, account_id, &r.id)?;
+        }
     }
     for p in &b.pull_requests {
         require_repository(tx, &p.repository_id, &format!("pull request {:?}", p.id))?;
-        upsert_pull_request(tx, p)?;
-        associate(tx, ASSOC_PR, account_id, &p.id)?;
-        associate(tx, ASSOC_REPO, account_id, &p.repository_id)?;
+        upsert_pull_request(tx, p, viewed_prs.contains(p.id.as_str()))?;
+        if !viewed_prs.contains(p.id.as_str()) {
+            associate(tx, ASSOC_PR, account_id, &p.id)?;
+            associate(tx, ASSOC_REPO, account_id, &p.repository_id)?;
+        }
     }
     for i in &b.issues {
         require_repository(tx, &i.repository_id, &format!("issue {:?}", i.id))?;
@@ -173,7 +221,7 @@ fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
     }
     for t in &b.threads {
         require_pull_request(tx, &t.pr_id, &format!("review thread {:?}", t.id))?;
-        upsert_thread(tx, t)?;
+        upsert_thread(tx, t, viewed_prs.contains(t.pr_id.as_str()))?;
     }
     for e in &b.events {
         let referrer = format!("event {:?}", e.event_id.as_str());
@@ -181,9 +229,20 @@ fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
         if let Some(pr) = &e.parent_pr_id {
             require_pull_request(tx, pr, &referrer)?;
         }
-        upsert_event(tx, e)?;
-        project_event(tx, e)?;
-        if !viewed_only {
+        let viewed_detail = e
+            .parent_pr_id
+            .as_deref()
+            .is_some_and(|id| viewed_prs.contains(id))
+            || viewed_commit_events.contains(e.event_id.as_str());
+        let changed = upsert_event(tx, e, viewed_detail)?;
+        if changed || !viewed_detail {
+            project_event(tx, e)?;
+        }
+        if !viewed_detail && e
+            .parent_pr_id
+            .as_deref()
+            .is_none_or(|id| !viewed_prs.contains(id))
+        {
             associate(tx, ASSOC_EVENT, account_id, e.event_id.as_str())?;
             associate(tx, ASSOC_REPO, account_id, &e.repository_id)?;
             if let Some(pr) = &e.parent_pr_id {
@@ -195,7 +254,8 @@ fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
         require_pull_request(tx, pr_id, "viewed pull request")?;
         tx.execute(
             "INSERT INTO account_pull_requests (account_id, pr_id, viewed) VALUES (?1, ?2, 1) \
-             ON CONFLICT(account_id, pr_id) DO UPDATE SET viewed = 1",
+             ON CONFLICT(account_id, pr_id) DO UPDATE SET \
+             viewed = min(account_pull_requests.viewed, excluded.viewed)",
             params![account_id, pr_id],
         )?;
     }
@@ -206,6 +266,10 @@ fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
         let referrer = format!("commit link {}:{}", l.pr_id, l.sha);
         require_pull_request(tx, &l.pr_id, &referrer)?;
         require_repository(tx, &l.repository_id, &referrer)?;
+        if viewed_prs.contains(l.pr_id.as_str()) {
+            insert_pr_commit(tx, l)?;
+            continue;
+        }
         upsert_pr_commit(tx, l)?;
         if l.is_current {
             current_links
@@ -216,6 +280,9 @@ fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
     }
 
     for c in &b.commit_stats {
+        if viewed_commit_keys.contains(&(c.repository_id.clone(), c.sha.to_ascii_lowercase())) {
+            continue;
+        }
         require_repository(
             tx,
             &c.repository_id,
@@ -239,6 +306,9 @@ fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
         )?;
     }
     for (pr_id, parents) in &b.pr_merge_commit_parents {
+        if viewed_prs.contains(pr_id.as_str()) && existing_viewed_prs.contains(pr_id.as_str()) {
+            continue;
+        }
         require_pull_request(tx, pr_id, &format!("pull request merge {pr_id:?}"))?;
         tx.execute(
             "UPDATE pull_requests SET merge_commit_parents = ?2 WHERE id = ?1",
@@ -246,6 +316,9 @@ fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
         )?;
     }
     for (pr_id, d) in &b.pr_diffs {
+        if viewed_prs.contains(pr_id.as_str()) && existing_viewed_prs.contains(pr_id.as_str()) {
+            continue;
+        }
         require_pull_request(tx, pr_id, &format!("pull request diff {pr_id:?}"))?;
         // An older observation never replaces a newer one.
         tx.execute(
@@ -266,6 +339,9 @@ fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
 
     let mut removal_time: HashMap<&str, Timestamp> = HashMap::new();
     for s in &b.pr_snapshots {
+        if viewed_prs.contains(s.pr_id.as_str()) {
+            continue;
+        }
         apply_snapshot(tx, s, current_links.get(s.pr_id.as_str()))?;
         removal_time.insert(s.pr_id.as_str(), s.observed_at);
     }
@@ -279,8 +355,14 @@ fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
     let mut prs: Vec<&str> = b
         .pr_commits
         .iter()
+        .filter(|l| !viewed_prs.contains(l.pr_id.as_str()))
         .map(|l| l.pr_id.as_str())
-        .chain(b.pr_snapshots.iter().map(|s| s.pr_id.as_str()))
+        .chain(
+            b.pr_snapshots
+                .iter()
+                .filter(|s| !viewed_prs.contains(s.pr_id.as_str()))
+                .map(|s| s.pr_id.as_str()),
+        )
         .collect();
     prs.sort_unstable();
     prs.dedup();
@@ -307,14 +389,20 @@ fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
     Ok(())
 }
 
-fn upsert_repository(tx: &Transaction<'_>, r: &Repository) -> Result<()> {
-    tx.execute(
-        "INSERT INTO repositories (id, owner, name, owner_kind, visibility, is_fork, \
-         viewer_permission, accessible, url) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
-         ON CONFLICT(id) DO UPDATE SET owner = excluded.owner, name = excluded.name, \
+fn upsert_repository(tx: &Transaction<'_>, r: &Repository, preserve_existing: bool) -> Result<()> {
+    let conflict = if preserve_existing {
+        "ON CONFLICT(id) DO NOTHING"
+    } else {
+        "ON CONFLICT(id) DO UPDATE SET owner = excluded.owner, name = excluded.name, \
          owner_kind = excluded.owner_kind, visibility = excluded.visibility, \
          is_fork = excluded.is_fork, viewer_permission = excluded.viewer_permission, \
-         accessible = excluded.accessible, url = excluded.url",
+         accessible = excluded.accessible, url = excluded.url"
+    };
+    tx.execute(
+        &format!(
+            "INSERT INTO repositories (id, owner, name, owner_kind, visibility, is_fork, \
+             viewer_permission, accessible, url) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) {conflict}"
+        ),
         params![
             r.id,
             r.owner,
@@ -330,14 +418,15 @@ fn upsert_repository(tx: &Transaction<'_>, r: &Repository) -> Result<()> {
     Ok(())
 }
 
-fn upsert_pull_request(tx: &Transaction<'_>, p: &PullRequest) -> Result<()> {
-    tx.execute(
-        "INSERT INTO pull_requests (id, repository_id, number, title, url, author_id, \
-         author_login, author_kind, state, is_draft, created_at, created_at_ns, updated_at, \
-         updated_at_ns, closed_at, closed_at_ns, merged_at, merged_at_ns, merged_by, head_sha, \
-         latest_ci, coverage, synced_at, synced_at_ns) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, \
-         ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24) \
-         ON CONFLICT(id) DO UPDATE SET repository_id = excluded.repository_id, \
+fn upsert_pull_request(
+    tx: &Transaction<'_>,
+    p: &PullRequest,
+    preserve_existing: bool,
+) -> Result<()> {
+    let conflict = if preserve_existing {
+        "ON CONFLICT(id) DO NOTHING"
+    } else {
+        "ON CONFLICT(id) DO UPDATE SET repository_id = excluded.repository_id, \
          number = excluded.number, title = excluded.title, url = excluded.url, \
          author_id = excluded.author_id, author_login = excluded.author_login, \
          author_kind = excluded.author_kind, state = excluded.state, \
@@ -348,7 +437,16 @@ fn upsert_pull_request(tx: &Transaction<'_>, p: &PullRequest) -> Result<()> {
          merged_at_ns = excluded.merged_at_ns, merged_by = excluded.merged_by, \
          head_sha = excluded.head_sha, latest_ci = excluded.latest_ci, \
          coverage = excluded.coverage, synced_at = excluded.synced_at, \
-         synced_at_ns = excluded.synced_at_ns",
+         synced_at_ns = excluded.synced_at_ns"
+    };
+    tx.execute(
+        &format!(
+        "INSERT INTO pull_requests (id, repository_id, number, title, url, author_id, \
+         author_login, author_kind, state, is_draft, created_at, created_at_ns, updated_at, \
+         updated_at_ns, closed_at, closed_at_ns, merged_at, merged_at_ns, merged_by, head_sha, \
+         latest_ci, coverage, synced_at, synced_at_ns) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, \
+         ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24) {conflict}"
+        ),
         params![
             p.id,
             p.repository_id,
@@ -409,15 +507,25 @@ fn upsert_issue(tx: &Transaction<'_>, i: &Issue) -> Result<()> {
     Ok(())
 }
 
-fn upsert_thread(tx: &Transaction<'_>, t: &ReviewThread) -> Result<()> {
-    tx.execute(
-        "INSERT INTO review_threads (id, pr_id, is_resolved, is_outdated, resolved_by, path, \
-         comment_count, first_comment_author) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
-         ON CONFLICT(id) DO UPDATE SET pr_id = excluded.pr_id, \
+fn upsert_thread(
+    tx: &Transaction<'_>,
+    t: &ReviewThread,
+    preserve_existing: bool,
+) -> Result<()> {
+    let conflict = if preserve_existing {
+        "ON CONFLICT(id) DO NOTHING"
+    } else {
+        "ON CONFLICT(id) DO UPDATE SET pr_id = excluded.pr_id, \
          is_resolved = excluded.is_resolved, is_outdated = excluded.is_outdated, \
          resolved_by = excluded.resolved_by, path = excluded.path, \
          comment_count = excluded.comment_count, \
-         first_comment_author = excluded.first_comment_author",
+         first_comment_author = excluded.first_comment_author"
+    };
+    tx.execute(
+        &format!(
+            "INSERT INTO review_threads (id, pr_id, is_resolved, is_outdated, resolved_by, path, \
+             comment_count, first_comment_author) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) {conflict}"
+        ),
         params![
             t.id,
             t.pr_id,
@@ -435,17 +543,18 @@ fn upsert_thread(tx: &Transaction<'_>, t: &ReviewThread) -> Result<()> {
 /// Upserts an event by id. A removal observation already stored is kept
 /// (the earliest one wins); only a complete resync clears it. A commit
 /// author date already stored is kept when the new copy has none.
-fn upsert_event(tx: &Transaction<'_>, e: &ActivityEvent) -> Result<()> {
+fn upsert_event(
+    tx: &Transaction<'_>,
+    e: &ActivityEvent,
+    preserve_existing: bool,
+) -> Result<bool> {
     let mut meta = e.meta.clone();
     let author_date = meta.author_date.take();
     let removed = meta.removed_observed_at.take();
-    tx.execute(
-        "INSERT INTO activity_events (event_id, event_type, actor_id, actor_login, actor_kind, \
-         repository_id, entity_id, parent_pr_id, occurred_at, occurred_at_ns, observed_at, \
-         observed_at_ns, author_date, author_date_ns, source, url, meta, coverage, \
-         removed_observed_at, removed_observed_at_ns) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, \
-         ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20) \
-         ON CONFLICT(event_id) DO UPDATE SET event_type = excluded.event_type, \
+    let conflict = if preserve_existing {
+        "ON CONFLICT(event_id) DO NOTHING"
+    } else {
+        "ON CONFLICT(event_id) DO UPDATE SET event_type = excluded.event_type, \
          actor_id = excluded.actor_id, actor_login = excluded.actor_login, \
          actor_kind = excluded.actor_kind, repository_id = excluded.repository_id, \
          entity_id = excluded.entity_id, \
@@ -469,7 +578,16 @@ fn upsert_event(tx: &Transaction<'_>, e: &ActivityEvent) -> Result<()> {
              WHEN excluded.removed_observed_at IS NULL THEN activity_events.removed_observed_at_ns \
              WHEN (excluded.removed_observed_at, excluded.removed_observed_at_ns) \
                   < (activity_events.removed_observed_at, activity_events.removed_observed_at_ns) \
-             THEN excluded.removed_observed_at_ns ELSE activity_events.removed_observed_at_ns END",
+             THEN excluded.removed_observed_at_ns ELSE activity_events.removed_observed_at_ns END"
+    };
+    let changed = tx.execute(
+        &format!(
+        "INSERT INTO activity_events (event_id, event_type, actor_id, actor_login, actor_kind, \
+         repository_id, entity_id, parent_pr_id, occurred_at, occurred_at_ns, observed_at, \
+         observed_at_ns, author_date, author_date_ns, source, url, meta, coverage, \
+         removed_observed_at, removed_observed_at_ns) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, \
+         ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20) {conflict}"
+        ),
         params![
             e.event_id.as_str(),
             e.event_type.as_str(),
@@ -493,7 +611,7 @@ fn upsert_event(tx: &Transaction<'_>, e: &ActivityEvent) -> Result<()> {
             opt_nanos(removed),
         ],
     )?;
-    Ok(())
+    Ok(changed > 0)
 }
 
 /// Maintains the entity projections (commits, reviews, comments, checks).
@@ -597,6 +715,22 @@ fn upsert_pr_commit(tx: &Transaction<'_>, l: &PrCommitLink) -> Result<()> {
         "INSERT INTO pull_request_commits (pr_id, repository_id, sha, is_current) \
          VALUES (?1, ?2, ?3, ?4) ON CONFLICT(pr_id, sha) DO UPDATE SET \
          repository_id = excluded.repository_id, is_current = excluded.is_current",
+        params![l.pr_id, l.repository_id, sha, l.is_current],
+    )?;
+    Ok(())
+}
+
+/// Adds a commit link discovered while viewing a PR without changing an
+/// existing relationship or the commit's stored metadata.
+fn insert_pr_commit(tx: &Transaction<'_>, l: &PrCommitLink) -> Result<()> {
+    let sha = l.sha.to_ascii_lowercase();
+    tx.execute(
+        "INSERT INTO commits (repository_id, sha) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
+        params![l.repository_id, sha],
+    )?;
+    tx.execute(
+        "INSERT INTO pull_request_commits (pr_id, repository_id, sha, is_current) \
+         VALUES (?1, ?2, ?3, ?4) ON CONFLICT(pr_id, sha) DO NOTHING",
         params![l.pr_id, l.repository_id, sha, l.is_current],
     )?;
     Ok(())

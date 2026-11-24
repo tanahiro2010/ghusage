@@ -63,7 +63,7 @@ impl Store {
             &format!(
                 "SELECT {PR_COLS} FROM pull_requests p \
                  JOIN account_pull_requests ap ON ap.pr_id = p.id \
-                 WHERE ap.account_id = ?1"
+                 WHERE ap.account_id = ?1 AND ap.viewed = 0"
             ),
             params![account_id],
             pr_from_row,
@@ -83,7 +83,7 @@ impl Store {
             &format!(
                 "SELECT {THREAD_COLS} FROM review_threads t \
                  JOIN account_pull_requests ap ON ap.pr_id = t.pr_id \
-                 WHERE ap.account_id = ?1"
+                 WHERE ap.account_id = ?1 AND ap.viewed = 0"
             ),
             params![account_id],
             thread_from_row,
@@ -155,7 +155,8 @@ impl Store {
         let (commit_stats, pr_diffs) = diff_stats_for(&self.conn, account_id)?;
         let merged_by_merge_commit = merged_by_merge_commit_where(
             &self.conn,
-            "p.id IN (SELECT pr_id FROM account_pull_requests WHERE account_id = ?1)",
+            "p.id IN (SELECT pr_id FROM account_pull_requests \
+             WHERE account_id = ?1 AND viewed = 0)",
             params![account_id],
         )?;
         Ok(Dataset::new(
@@ -321,7 +322,8 @@ fn diff_stats_for(
     )?;
     let prs = pr_diffs_where(
         conn,
-        "p.id IN (SELECT pr_id FROM account_pull_requests WHERE account_id = ?1)",
+        "p.id IN (SELECT pr_id FROM account_pull_requests \
+         WHERE account_id = ?1 AND viewed = 0)",
         params![account_id],
     )?;
     Ok((commits, prs))

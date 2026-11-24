@@ -334,6 +334,22 @@ A pull request you look up with `ghusage pr <URL>` is cached so that it can be
 shown again (also with `--offline`). If you are not involved in it (not its
 author, no activity of yours in it, not requested as reviewer, not assigned),
 it is stored separately and never becomes part of your reports or activity.
+Viewing a PR does not replace shared PR, event, repository, or commit data and
+does not apply sync snapshots that could mark previously stored activity as
+removed. Missing detail is cached for offline viewing; a normal sync updates
+the account's activity.
+
+Schema v5 repairs v4 viewed-only relationships when the cache contains reliable
+evidence of participation, such as authorship, an account-linked PR event,
+review/comment authorship, or a PR commit authored by the account. If the cache
+does not prove participation, the relationship stays viewed-only rather than
+being guessed. To rebuild ambiguous history, sync the required date range with
+`--full` into a separate data directory, inspect the resulting reports, and
+use that cache only if it contains all the accounts and periods you need. Keep
+the original cache until the replacement has been checked.
+Schema v4 did not record whether a repository association existed before a PR
+was viewed, so migration retains those ambiguous repository links to avoid
+deleting a repository that was already in the account's cache.
 
 ## Network behavior
 

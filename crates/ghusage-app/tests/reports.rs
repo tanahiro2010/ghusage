@@ -9,6 +9,8 @@ use ghusage_core::coverage::{
 use ghusage_core::metrics::{CommitDateBasis, Dataset, Filter, Participation, PrSort};
 use ghusage_core::model::*;
 use ghusage_core::time::{Granularity, Period, Zone};
+use ghusage_github::PrBundle;
+use ghusage_storage::{Store, WriteBatch};
 use jiff::{SignedDuration, Timestamp};
 
 fn t(d: u32, h: u32) -> Timestamp {
@@ -456,6 +458,175 @@ fn own_pull_request_commits_join_the_global_commit_set_once() {
     // {abc} from search ∪ {abc, def} from the pull request; fff is not ours.
     assert_eq!(r.metrics.commits, 2);
     assert_eq!(r.metrics.pr_commits, 2);
+}
+
+#[test]
+fn viewing_unrelated_pr_preserves_all_reports_and_offline_detail() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let path = data_dir.path().join("ghusage.db");
+    let mut store = Store::open(&path).unwrap();
+    let baseline = dataset();
+    store
+        .apply(&WriteBatch {
+            account: baseline.subject.login.clone(),
+            repositories: baseline.repositories.values().cloned().collect(),
+            pull_requests: baseline.pull_requests.values().cloned().collect(),
+            issues: baseline.issues.values().cloned().collect(),
+            threads: baseline.threads.values().cloned().collect(),
+            events: baseline.events.clone(),
+            coverage: baseline.coverage.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+    let subject = Subject {
+        id: Some("U_me".into()),
+        login: "me".into(),
+    };
+    let before = store.load_dataset(&subject, true, None).unwrap();
+    let mut unrelated = pr("PR_VIEWED", "R_viewed", "unrelated");
+    unrelated.author = other();
+    let opened = ev(
+        "VIEWED_OPEN",
+        EventType::PrOpened,
+        other(),
+        "R_viewed",
+        Some("PR_VIEWED"),
+        t(2, 9),
+    );
+    let mut commit = ev(
+        "VIEWED_COMMIT",
+        EventType::PrCommit,
+        other(),
+        "R_viewed",
+        Some("PR_VIEWED"),
+        t(2, 10),
+    );
+    commit.meta.sha = Some("deadbeef".into());
+    let bundle = PrBundle {
+        repository: repo("R_viewed", "other", "unrelated", Visibility::Public),
+        pull_request: unrelated,
+        events: vec![opened, commit],
+        threads: vec![],
+        current_commit_shas: vec!["deadbeef".into()],
+        commit_stats: vec![(
+            "deadbeef".into(),
+            ghusage_core::metrics::LineCounts {
+                additions: 999,
+                deletions: 777,
+            },
+        )],
+        diff: Some(ghusage_core::metrics::PrDiff {
+            additions: 999,
+            deletions: 777,
+            changed_files: 99,
+            observed_at: t(20, 0),
+        }),
+        merge_commit_parents: Some(2),
+        complete_collections: Collection::ALL.to_vec(),
+        status: CoverageStatus::Complete,
+        notes: vec![],
+    };
+    assert!(!ghusage_app::sync::involves(&subject, &bundle));
+    let pr_id = bundle.pull_request.id.clone();
+    let mut batch = ghusage_app::sync::pr_batch(&subject, bundle);
+    assert!(
+        batch
+            .events
+            .iter()
+            .all(|e| e.event_type != EventType::CommitAuthored)
+    );
+    batch.viewed_pull_requests.push(pr_id.clone());
+    store.apply(&batch).unwrap();
+
+    let report_kinds = [
+        ReportKind::Overview,
+        ReportKind::Breakdown(Granularity::Day),
+        ReportKind::Repositories,
+        ReportKind::PullRequests {
+            participation: Participation::All,
+            state: None,
+            sort: PrSort::Activity,
+        },
+        ReportKind::Reviews,
+        ReportKind::Comments,
+        ReportKind::Issues,
+    ];
+    let after_view = store.load_dataset(&subject, true, None).unwrap();
+    assert_eq!(after_view.repositories, before.repositories);
+    assert_eq!(after_view.pull_requests, before.pull_requests);
+    assert_eq!(after_view.events, before.events);
+    assert_eq!(after_view.coverage, before.coverage);
+    assert_eq!(after_view.commit_stats, before.commit_stats);
+    assert!(!after_view.repositories.contains_key("R_viewed"));
+    for kind in report_kinds {
+        let before_report = report::build(&before, &ctx(false), kind);
+        let after_report = report::build(&after_view, &ctx(false), kind);
+        assert_eq!(
+            serde_json::to_value(&after_report).unwrap(),
+            serde_json::to_value(&before_report).unwrap(),
+            "JSON {kind:?} report must not change after viewing"
+        );
+        assert_eq!(
+            csv_out::report_csv(&after_report, kind),
+            csv_out::report_csv(&before_report, kind),
+            "CSV {kind:?} report must not change after viewing"
+        );
+    }
+
+    drop(store);
+    let offline_store = Store::open(&path).unwrap();
+    let detail = offline_store
+        .load_pr_dataset(&subject, true, &pr_id)
+        .unwrap();
+    assert!(detail.events.iter().any(|e| e.event_id.0 == "VIEWED_OPEN"));
+
+    // Normal sync participation remains discoverable and can promote an
+    // earlier viewed-only relationship.
+    let mut involved = pr("PR_VIEWED", "R_viewed", "unrelated");
+    involved.author = other();
+    let mut authored_commit = ev(
+        "OWN_COMMIT_IN_PR",
+        EventType::PrCommit,
+        me(),
+        "R_viewed",
+        Some("PR_VIEWED"),
+        t(3, 10),
+    );
+    authored_commit.meta.sha = Some("abcdef12".into());
+    let sync_bundle = PrBundle {
+        repository: repo("R_viewed", "other", "unrelated", Visibility::Public),
+        pull_request: involved,
+        events: vec![authored_commit],
+        threads: vec![],
+        current_commit_shas: vec!["abcdef12".into()],
+        commit_stats: vec![],
+        diff: None,
+        merge_commit_parents: None,
+        complete_collections: Collection::ALL.to_vec(),
+        status: CoverageStatus::Complete,
+        notes: vec![],
+    };
+    assert!(ghusage_app::sync::involves(&subject, &sync_bundle));
+    let sync_batch = ghusage_app::sync::pr_batch(&subject, sync_bundle);
+    assert!(
+        sync_batch
+            .events
+            .iter()
+            .any(|e| e.event_type == EventType::CommitAuthored)
+    );
+    let mut offline_store = offline_store;
+    offline_store.apply(&sync_batch).unwrap();
+    assert!(
+        offline_store
+            .pull_request_ids("me", false)
+            .unwrap()
+            .contains(&pr_id)
+    );
+    let after_sync = offline_store.load_dataset(&subject, true, None).unwrap();
+    let before_metrics = report::build(&before, &ctx(false), ReportKind::Overview).metrics;
+    let after_metrics = report::build(&after_sync, &ctx(false), ReportKind::Overview).metrics;
+    assert_eq!(after_metrics.commits, before_metrics.commits + 1);
+    assert_eq!(after_metrics.pr_commits, before_metrics.pr_commits + 1);
 }
 
 fn day(d: u32) -> QueryContext {
