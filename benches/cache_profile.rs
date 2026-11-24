@@ -1,15 +1,20 @@
-//! Profile reads and report aggregation against a copied ghusage cache.
+//! Profile reads and report aggregation using a disposable SQLite backup.
 //!
-//! Set `GHUSAGE_BENCH_DATA_DIR` to the directory containing `ghusage.db` and
-//! `GHUSAGE_BENCH_UNTIL` to a fixed RFC 3339 timestamp before running:
+//! Set `GHUSAGE_BENCH_SOURCE_DB` to a source database and
+//! `GHUSAGE_BENCH_UNTIL` to a fixed RFC 3339 timestamp before running. The
+//! source is opened read-only, backed up into a temporary directory, and only
+//! that disposable copy is opened by ghusage. Opening the copy may migrate its
+//! schema; the source schema version is checked before and after.
 //!
 //! ```sh
+//! GHUSAGE_BENCH_SOURCE_DB=/path/to/ghusage.db \
+//! GHUSAGE_BENCH_UNTIL=2026-11-25T00:00:00Z \
 //! cargo bench --bench cache_profile
 //! ```
 
 use std::env;
 use std::hint::black_box;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ghusage_app::report::{self, QueryContext, ReportKind};
@@ -18,6 +23,7 @@ use ghusage_core::metrics::{CommitDateBasis, Filter};
 use ghusage_core::time::{Granularity, Period, Zone};
 use ghusage_storage::Store;
 use jiff::{SignedDuration, Timestamp};
+use rusqlite::{Connection, OpenFlags, backup::Backup};
 
 const WARMUP: usize = 5;
 const RUNS: usize = 50;
@@ -68,16 +74,47 @@ fn context(period: Period, synced_at: Option<Timestamp>) -> QueryContext {
     }
 }
 
+fn schema_version(path: &Path) -> rusqlite::Result<u32> {
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    conn.pragma_query_value(None, "user_version", |row| row.get(0))
+}
+
+fn make_disposable_copy(source: &Path, destination: &Path) -> rusqlite::Result<u32> {
+    let source_conn = Connection::open_with_flags(source, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let source_version =
+        source_conn.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))?;
+    let mut destination_conn = Connection::open(destination)?;
+    {
+        let backup = Backup::new(&source_conn, &mut destination_conn)?;
+        backup.run_to_completion(32, Duration::from_millis(50), None)?;
+    }
+    let destination_version =
+        destination_conn.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))?;
+    assert_eq!(
+        destination_version, source_version,
+        "SQLite backup schema version differs from its read-only source"
+    );
+    Ok(source_version)
+}
+
 fn main() {
     if !env::args().any(|arg| arg == "--bench") {
         println!("cache profiling runs with `cargo bench --bench cache_profile`; skipped");
         return;
     }
 
-    let data_dir = PathBuf::from(
-        env::var_os("GHUSAGE_BENCH_DATA_DIR")
-            .expect("set GHUSAGE_BENCH_DATA_DIR to a disposable cache copy"),
+    let source_db = PathBuf::from(
+        env::var_os("GHUSAGE_BENCH_SOURCE_DB")
+            .expect("set GHUSAGE_BENCH_SOURCE_DB to an existing cache database"),
     );
+    let disposable_dir = tempfile::tempdir().expect("create disposable cache directory");
+    let data_dir = disposable_dir.path().to_path_buf();
+    let disposable_db = data_dir.join("ghusage.db");
+    let source_schema_before = make_disposable_copy(&source_db, &disposable_db)
+        .expect("make a read-only SQLite backup into the disposable directory");
+    let copy_schema_before = schema_version(&disposable_db)
+        .expect("read disposable cache schema before opening ghusage");
+    assert_eq!(source_schema_before, copy_schema_before);
     let until: Timestamp = env::var("GHUSAGE_BENCH_UNTIL")
         .expect("set GHUSAGE_BENCH_UNTIL to a fixed RFC 3339 timestamp")
         .parse()
@@ -94,6 +131,17 @@ fn main() {
             ..Default::default()
         }))
         .expect("open the copied cache offline");
+    let source_schema_after =
+        schema_version(&source_db).expect("recheck read-only source schema after opening copy");
+    let copy_schema_after =
+        schema_version(&disposable_db).expect("read disposable cache schema after opening it");
+    assert_eq!(
+        source_schema_before, source_schema_after,
+        "opening the disposable cache changed the source schema"
+    );
+    println!(
+        "using disposable SQLite backup; source schema v{source_schema_before} unchanged, copy schema v{copy_schema_before} -> v{copy_schema_after} after ghusage open"
+    );
     let identity = session.identity();
     let cache = session.cache_info();
     let synced_at = session.last_synced_at().expect("read sync timestamp");

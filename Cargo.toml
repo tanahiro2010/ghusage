@@ -99,6 +99,7 @@ csv = "1.4.0"
 predicates = "3.1.4"
 serde_json = "1.0.154"
 tempfile = "3.27.0"
+rusqlite = { version = "0.43", features = ["backup"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros"] }
 wiremock = "0.6.5"
 

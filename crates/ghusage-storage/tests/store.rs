@@ -1737,6 +1737,151 @@ fn a_period_brings_earlier_events_only_of_the_subjects_own_pull_requests() {
     assert!(ids.contains(&EventId::pr_created("PR1").0));
 }
 
+#[test]
+fn ranged_load_preserves_pr_events_across_account_scoped_batch_boundaries() {
+    let period = Period::new(t(2, 0), t(3, 0)).unwrap();
+    for pr_count in [499_usize, 500, 501, 1001] {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .apply(&WriteBatch {
+                account: "alice".into(),
+                repositories: vec![repo("R1", "alice", "tool")],
+                ..Default::default()
+            })
+            .unwrap();
+
+        let mut pull_requests = Vec::with_capacity(pr_count);
+        let mut alice_events = Vec::with_capacity(pr_count * 2);
+        let mut bob_events = Vec::with_capacity(pr_count);
+        for index in 0..pr_count {
+            let pr_id = format!("PR_BATCH_{index}");
+            pull_requests.push(pr(&pr_id, "R1", index as u64 + 1));
+            alice_events.push(event(
+                EventId::pr_created(&pr_id),
+                EventType::PrOpened,
+                "R1",
+                Some(&pr_id),
+                t(1, 8),
+            ));
+            alice_events.push(comment_event(
+                &pr_id,
+                &format!("ALICE_BATCH_{index}"),
+                t(2, 12),
+            ));
+            let mut bob_event = comment_event(&pr_id, &format!("BOB_BATCH_{index}"), t(2, 13));
+            bob_event.actor = user("bob");
+            bob_events.push(bob_event);
+        }
+        store
+            .apply(&WriteBatch {
+                account: "alice".into(),
+                pull_requests,
+                events: alice_events,
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .apply(&WriteBatch {
+                account: "bob".into(),
+                events: bob_events,
+                ..Default::default()
+            })
+            .unwrap();
+
+        let subject = subject("alice");
+        let all_events = store.load_dataset(&subject, true, None).unwrap();
+        let active_own_prs: HashSet<String> = all_events
+            .events
+            .iter()
+            .filter(|e| period.contains(e.occurred_at))
+            .filter_map(|e| e.parent_pr_id.as_deref())
+            .filter(|id| {
+                all_events
+                    .pull_requests
+                    .get(*id)
+                    .is_some_and(|pr| pr.author.is(&subject))
+            })
+            .map(str::to_owned)
+            .collect();
+        let mut expected = all_events;
+        expected.events.retain(|e| {
+            period.contains(e.occurred_at)
+                || e.parent_pr_id
+                    .as_deref()
+                    .is_some_and(|id| active_own_prs.contains(id))
+        });
+
+        let actual = store.load_dataset(&subject, true, Some(period)).unwrap();
+        let actual_ids: HashSet<_> = actual.events.iter().map(|e| e.event_id.as_str()).collect();
+        assert_eq!(actual.events.len(), pr_count * 2, "{pr_count} PRs");
+        assert_eq!(actual_ids.len(), actual.events.len(), "{pr_count} PRs");
+        assert!(
+            actual
+                .events
+                .iter()
+                .all(|e| !e.event_id.as_str().contains("BOB_BATCH_")),
+            "another account's events leaked for {pr_count} PRs"
+        );
+        assert!(
+            actual.events.iter().any(|e| {
+                e.event_type == EventType::PrOpened && !period.contains(e.occurred_at)
+            }),
+            "related events outside the period were lost for {pr_count} PRs"
+        );
+
+        assert_eq!(actual.events, expected.events, "{pr_count} PRs");
+        assert_eq!(actual.repositories, expected.repositories, "{pr_count} PRs");
+        assert_eq!(
+            actual.pull_requests, expected.pull_requests,
+            "{pr_count} PRs"
+        );
+        assert_eq!(actual.issues, expected.issues, "{pr_count} PRs");
+        assert_eq!(actual.threads, expected.threads, "{pr_count} PRs");
+        assert_eq!(actual.coverage, expected.coverage, "{pr_count} PRs");
+        assert_eq!(actual.commit_stats, expected.commit_stats, "{pr_count} PRs");
+        assert_eq!(actual.pr_diffs, expected.pr_diffs, "{pr_count} PRs");
+        assert_eq!(
+            actual.lines_excluded, expected.lines_excluded,
+            "{pr_count} PRs"
+        );
+
+        let options = ghusage_core::metrics::Options {
+            period,
+            zone: ghusage_core::time::Zone::utc(),
+            filter: ghusage_core::metrics::Filter::default(),
+            commit_basis: ghusage_core::metrics::CommitDateBasis::default(),
+        };
+        assert_eq!(
+            ghusage_core::metrics::summary(&actual, &options),
+            ghusage_core::metrics::summary(&expected, &options),
+            "summary for {pr_count} PRs"
+        );
+        assert_eq!(
+            ghusage_core::metrics::breakdown(
+                &actual,
+                &options,
+                ghusage_core::time::Granularity::Day,
+            ),
+            ghusage_core::metrics::breakdown(
+                &expected,
+                &options,
+                ghusage_core::time::Granularity::Day,
+            ),
+            "daily breakdown for {pr_count} PRs"
+        );
+        assert_eq!(
+            ghusage_core::metrics::by_repository(&actual, &options),
+            ghusage_core::metrics::by_repository(&expected, &options),
+            "repository summary for {pr_count} PRs"
+        );
+        assert_eq!(
+            ghusage_core::metrics::snapshot(&actual, &options),
+            ghusage_core::metrics::snapshot(&expected, &options),
+            "snapshot for {pr_count} PRs"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn cache_files_are_private_to_the_user() {
