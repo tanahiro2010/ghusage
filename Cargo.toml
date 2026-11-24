@@ -3,11 +3,57 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.6"
+version = "0.2.0"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.94"
 repository = "https://github.com/tanahiro2010/ghusage"
 license = "Apache-2.0"
+keywords = ["github", "activity", "analytics"]
+categories = ["command-line-utilities"]
+
+[workspace.lints.rust]
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+elided_lifetimes_in_paths = "warn"
+unused_qualifications = "warn"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+let_underscore_drop = "warn"
+unused_lifetimes = "warn"
+single_use_lifetimes = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+
+# Integration tests are separate crates, so this lint reports unused
+# dev-dependencies per test target instead of identifying real package-level
+# dependency mistakes. `cargo machete` provides the dedicated check.
+unused_crate_dependencies = "allow"
+
+[workspace.lints.clippy]
+# `all` is Clippy's default lint set; the broader groups are enabled explicitly.
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+
+# Temporary Clippy allow block: empty.
+
+# Policy exceptions: each lint is disabled here with its reason. Lints that
+# would require more than five inline expectations are disabled workspace-wide.
+multiple_crate_versions = "allow" # Duplicate versions come from third-party dependencies.
+redundant_pub_crate = "allow" # Conflicts with the chosen `unreachable_pub` policy.
+too_many_arguments = "allow" # Existing orchestration and fixture helpers exceed five sites; bundling unrelated state only to satisfy this count obscures their data flow.
+too_many_lines = "allow" # The remaining production violations exceed five sites; applying expectations everywhere would defeat the policy's suppression limit.
+missing_errors_doc = "allow" # Many functions return shared typed errors; variant details belong to the error type and repeated caller sections would drift.
+needless_pass_by_value = "allow" # The lint flags many task and callback boundaries where ownership keeps lifetimes and async handoff simple.
+option_if_let_else = "allow" # Match expressions are retained where they make branch ownership and control flow clearer than map_or_else.
+trivially_copy_pass_by_ref = "allow" # References are retained at shared APIs for consistent call patterns despite small Copy payloads.
+many_single_char_names = "allow" # Short conventional names are used across formulas and property tests; renaming them adds noise without improving their local meaning.
+ref_option = "allow" # Existing APIs borrow optional values to avoid moving them; changing signatures across six sites is a wider API change.
+future_not_send = "allow" # Existing single-task APIs intentionally borrow non-Send state.
+cast_precision_loss = "allow" # Exact integer-to-float conversion is impossible for all values.
 
 [package]
 name = "ghusage"
@@ -17,26 +63,28 @@ edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
 
 [[bin]]
 name = "ghusage"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1.0.104"
-chrono = "0.4.45"
-chrono-tz = "0.10.4"
+jiff = { version = "1.0.2", features = ["serde"] }
 clap = { version = "4.6.9", features = ["derive", "env"] }
-ghusage-app = { version = "0.1.6", path = "crates/ghusage-app" }
-ghusage-core = { version = "0.1.6", path = "crates/ghusage-core" }
-ghusage-github = { version = "0.1.6", path = "crates/ghusage-github" }
-ghusage-storage = { version = "0.1.6", path = "crates/ghusage-storage" }
-ghusage-tui = { version = "0.1.6", path = "crates/ghusage-tui" }
+ghusage-app = { version = "0.2.0", path = "crates/ghusage-app" }
+ghusage-core = { version = "0.2.0", path = "crates/ghusage-core" }
+ghusage-github = { version = "0.2.0", path = "crates/ghusage-github" }
+ghusage-storage = { version = "0.2.0", path = "crates/ghusage-storage" }
+ghusage-tui = { version = "0.2.0", path = "crates/ghusage-tui" }
 ratatui = "0.30"
 serde = "1.0.229"
 serde_json = "1.0.154"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros"] }
-tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [profile.release]
@@ -44,12 +92,14 @@ lto = "thin"
 codegen-units = 4
 
 [dev-dependencies]
+chrono = "0.4.45"
 assert_cmd = "2.2.2"
 criterion = "0.8.2"
 csv = "1.4.0"
 predicates = "3.1.4"
 serde_json = "1.0.154"
 tempfile = "3.27.0"
+rusqlite = { version = "0.43", features = ["backup"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros"] }
 wiremock = "0.6.5"
 
@@ -62,4 +112,8 @@ harness = false
 
 [[bench]]
 name = "latency"
+harness = false
+
+[[bench]]
+name = "cache_profile"
 harness = false

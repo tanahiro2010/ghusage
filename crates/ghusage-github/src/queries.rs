@@ -113,7 +113,7 @@ pub(crate) enum PrConnection {
 }
 
 impl PrConnection {
-    pub fn field(self) -> &'static str {
+    pub(crate) const fn field(self) -> &'static str {
         match self {
             Self::Commits => "commits",
             Self::Reviews => "reviews",
@@ -123,7 +123,7 @@ impl PrConnection {
         }
     }
 
-    pub fn page_query(self) -> String {
+    pub(crate) fn page_query(self) -> String {
         let (name, args, nodes, fragments): (&str, String, &str, Vec<&str>) = match self {
             Self::Commits => (
                 "PullRequestCommitsPage",
@@ -247,7 +247,7 @@ mod tests {
     /// Writes every document to `$GHUSAGE_DUMP_QUERIES` so they can be
     /// validated against the live schema by hand.
     #[test]
-    #[ignore]
+    #[ignore = "manual helper for dumping query documents against the live schema"]
     fn dump_queries() {
         let Ok(dir) = std::env::var("GHUSAGE_DUMP_QUERIES") else {
             return;

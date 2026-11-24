@@ -334,7 +334,7 @@ async fn empty_repository_has_no_commits() {
         .default_branch_commits(&widget_repo(), LOGIN, jan())
         .await
         .unwrap();
-    assert!(r.items.is_empty());
+    assert_eq!(r.items, Vec::new());
     assert_eq!(r.status, CoverageStatus::Complete);
 }
 
@@ -398,7 +398,7 @@ async fn commit_pages_up_to_the_last_link_are_all_fetched_in_order() {
     let page = |n: u32| {
         vec![list_commit(
             &w,
-            &sha(n as u64),
+            &sha(u64::from(n)),
             Some(LOGIN),
             &day(10 + n),
             &day(10 + n),

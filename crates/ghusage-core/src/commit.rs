@@ -2,7 +2,7 @@
 //! GitHub. Unlike activity events this is a snapshot of content, not
 //! activity: it never contributes to any count.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::model::Visibility;
@@ -11,13 +11,17 @@ use crate::model::Visibility;
 /// it is linked to (if any) and the date recorded for it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitPerson {
+    /// Name recorded in the Git commit.
     pub name: Option<String>,
+    /// GitHub account linked to the commit identity.
     pub login: Option<String>,
-    pub date: Option<DateTime<Utc>>,
+    /// Date recorded for this identity.
+    pub date: Option<Timestamp>,
 }
 
 impl CommitPerson {
     /// `login`, else the git name, else `unknown`.
+    #[must_use]
     pub fn display(&self) -> &str {
         self.login
             .as_deref()
@@ -30,17 +34,27 @@ impl CommitPerson {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileStatus {
+    /// File was added by the commit.
     Added,
+    /// Existing file contents were modified.
     Modified,
+    /// File was removed.
     Removed,
+    /// File was renamed.
     Renamed,
+    /// File was copied.
     Copied,
+    /// File changed in another way.
     Changed,
+    /// File contents were unchanged.
     Unchanged,
+    /// GitHub returned an unrecognized status.
     Unknown,
 }
 
 impl FileStatus {
+    /// Parses a GitHub file status, returning `Unknown` for unrecognized values.
+    #[must_use]
     pub fn parse(s: &str) -> Self {
         match s {
             "added" => Self::Added,
@@ -54,7 +68,9 @@ impl FileStatus {
         }
     }
 
-    pub fn as_str(self) -> &'static str {
+    /// Returns the stable serialized file status.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Added => "added",
             Self::Modified => "modified",
@@ -71,12 +87,17 @@ impl FileStatus {
 /// One changed file of a commit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitFile {
+    /// Path of the file in the commit.
     pub filename: String,
     /// The old path of a renamed or copied file.
     pub previous_filename: Option<String>,
+    /// How GitHub classified the file change.
     pub status: FileStatus,
+    /// Number of added lines.
     pub additions: u64,
+    /// Number of removed lines.
     pub deletions: u64,
+    /// Total changed lines reported by GitHub.
     pub changes: u64,
     /// The unified diff of the file. GitHub leaves it out for binary files
     /// and for diffs that are too large.
@@ -85,6 +106,7 @@ pub struct CommitFile {
 
 impl CommitFile {
     /// Why there is no diff to show, or `None` when there is one.
+    #[must_use]
     pub fn missing_patch_reason(&self) -> Option<&'static str> {
         if self.patch.as_deref().is_some_and(|p| !p.is_empty()) {
             return None;
@@ -107,8 +129,11 @@ impl CommitFile {
 /// Lines added and removed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiffStats {
+    /// Number of added lines.
     pub additions: u64,
+    /// Number of removed lines.
     pub deletions: u64,
+    /// Total changed lines.
     pub total: u64,
 }
 
@@ -123,32 +148,40 @@ pub struct CommitDetail {
     pub url: Option<String>,
     /// The full commit message.
     pub message: String,
+    /// Author identity recorded for the commit.
     pub author: CommitPerson,
+    /// Committer identity recorded for the commit.
     pub committer: CommitPerson,
     /// SHAs of the parent commits. More than one means a merge commit.
     pub parents: Vec<String>,
     /// Totals as reported by GitHub for the whole commit.
     pub stats: DiffStats,
+    /// Changed file details returned by GitHub.
     pub files: Vec<CommitFile>,
     /// GitHub lists at most 3000 files of a commit; set when files are
     /// missing from `files`.
     pub files_truncated: bool,
     /// Visibility of the repository when the commit was fetched.
     pub visibility: Visibility,
-    pub fetched_at: DateTime<Utc>,
+    /// Time this commit detail was fetched.
+    pub fetched_at: Timestamp,
 }
 
 impl CommitDetail {
     /// The first line of the message.
+    #[must_use]
     pub fn headline(&self) -> &str {
         headline(&self.message)
     }
 
-    pub fn is_merge(&self) -> bool {
+    /// Whether the commit has multiple parent commits.
+    #[must_use]
+    pub const fn is_merge(&self) -> bool {
         self.parents.len() > 1
     }
 
     /// Additions and deletions summed over the listed files.
+    #[must_use]
     pub fn file_totals(&self) -> DiffStats {
         let mut s = DiffStats::default();
         for f in &self.files {
@@ -161,17 +194,15 @@ impl CommitDetail {
 }
 
 /// The first line of a commit message, without trailing whitespace.
+#[must_use]
 pub fn headline(message: &str) -> &str {
     message.lines().next().unwrap_or("").trim_end()
 }
 
 /// The first seven characters of a SHA, the usual abbreviation.
+#[must_use]
 pub fn short_sha(sha: &str) -> &str {
-    let end = sha
-        .char_indices()
-        .nth(7)
-        .map(|(i, _)| i)
-        .unwrap_or(sha.len());
+    let end = sha.char_indices().nth(7).map_or(sha.len(), |(i, _)| i);
     &sha[..end]
 }
 
@@ -181,8 +212,11 @@ pub fn short_sha(sha: &str) -> &str {
 pub enum DiffLineKind {
     /// `@@ -a,b +c,d @@` hunk header.
     Hunk,
+    /// Added source line.
     Added,
+    /// Removed source line.
     Removed,
+    /// Unchanged context line.
     Context,
     /// `\ No newline at end of file` and other notes.
     Note,

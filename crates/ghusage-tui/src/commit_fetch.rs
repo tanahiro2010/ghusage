@@ -1,4 +1,6 @@
-//! Loading commits for the commit detail screen. Commits are read from the
+//! Commit detail loading for the terminal UI.
+//!
+//! Commits are read from the
 //! cache, or fetched from GitHub when missing and the UI is online, on a
 //! thread of their own with its own runtime and session, through the same
 //! service as `ghusage commit`. The UI only receives messages.
@@ -46,6 +48,7 @@ pub fn spawn(
 }
 
 /// Loads commits with one session, opened on first use.
+#[derive(Debug)]
 pub struct Loader {
     cfg: SessionConfig,
     online: bool,
@@ -55,7 +58,9 @@ pub struct Loader {
 }
 
 impl Loader {
-    pub fn new(cfg: SessionConfig, online: bool, zone: Zone) -> Self {
+    #[must_use]
+    /// Creates a commit loader for the configured session.
+    pub const fn new(cfg: SessionConfig, online: bool, zone: Zone) -> Self {
         Self {
             cfg,
             online,
@@ -66,6 +71,10 @@ impl Loader {
     }
 
     /// The commit from the cache, or from GitHub when online.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the worker's runtime or session invariant is broken.
     pub fn load(&mut self, key: &CommitKey) -> Result<Arc<CommitView>, CommitFailure> {
         let fail = |message: String| CommitFailure {
             offline: false,
@@ -85,7 +94,7 @@ impl Loader {
             self.runtime = Some(rt);
         }
         let rt = self.runtime.as_ref().expect("set above");
-        let (cfg, online, zone) = (&self.cfg, self.online, self.zone);
+        let (cfg, online, zone) = (&self.cfg, self.online, self.zone.clone());
         let session = &mut self.session;
         rt.block_on(async {
             if session.is_none() {
@@ -123,7 +132,7 @@ async fn open_session(cfg: &SessionConfig, online: bool) -> Result<Session, Stri
             let mut c = cfg.clone();
             c.offline = true;
             let mut s = Session::open(c).await.map_err(|e| e.to_string())?;
-            s.offline_reason = Some(e.to_string());
+            s.mark_offline(e.to_string());
             Ok(s)
         }
         Err(e) => Err(e.to_string()),

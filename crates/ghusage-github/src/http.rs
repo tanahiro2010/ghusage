@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, TimeZone, Utc};
+use jiff::{SignedDuration, Timestamp};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 use reqwest::{Method, Url};
 use serde::Deserialize;
@@ -51,12 +51,12 @@ pub(crate) struct GraphqlError {
 }
 
 impl GraphqlError {
-    pub fn message(&self) -> String {
+    pub(crate) fn message(&self) -> String {
         truncate(self.message.as_deref().unwrap_or("unknown error"), 300)
     }
 
     /// Path elements that are field names (array indices dropped).
-    pub fn field_path(&self) -> Vec<&str> {
+    pub(crate) fn field_path(&self) -> Vec<&str> {
         self.path.iter().filter_map(|p| p.as_str()).collect()
     }
 }
@@ -97,7 +97,7 @@ pub(crate) struct Transport {
 }
 
 impl Transport {
-    pub fn new(
+    pub(crate) fn new(
         credentials: Option<Credentials>,
         mut config: ClientConfig,
     ) -> Result<Self, ApiError> {
@@ -114,8 +114,9 @@ impl Transport {
             .map_err(|_| ApiError::Network("failed to initialize the HTTP client".into()))?;
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0x9E37_79B9_7F4A_7C15)
+            .map_or(0x9E37_79B9_7F4A_7C15, |d| {
+                u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)
+            })
             | 1;
         Ok(Self {
             http,
@@ -130,7 +131,7 @@ impl Transport {
         })
     }
 
-    pub fn stats(&self) -> ApiStats {
+    pub(crate) fn stats(&self) -> ApiStats {
         self.stats.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
@@ -141,7 +142,7 @@ impl Transport {
     }
 
     /// Builds a REST URL from path segments (each percent-encoded) and query.
-    pub fn rest_url(&self, segments: &[&str], query: &[(&str, &str)]) -> Url {
+    pub(crate) fn rest_url(&self, segments: &[&str], query: &[(&str, &str)]) -> Url {
         let mut url = self.api_base.clone();
         if let Ok(mut path) = url.path_segments_mut() {
             path.pop_if_empty();
@@ -157,7 +158,7 @@ impl Transport {
     }
 
     /// `GET` returning parsed JSON and the response headers.
-    pub async fn get_json(&self, url: &Url) -> Result<(Value, HeaderMap), ApiError> {
+    pub(crate) async fn get_json(&self, url: &Url) -> Result<(Value, HeaderMap), ApiError> {
         let resp = self.send(Method::GET, url, None, false).await?;
         let value = parse_json(&resp.body, url)?;
         Ok((value, resp.headers))
@@ -169,7 +170,7 @@ impl Transport {
     /// pages in between are fetched at once (still limited by the
     /// transport's concurrency) from the `next` link with only its page
     /// number changed.
-    pub async fn get_paginated(
+    pub(crate) async fn get_paginated(
         &self,
         first: Url,
         extract: impl Fn(&Value) -> Option<Vec<Value>>,
@@ -186,13 +187,13 @@ impl Transport {
         seen.insert(first.to_string());
         let (value, mut headers) = self.get_json(&first).await?;
         take(&mut items, &first, &value)?;
-        let mut fetched_up_to = 1;
-        if let (Some(next), Some(last)) = (self.next_link(&headers)?, self.link(&headers, "last")?)
+        let fetched_up_to = if let (Some(next), Some(last)) =
+            (self.next_link(&headers)?, self.link(&headers, "last")?)
             && page_of(&next) == Some(2)
             && let Some(last_page) = page_of(&last)
             && last_page >= 2
         {
-            if last_page as usize > MAX_PAGES {
+            if usize::try_from(last_page).map_or(true, |page| page > MAX_PAGES) {
                 return Err(ApiError::InvalidResponse(format!(
                     "pagination of {} did not terminate",
                     first.path()
@@ -206,8 +207,10 @@ impl Transport {
                 take(&mut items, url, &value)?;
                 headers = h;
             }
-            fetched_up_to = last_page;
-        }
+            last_page
+        } else {
+            1
+        };
         while let Some(url) = self.next_link(&headers)? {
             if page_of(&url).is_some_and(|n| n <= fetched_up_to) {
                 break;
@@ -228,13 +231,13 @@ impl Transport {
     /// The `rel="next"` URL of a REST response. Links pointing to another
     /// origin than the API base are rejected so the token is never sent
     /// elsewhere.
-    pub fn next_link(&self, headers: &HeaderMap) -> Result<Option<Url>, ApiError> {
+    pub(crate) fn next_link(&self, headers: &HeaderMap) -> Result<Option<Url>, ApiError> {
         self.link(headers, "next")
     }
 
     /// The URL of the `Link` header entry with relation `rel`, checked like
     /// [`Self::next_link`].
-    pub fn link(&self, headers: &HeaderMap, rel: &str) -> Result<Option<Url>, ApiError> {
+    pub(crate) fn link(&self, headers: &HeaderMap, rel: &str) -> Result<Option<Url>, ApiError> {
         let Some(link) = headers.get("link").and_then(|v| v.to_str().ok()) else {
             return Ok(None);
         };
@@ -253,7 +256,7 @@ impl Transport {
 
     /// Sends a GraphQL query. Transport-level failures are errors; GraphQL
     /// `errors` are returned to the caller together with any partial data.
-    pub async fn graphql(
+    pub(crate) async fn graphql(
         &self,
         query: &str,
         variables: Value,
@@ -316,7 +319,7 @@ impl Transport {
                     }
                     tracing::debug!(
                         attempt,
-                        delay_ms = delay.as_millis() as u64,
+                        delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
                         path = url.path(),
                         "retrying GitHub request"
                     );
@@ -385,16 +388,15 @@ impl Transport {
                 body: buf,
             })
         };
-        let result = match tokio::time::timeout(self.config.request_timeout, fut).await {
-            Ok(r) => r,
-            Err(_) => Err(AttemptError::Timeout),
-        };
-        let elapsed = started.elapsed().as_millis() as u64;
-        let bytes = result.as_ref().map(|r| r.body.len() as u64).unwrap_or(0);
+        let result = tokio::time::timeout(self.config.request_timeout, fut)
+            .await
+            .unwrap_or_else(|_| Err(AttemptError::Timeout));
+        let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let bytes = result.as_ref().map_or(0, |r| r.body.len() as u64);
         tracing::debug!(
             %method,
             path = url.path(),
-            status = result.as_ref().map(|r| r.status).unwrap_or(0),
+            status = result.as_ref().map_or(0, |r| r.status),
             elapsed_ms = elapsed,
             bytes,
             "GitHub request"
@@ -438,7 +440,8 @@ impl Transport {
                     header_str(&headers, "retry-after").and_then(|v| v.trim().parse::<u64>().ok())
                 {
                     let wait = Duration::from_secs(secs);
-                    let reset_at = Utc::now() + chrono::Duration::seconds(secs as i64);
+                    let reset_at = Timestamp::now()
+                        + SignedDuration::from_secs(i64::try_from(secs).unwrap_or(i64::MAX));
                     if wait > self.config.max_rate_limit_wait {
                         return Decision::Fail(ApiError::RateLimited {
                             reset_at: Some(reset_at),
@@ -498,14 +501,15 @@ impl Transport {
     fn primary_limit(&self, headers: &HeaderMap, attempt: u32) -> Decision {
         let reset_at = header_str(headers, "x-ratelimit-reset")
             .and_then(|v| v.trim().parse::<i64>().ok())
-            .and_then(|secs| Utc.timestamp_opt(secs, 0).single());
-        let delay = match reset_at {
-            Some(reset) => {
-                let secs = (reset - Utc::now()).num_seconds().max(0) as u64;
+            .and_then(|secs| Timestamp::from_second(secs).ok());
+        let delay = reset_at.map_or_else(
+            || self.backoff(attempt),
+            |reset| {
+                let secs = u64::try_from(reset.duration_since(Timestamp::now()).as_secs().max(0))
+                    .unwrap_or_default();
                 Duration::from_secs(secs + 1)
-            }
-            None => self.backoff(attempt),
-        };
+            },
+        );
         if delay > self.config.max_rate_limit_wait {
             return Decision::Fail(ApiError::RateLimited { reset_at });
         }
@@ -630,10 +634,8 @@ pub(crate) fn with_page(url: &Url, n: u64) -> Url {
 }
 
 /// Parses a GitHub timestamp.
-pub(crate) fn parse_time(s: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|d| d.with_timezone(&Utc))
+pub(crate) fn parse_time(s: &str) -> Option<Timestamp> {
+    s.parse().ok()
 }
 
 #[cfg(test)]
@@ -676,7 +678,7 @@ mod tests {
         assert_eq!(t.config.backoff_base, Duration::from_secs(1));
         let nominal = [1u64, 2, 4, 8, 16, 32, 60, 60, 60, 60];
         for (i, secs) in nominal.into_iter().enumerate() {
-            let attempt = i as u32 + 1;
+            let attempt = u32::try_from(i).unwrap_or(u32::MAX).saturating_add(1);
             let full = Duration::from_secs(secs);
             for _ in 0..200 {
                 let d = t.backoff(attempt);

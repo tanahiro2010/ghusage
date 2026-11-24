@@ -1,5 +1,9 @@
 //! Key presses and the state changes they cause.
 
+#[expect(
+    dead_code,
+    reason = "Shared fixtures are compiled separately for each integration test target, and this target uses only a subset."
+)]
 mod common;
 
 use common::*;
@@ -40,7 +44,7 @@ fn enter_opens_pr_detail_then_timeline_and_esc_goes_back() {
     assert_eq!(app.pr_report().unwrap().pr_id, id);
     app.handle_key(code(KeyCode::Enter));
     assert_eq!(app.screen, Screen::PrTimeline);
-    assert!(!app.visible(ListId::Timeline).is_empty());
+    assert_ne!(app.visible(ListId::Timeline), Vec::<usize>::new());
     app.handle_key(code(KeyCode::Esc));
     assert_eq!(app.screen, Screen::PrDetail);
     app.handle_key(code(KeyCode::Esc));
@@ -104,7 +108,7 @@ fn moving_the_selection_does_not_recompute_reports() {
     for _ in 0..20 {
         app.handle_key(key('j'));
         app.handle_key(key('k'));
-        let _ = render(&app, 120, 30);
+        drop(render(&app, 120, 30));
     }
     assert_eq!(app.report_builds(), builds);
     assert_eq!(app.dataset_loads(), loads);
@@ -143,7 +147,7 @@ fn search_filters_lists_incrementally() {
     // Search while typing, then Esc cancels.
     app.handle_key(key('/'));
     press(&mut app, "zzz");
-    assert!(app.visible(ListId::Repositories).is_empty());
+    assert_eq!(app.visible(ListId::Repositories), Vec::<usize>::new());
     assert!(screen_text(&app, 120, 20).contains("No matches"));
     app.handle_key(code(KeyCode::Esc));
     assert!(!app.search_mode);
@@ -169,7 +173,7 @@ fn search_matches_pull_request_titles_and_reviewers() {
     app.handle_key(code(KeyCode::Backspace));
     app.handle_key(code(KeyCode::Backspace));
     press(&mut app, "nobody");
-    assert!(app.visible(ListId::ReviewsReceived).is_empty());
+    assert_eq!(app.visible(ListId::ReviewsReceived), Vec::<usize>::new());
 }
 
 #[test]
@@ -182,7 +186,7 @@ fn time_range_cycles_and_recomputes_the_period() {
 
     app.handle_key(key('t'));
     assert_eq!(app.time_range, TimeRange::Today);
-    let today = resolve_period(Some("today"), None, "today", zone(), now()).unwrap();
+    let today = resolve_period(Some("today"), None, "today", &zone(), now()).unwrap();
     assert_eq!(app.period, today);
     assert!(app.report_builds() > builds, "new period is computed");
     assert_eq!(app.base_report().unwrap().metrics.commits, 0);
@@ -197,7 +201,7 @@ fn time_range_cycles_and_recomputes_the_period() {
     assert_eq!(app.time_range, TimeRange::Last90Days);
     app.handle_key(key('t'));
     assert_eq!(app.time_range, TimeRange::ThisMonth);
-    let month = resolve_period(Some("1m"), None, "1m", zone(), now()).unwrap();
+    let month = resolve_period(Some("1m"), None, "1m", &zone(), now()).unwrap();
     assert_eq!(app.period, month);
     app.handle_key(key('t'));
     assert_eq!(app.time_range, TimeRange::Initial);
@@ -224,11 +228,15 @@ fn filter_cycles_through_repository_presets() {
     // public: R1 (2 commits); private: R3 (1); owned: R1+R3 (3); external: R2 (0).
     assert_eq!(commits, vec![2, 1, 3, 0, 3]);
     assert_eq!(
-        FilterPreset::Public.apply(&Default::default()).visibility,
+        FilterPreset::Public
+            .apply(&ghusage_core::metrics::Filter::default())
+            .visibility,
         Some(VisibilityFilter::Public)
     );
     assert_eq!(
-        FilterPreset::External.apply(&Default::default()).ownership,
+        FilterPreset::External
+            .apply(&ghusage_core::metrics::Filter::default())
+            .ownership,
         Some(Ownership::External)
     );
 }

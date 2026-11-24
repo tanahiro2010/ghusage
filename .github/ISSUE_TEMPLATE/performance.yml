@@ -1,0 +1,75 @@
+name: Performance improvement
+description: Report a measured performance issue or suggest an optimization.
+title: "perf: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve ghusage performance.
+
+        Do not paste tokens or private repository names, titles or URLs.
+        Logins, node IDs, timestamps and counts are not hidden in issue text;
+        remove them when they could identify private activity.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What operation is slow, and how does that affect your use?
+    validations:
+      required: true
+  - type: textarea
+    id: measurements
+    attributes:
+      label: Measurements
+      description: |
+        Include the command, ghusage version, OS/architecture, cache size or workload,
+        cold/warm timings, and how many runs you measured. Redact private data.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What improvement do you suggest? Profiling evidence is helpful.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How should the improvement be measured, and what behavior must remain unchanged?
+      placeholder: |
+        - [ ] ...
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds or other approaches you considered.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Reports and metrics
+        - Pull request detail and timeline
+        - Sync and local cache
+        - JSON, CSV or Markdown output
+        - Terminal UI
+        - Installation
+        - Other
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Profiling output or benchmark details, with private information removed.
+    validations:
+      required: false

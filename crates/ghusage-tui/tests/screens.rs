@@ -1,5 +1,9 @@
 //! Rendering of every screen from synthetic data.
 
+#[expect(
+    dead_code,
+    reason = "Shared fixtures are compiled separately for each integration test target, and this target uses only a subset."
+)]
 mod common;
 
 use common::*;
@@ -103,7 +107,7 @@ fn empty_data_shows_friendly_messages() {
         app.handle_key(key(k));
         let text = screen_text(&app, 120, 30);
         assert!(!text.contains("Computing"), "{text}");
-        let _ = screen_text(&app, 40, 10);
+        drop(screen_text(&app, 40, 10));
     }
     press(&mut app, "1");
     let text = screen_text(&app, 120, 30);
@@ -131,15 +135,15 @@ fn small_and_large_terminals_render() {
     for (w, h) in [(40, 10), (200, 60), (20, 6), (10, 3), (1, 1)] {
         for k in ['1', '2', '3', '4', '5', '6', '7', '8'] {
             app.handle_key(key(k));
-            let _ = render(&app, w, h);
+            drop(render(&app, w, h));
         }
         press(&mut app, "5");
         app.handle_key(code(KeyCode::Enter));
-        let _ = render(&app, w, h);
+        drop(render(&app, w, h));
         app.handle_key(code(KeyCode::Enter));
-        let _ = render(&app, w, h);
+        drop(render(&app, w, h));
         app.handle_key(key('?'));
-        let _ = render(&app, w, h);
+        drop(render(&app, w, h));
         app.handle_key(key('?'));
         app.handle_key(code(KeyCode::Esc));
         app.handle_key(code(KeyCode::Esc));

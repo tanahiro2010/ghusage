@@ -1,6 +1,10 @@
 //! Errors opening the cache are returned as application errors, with the
 //! same exit codes as other commands, before the terminal is touched.
 
+#[expect(
+    dead_code,
+    reason = "Shared fixtures are compiled separately for each integration test target, and this target uses only a subset."
+)]
 mod common;
 
 use common::*;
@@ -22,7 +26,7 @@ fn options(dir: &std::path::Path, user: Option<&str>) -> TuiOptions {
         },
         background_sync: false,
         concurrency: 1,
-        commit_basis: Default::default(),
+        commit_basis: ghusage_core::metrics::CommitDateBasis::default(),
     }
 }
 

@@ -1,8 +1,8 @@
 //! One commit with its files and diff (`GET /repos/{owner}/{repo}/commits/{ref}`).
 
-use chrono::Utc;
 use ghusage_core::commit::{CommitDetail, CommitFile, CommitPerson, DiffStats, FileStatus};
 use ghusage_core::model::Visibility;
+use jiff::Timestamp;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -87,8 +87,7 @@ fn file(v: Value) -> Option<CommitFile> {
         status: f
             .status
             .as_deref()
-            .map(FileStatus::parse)
-            .unwrap_or(FileStatus::Unknown),
+            .map_or(FileStatus::Unknown, FileStatus::parse),
         additions,
         deletions,
         changes: f.changes.unwrap_or(additions + deletions),
@@ -177,6 +176,6 @@ pub(crate) async fn fetch(
         files,
         files_truncated: next.is_some() || bad > 0,
         visibility: Visibility::Unknown,
-        fetched_at: Utc::now(),
+        fetched_at: Timestamp::now(),
     })
 }

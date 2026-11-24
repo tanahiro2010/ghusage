@@ -71,7 +71,7 @@ pub(crate) struct Worker {
 }
 
 impl Worker {
-    pub fn new(source: Box<dyn DataSource + Send>) -> Self {
+    pub(crate) fn new(source: Box<dyn DataSource + Send>) -> Self {
         Self {
             source,
             dataset: None,
@@ -98,7 +98,7 @@ impl Worker {
         }
     }
 
-    pub fn handle(&mut self, req: Request) -> Response {
+    pub(crate) fn handle(&mut self, req: Request) -> Response {
         let mut loaded_dataset = false;
         let outcome = match &req.job {
             Job::Report(_) => {
@@ -136,7 +136,7 @@ impl Worker {
     }
 }
 
-fn view_of(r: &Request) -> Option<(Period, crate::app::FilterPreset)> {
+const fn view_of(r: &Request) -> Option<(Period, crate::app::FilterPreset)> {
     match &r.job {
         Job::Report(k) => Some((r.view, k.filter)),
         _ => None,

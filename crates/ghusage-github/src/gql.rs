@@ -2,8 +2,8 @@
 //! that nulls and missing fields never abort parsing; required values are
 //! checked where they are used.
 
-use chrono::{DateTime, Utc};
 use ghusage_core::model::{Actor, Repository, Visibility};
+use jiff::Timestamp;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -21,7 +21,7 @@ pub(crate) struct GqlActor {
 }
 
 impl GqlActor {
-    pub fn actor(&self) -> Actor {
+    pub(crate) fn actor(&self) -> Actor {
         Actor::new(
             self.id.clone(),
             self.login.clone(),
@@ -31,9 +31,7 @@ impl GqlActor {
 }
 
 pub(crate) fn actor_of(a: &Option<GqlActor>) -> Actor {
-    a.as_ref()
-        .map(GqlActor::actor)
-        .unwrap_or_else(Actor::unknown)
+    a.as_ref().map_or_else(Actor::unknown, GqlActor::actor)
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -55,7 +53,7 @@ pub(crate) struct Connection {
 impl Connection {
     /// Parses each non-null node; returns the parsed nodes and the number of
     /// nodes that could not be parsed.
-    pub fn parse_nodes<T: DeserializeOwned>(&self) -> (Vec<T>, usize) {
+    pub(crate) fn parse_nodes<T: DeserializeOwned>(&self) -> (Vec<T>, usize) {
         let mut out = Vec::new();
         let mut bad = 0;
         for n in self.nodes.iter().flatten() {
@@ -73,7 +71,7 @@ impl Connection {
 
     /// Cursor of the next page, `Ok(None)` when this was the last page and
     /// `Err(())` when more pages exist but no cursor was given.
-    pub fn next_cursor(&self) -> Result<Option<String>, ()> {
+    pub(crate) fn next_cursor(&self) -> Result<Option<String>, ()> {
         match &self.page_info {
             Some(p) if p.has_next_page => p.end_cursor.clone().map(Some).ok_or(()),
             Some(_) => Ok(None),
@@ -101,7 +99,7 @@ pub(crate) struct GqlRepository {
 }
 
 impl GqlRepository {
-    pub fn to_repository(&self) -> Result<Repository, ApiError> {
+    pub(crate) fn to_repository(&self) -> Result<Repository, ApiError> {
         let missing = |f: &str| ApiError::InvalidResponse(format!("repository is missing `{f}`"));
         let id = self.id.clone().ok_or_else(|| missing("id"))?;
         let name = self.name.clone().ok_or_else(|| missing("name"))?;
@@ -115,8 +113,7 @@ impl GqlRepository {
             visibility: self
                 .visibility
                 .as_deref()
-                .map(Visibility::parse)
-                .unwrap_or(Visibility::Unknown),
+                .map_or(Visibility::Unknown, Visibility::parse),
             is_fork: self.is_fork.unwrap_or(false),
             viewer_permission: self.viewer_permission.clone(),
             accessible: true,
@@ -126,7 +123,7 @@ impl GqlRepository {
 }
 
 /// Parses an optional GraphQL timestamp.
-pub(crate) fn time(s: &Option<String>) -> Option<DateTime<Utc>> {
+pub(crate) fn time(s: &Option<String>) -> Option<Timestamp> {
     s.as_deref().and_then(parse_time)
 }
 
@@ -140,15 +137,15 @@ pub(crate) fn failure(errors: &[GraphqlError], what: &str) -> ApiError {
             _ => {}
         }
     }
-    match errors.first() {
-        Some(e) => ApiError::Graphql(e.message()),
-        None => ApiError::InvalidResponse(format!("GraphQL response for {what} has no data")),
-    }
+    errors.first().map_or_else(
+        || ApiError::InvalidResponse(format!("GraphQL response for {what} has no data")),
+        |e| ApiError::Graphql(e.message()),
+    )
 }
 
 /// Short description of GraphQL errors for coverage notes.
 pub(crate) fn describe(errors: &[GraphqlError]) -> String {
-    let mut parts: Vec<String> = errors.iter().take(3).map(|e| e.message()).collect();
+    let mut parts: Vec<String> = errors.iter().take(3).map(GraphqlError::message).collect();
     if errors.len() > 3 {
         parts.push(format!("and {} more", errors.len() - 3));
     }

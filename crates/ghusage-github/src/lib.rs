@@ -17,13 +17,13 @@ mod url;
 
 use std::time::Duration;
 
-use chrono::{DateTime, TimeZone, Utc};
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::metrics::{LineCounts, PrDiff};
 use ghusage_core::model::{
     ActivityEvent, Collection, Issue, PullRequest, Repository, ReviewThread,
 };
 use ghusage_core::time::Period;
+use jiff::Timestamp;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -36,6 +36,7 @@ pub use url::{parse_commit_ref, parse_pr_url};
 // Client
 // ---------------------------------------------------------------------------
 
+/// Settings for GitHub API endpoints, concurrency, retry, and response limits.
 #[derive(Debug, Clone)]
 pub struct ClientConfig {
     /// REST base, default `https://api.github.com`.
@@ -46,12 +47,15 @@ pub struct ClientConfig {
     pub concurrency: usize,
     /// Maximum attempts per request, including the first.
     pub max_attempts: u32,
+    /// Timeout applied to each request.
     pub request_timeout: Duration,
     /// Longest single wait for a rate-limit reset before giving up.
     pub max_rate_limit_wait: Duration,
     /// Base delay for exponential backoff (tests use a tiny value).
     pub backoff_base: Duration,
+    /// Maximum response body size accepted from the API.
     pub max_response_bytes: usize,
+    /// User-Agent header sent with requests.
     pub user_agent: String,
 }
 
@@ -63,7 +67,7 @@ impl Default for ClientConfig {
             concurrency: 8,
             max_attempts: 5,
             request_timeout: Duration::from_secs(30),
-            max_rate_limit_wait: Duration::from_secs(15 * 60),
+            max_rate_limit_wait: Duration::from_mins(15),
             backoff_base: Duration::from_secs(1),
             max_response_bytes: 50 * 1024 * 1024,
             user_agent: concat!("ghusage/", env!("CARGO_PKG_VERSION")).into(),
@@ -74,75 +78,122 @@ impl Default for ClientConfig {
 /// Errors from the GitHub API. Messages never contain the token.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ApiError {
+    /// GitHub rejected the credentials.
     #[error("GitHub rejected the credentials (HTTP 401)")]
     Unauthorized,
+    /// The authenticated user lacks permission for the resource.
     #[error("access denied: {0}")]
     Forbidden(String),
+    /// The resource does not exist or is not accessible.
     #[error("not found or not accessible: {0}")]
     NotFound(String),
+    /// A GitHub API rate limit prevented the request.
     #[error("GitHub rate limit exceeded; resets at {reset_at:?}")]
-    RateLimited { reset_at: Option<DateTime<Utc>> },
+    RateLimited {
+        /// Time when the rate limit resets, when GitHub reported it.
+        reset_at: Option<Timestamp>,
+    },
+    /// The request exceeded its configured timeout.
     #[error("request timed out after {attempts} attempt(s)")]
-    Timeout { attempts: u32 },
+    Timeout {
+        /// Number of attempts made before timing out.
+        attempts: u32,
+    },
+    /// GitHub returned an unsuccessful HTTP status.
     #[error("GitHub API returned HTTP {status} after {attempts} attempt(s)")]
-    Http { status: u16, attempts: u32 },
+    Http {
+        /// HTTP status returned by GitHub.
+        status: u16,
+        /// Number of attempts made.
+        attempts: u32,
+    },
+    /// The request failed at the network layer.
     #[error("network error: {0}")]
     Network(String),
+    /// The response could not be decoded or lacked required fields.
     #[error("unexpected API response: {0}")]
     InvalidResponse(String),
+    /// The response body exceeded the configured limit.
     #[error("API response exceeded the size limit of {limit} bytes")]
-    TooLarge { limit: usize },
+    TooLarge {
+        /// Configured maximum response size in bytes.
+        limit: usize,
+    },
+    /// GitHub returned a GraphQL operation error.
     #[error("GraphQL error: {0}")]
     Graphql(String),
 }
 
 impl ApiError {
     /// Whether the error means credentials are invalid (exit code 3).
-    pub fn is_auth(&self) -> bool {
-        matches!(self, ApiError::Unauthorized)
+    #[must_use]
+    pub const fn is_auth(&self) -> bool {
+        matches!(self, Self::Unauthorized)
     }
 }
 
 /// Counters for API performance reporting.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct ApiStats {
+    /// Number of HTTP requests sent.
     pub requests: u64,
+    /// Number of retry attempts after the initial request.
     pub retries: u64,
+    /// Number of waits caused by rate limits.
     pub rate_limit_waits: u64,
+    /// Cumulative time spent in API requests, in milliseconds.
     pub total_api_time_ms: u64,
+    /// Total response bytes received.
     pub bytes_received: u64,
 }
 
+/// Identity of the authenticated GitHub account.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Viewer {
+    /// GitHub node ID.
     pub id: String,
+    /// GitHub login.
     pub login: String,
     /// OAuth scopes from `X-OAuth-Scopes`, when reported.
     pub scopes: Option<Vec<String>>,
 }
 
+/// Public identity information for a GitHub account.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct UserInfo {
+    /// GitHub node ID.
     pub id: String,
+    /// GitHub login.
     pub login: String,
+    /// Whether GitHub classifies the account as a bot.
     pub is_bot: bool,
 }
 
+/// Remaining quota and reset data for GitHub API resources.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct RateLimitInfo {
+    /// Remaining core REST requests.
     pub core_remaining: u64,
+    /// Core REST request limit.
     pub core_limit: u64,
-    pub core_reset: DateTime<Utc>,
+    /// Time the core REST quota resets.
+    pub core_reset: Timestamp,
+    /// Remaining search requests.
     pub search_remaining: u64,
+    /// Search request limit.
     pub search_limit: u64,
+    /// Remaining GraphQL points.
     pub graphql_remaining: u64,
+    /// GraphQL point limit.
     pub graphql_limit: u64,
 }
 
 /// Items plus how completely they were fetched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fetched<T> {
+    /// Data returned by the fetch operation.
     pub items: T,
+    /// Completeness of the fetch.
     pub status: CoverageStatus,
     /// Explanation when `status` is not complete.
     pub reason: Option<String>,
@@ -151,41 +202,58 @@ pub struct Fetched<T> {
 /// One commit authored by the searched user.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitRecord {
+    /// Repository containing the commit.
     pub repository: Repository,
     /// A `CommitAuthored` event (`occurred_at` = committer date).
     pub event: ActivityEvent,
 }
 
 /// A repository with the time of its last push.
+/// A repository found during discovery together with its last push time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushedRepository {
+    /// Repository metadata.
     pub repository: Repository,
-    pub pushed_at: Option<DateTime<Utc>>,
+    /// Last push time, when GitHub reported it.
+    pub pushed_at: Option<Timestamp>,
 }
 
+/// Distinguishes search results representing issues from pull requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IssueKind {
+    /// Search result is a pull request.
     PullRequest,
+    /// Search result is an issue.
     Issue,
 }
 
 /// A pull request or issue found by search.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IssueRef {
+    /// GitHub node ID.
     pub node_id: String,
+    /// Repository owner login.
     pub owner: String,
+    /// Repository name.
     pub name: String,
+    /// Issue or pull request number.
     pub number: u64,
+    /// Whether the search result is an issue or pull request.
     pub kind: IssueKind,
-    pub updated_at: DateTime<Utc>,
+    /// Last update time reported by GitHub.
+    pub updated_at: Timestamp,
 }
 
 /// All data of one pull request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrBundle {
+    /// Repository containing the pull request.
     pub repository: Repository,
+    /// Current pull request snapshot.
     pub pull_request: PullRequest,
+    /// Normalized pull request activity events.
     pub events: Vec<ActivityEvent>,
+    /// Current review thread snapshots.
     pub threads: Vec<ReviewThread>,
     /// SHAs currently in the pull request.
     pub current_commit_shas: Vec<String>,
@@ -200,22 +268,36 @@ pub struct PrBundle {
     /// Collections fetched completely (all pages).
     pub complete_collections: Vec<Collection>,
     /// Overall coverage of this pull request's internal activity.
+    /// Overall completeness of the fetched pull request data.
     pub status: CoverageStatus,
+    /// Notes explaining partial or unavailable data.
     pub notes: Vec<String>,
 }
 
 /// All data of one issue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IssueBundle {
+    /// Repository containing the issue.
     pub repository: Repository,
+    /// Current issue snapshot.
     pub issue: Issue,
     /// `IssueOpened`, `IssueClosed`, `IssueReopened` events.
     pub events: Vec<ActivityEvent>,
+    /// Completeness of the fetched issue data.
     pub status: CoverageStatus,
 }
 
+/// Client for GitHub REST and GraphQL APIs.
 pub struct GitHubClient {
     transport: http::Transport,
+}
+
+impl std::fmt::Debug for GitHubClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GitHubClient")
+            .field("stats", &self.stats())
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -245,6 +327,7 @@ impl GitHubClient {
         })
     }
 
+    /// Returns cumulative request statistics.
     pub fn stats(&self) -> ApiStats {
         self.transport.stats()
     }
@@ -298,6 +381,7 @@ impl GitHubClient {
         })
     }
 
+    /// Fetches current rate-limit information for the API resources.
     pub async fn rate_limit(&self) -> Result<RateLimitInfo, ApiError> {
         let url = self.transport.rest_url(&["rate_limit"], &[]);
         let (value, _) = self.transport.get_json(&url).await?;
@@ -313,8 +397,8 @@ impl GitHubClient {
             core_limit: core.limit.unwrap_or(0),
             core_reset: core
                 .reset
-                .and_then(|r| Utc.timestamp_opt(r, 0).single())
-                .unwrap_or_else(Utc::now),
+                .and_then(|r| Timestamp::from_second(r).ok())
+                .unwrap_or_else(Timestamp::now),
             search_remaining: search.remaining.unwrap_or(0),
             search_limit: search.limit.unwrap_or(0),
             graphql_remaining: graphql.remaining.unwrap_or(0),
@@ -344,7 +428,7 @@ impl GitHubClient {
     pub async fn pushed_repositories(
         &self,
         user: Option<&str>,
-        pushed_since: DateTime<Utc>,
+        pushed_since: Timestamp,
     ) -> Result<Vec<PushedRepository>, ApiError> {
         repos::pushed_repositories(&self.transport, user, pushed_since).await
     }

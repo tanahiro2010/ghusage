@@ -1,7 +1,8 @@
 //! Human-readable table output. All text from GitHub is sanitized before
 //! it reaches the terminal.
 
-use chrono::{DateTime, Utc};
+use std::fmt::Write as _;
+
 use ghusage_app::commit::{CommitReport, CommitSource, PersonReport};
 use ghusage_app::report::{PrReport, Report, ReportKind};
 use ghusage_core::commit::DiffLineKind;
@@ -9,10 +10,11 @@ use ghusage_core::coverage::{CoverageStatus, CoverageSummary};
 use ghusage_core::metrics::{DiffCoverage, DiffTotals, Stats, Summary};
 use ghusage_core::sanitize::{display_width, sanitize_code_line, sanitize_line, truncate_width};
 use ghusage_core::time::Zone;
+use jiff::Timestamp;
 
-/// Output styling. Colors are only used on a terminal without NO_COLOR.
+/// Output styling. Colors are only used on a terminal without `NO_COLOR`.
 #[derive(Debug, Clone, Copy)]
-pub struct Style {
+pub(crate) struct Style {
     pub color: bool,
 }
 
@@ -24,28 +26,28 @@ impl Style {
             s.to_string()
         }
     }
-    pub fn bold(&self, s: &str) -> String {
+    pub(crate) fn bold(&self, s: &str) -> String {
         self.paint("1", s)
     }
-    pub fn dim(&self, s: &str) -> String {
+    pub(crate) fn dim(&self, s: &str) -> String {
         self.paint("2", s)
     }
-    pub fn green(&self, s: &str) -> String {
+    pub(crate) fn green(&self, s: &str) -> String {
         self.paint("32", s)
     }
-    pub fn red(&self, s: &str) -> String {
+    pub(crate) fn red(&self, s: &str) -> String {
         self.paint("31", s)
     }
-    pub fn cyan(&self, s: &str) -> String {
+    pub(crate) fn cyan(&self, s: &str) -> String {
         self.paint("36", s)
     }
-    pub fn warn(&self, s: &str) -> String {
+    pub(crate) fn warn(&self, s: &str) -> String {
         self.paint("33", s)
     }
 }
 
 /// A simple aligned table. Cells are sanitized and width-aware.
-pub struct Table {
+pub(crate) struct Table {
     headers: Vec<String>,
     rows: Vec<Vec<String>>,
     right: Vec<bool>,
@@ -53,32 +55,32 @@ pub struct Table {
 }
 
 impl Table {
-    pub fn new(headers: &[&str]) -> Self {
+    pub(crate) fn new(headers: &[&str]) -> Self {
         Self {
-            headers: headers.iter().map(|h| h.to_string()).collect(),
+            headers: headers.iter().map(ToString::to_string).collect(),
             rows: Vec::new(),
             right: vec![false; headers.len()],
             max_width: vec![None; headers.len()],
         }
     }
     /// Right-align numeric columns.
-    pub fn numeric(mut self, cols: &[usize]) -> Self {
+    pub(crate) fn numeric(mut self, cols: &[usize]) -> Self {
         for &c in cols {
             self.right[c] = true;
         }
         self
     }
-    pub fn limit(mut self, col: usize, width: usize) -> Self {
+    pub(crate) fn limit(mut self, col: usize, width: usize) -> Self {
         self.max_width[col] = Some(width);
         self
     }
-    pub fn row(&mut self, cells: Vec<String>) {
+    pub(crate) fn row(&mut self, cells: Vec<String>) {
         self.rows.push(cells);
     }
-    pub fn is_empty(&self) -> bool {
+    pub(crate) const fn is_empty(&self) -> bool {
         self.rows.is_empty()
     }
-    pub fn render(&self, style: Style) -> String {
+    pub(crate) fn render(&self, style: Style) -> String {
         let cells: Vec<Vec<String>> = self
             .rows
             .iter()
@@ -129,7 +131,7 @@ impl Table {
     }
 
     /// The table as a GitHub-flavored Markdown table.
-    pub fn markdown(&self) -> String {
+    pub(crate) fn markdown(&self) -> String {
         let line = |cells: Vec<String>| format!("| {} |\n", cells.join(" | "));
         let mut out = line(self.headers.iter().map(|h| md_text(h)).collect());
         out.push_str(&line(
@@ -181,12 +183,11 @@ fn md_text(s: &str) -> String {
     out
 }
 
-fn t(zone: Zone, ts: Option<DateTime<Utc>>) -> String {
-    ts.map(|t| zone.format(t, "%Y-%m-%d %H:%M"))
-        .unwrap_or_else(|| "-".into())
+fn t(zone: &Zone, ts: Option<Timestamp>) -> String {
+    ts.map_or_else(|| "-".into(), |t| zone.format(t, "%Y-%m-%d %H:%M"))
 }
 
-fn header(r: &Report, zone: Zone, title: &str, style: Style) -> String {
+fn header(r: &Report, zone: &Zone, title: &str, style: Style) -> String {
     let start = r
         .period
         .start
@@ -215,10 +216,10 @@ fn header(r: &Report, zone: Zone, title: &str, style: Style) -> String {
 }
 
 /// Coverage footer: always shown so incomplete data is never silent.
-pub fn coverage_lines(
+pub(crate) fn coverage_lines(
     cov: &[CoverageSummary],
-    synced: Option<DateTime<Utc>>,
-    zone: Zone,
+    synced: Option<Timestamp>,
+    zone: &Zone,
     style: Style,
 ) -> String {
     let mut out = String::new();
@@ -382,11 +383,12 @@ fn lines_changed(d: &DiffTotals) -> String {
         ),
     };
     if d.excluded > 0 {
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             "; {} {} left out as counted through other commits (squash or rebase merges, force pushes)",
             d.excluded,
             commits(d.excluded)
-        ));
+        );
     }
     out
 }
@@ -404,7 +406,7 @@ fn line_cells(d: &DiffTotals) -> [String; 2] {
 }
 
 /// The note under a table with line counts, when one of its cells needs it.
-fn line_note<'a>(rows: impl IntoIterator<Item = &'a DiffTotals>) -> String {
+fn line_note(rows: impl IntoIterator<Item = DiffTotals>) -> String {
     let (mut partial, mut unknown) = (false, false);
     for d in rows {
         partial |= d.coverage == DiffCoverage::Partial;
@@ -433,10 +435,10 @@ fn kv(lines: &[(&str, String)]) -> String {
         .map(|(k, _)| display_width(k))
         .max()
         .unwrap_or(0);
-    lines
-        .iter()
-        .map(|(k, v)| format!("  {k}{}  {}\n", " ".repeat(w - display_width(k)), v))
-        .collect()
+    lines.iter().fold(String::new(), |mut out, (k, v)| {
+        let _ = writeln!(out, "  {k}{}  {v}", " ".repeat(w - display_width(k)));
+        out
+    })
 }
 
 fn breakdown_table(r: &Report, total: bool) -> Table {
@@ -523,7 +525,7 @@ fn repo_table(r: &Report, limit: Option<usize>) -> Table {
             s.pr_internal_events.to_string(),
             line_cells(&s.diff_stats)[0].clone(),
             line_cells(&s.diff_stats)[1].clone(),
-            self::t(zone, s.last_activity),
+            self::t(&zone, s.last_activity),
         ]);
     }
     t
@@ -544,302 +546,7 @@ fn stats_line(name: &str, s: &Option<Stats>, unit: f64, suffix: &str) -> (String
     (name.to_string(), v)
 }
 
-/// Renders a period report.
-pub fn report(r: &Report, kind: ReportKind, details: bool, style: Style) -> String {
-    let zone = Zone::parse(&r.timezone).unwrap_or(Zone::utc());
-    let mut out = String::new();
-    match kind {
-        ReportKind::Overview => {
-            out.push_str(&header(r, zone, "Overview", style));
-            out.push_str(&kv(&summary_lines(&r.metrics, r.snapshot.open_prs)));
-            if !r.repositories.is_empty() {
-                out.push('\n');
-                out.push_str(&style.bold("Top repositories\n"));
-                out.push_str(&repo_table(r, Some(5)).render(style));
-                out.push_str(&style.dim(&line_note(
-                    r.repositories.iter().take(5).map(|x| &x.summary.diff_stats),
-                )));
-            }
-        }
-        ReportKind::Breakdown(g) => {
-            let title = match g {
-                ghusage_core::time::Granularity::Day => "Daily",
-                ghusage_core::time::Granularity::Week => "Weekly",
-                ghusage_core::time::Granularity::Month => "Monthly",
-                ghusage_core::time::Granularity::Year => "Yearly",
-            };
-            out.push_str(&header(r, zone, title, style));
-            out.push_str(&breakdown_table(r, true).render(style));
-            out.push_str(
-                &style.dim(&line_note(
-                    r.activity_breakdown
-                        .iter()
-                        .map(|b| &b.summary.diff_stats)
-                        .chain([&r.metrics.diff_stats]),
-                )),
-            );
-        }
-        ReportKind::Repositories => {
-            out.push_str(&header(r, zone, "Repositories", style));
-            let t = repo_table(r, None);
-            if t.is_empty() {
-                out.push_str("No repository activity in this period.\n");
-            } else {
-                out.push_str(&t.render(style));
-                out.push_str(&style.dim("* owned by you\n"));
-                out.push_str(&style.dim(&line_note(
-                    r.repositories.iter().map(|x| &x.summary.diff_stats),
-                )));
-            }
-        }
-        ReportKind::PullRequests { .. } => {
-            out.push_str(&header(r, zone, "Pull requests", style));
-            let mut t = Table::new(&[
-                "Repository",
-                "#",
-                "Title",
-                "State",
-                "Author",
-                "Events",
-                "Yours",
-                "Commits",
-                "Reviews",
-                "Comments",
-                "People",
-                "CI",
-                "Changes",
-            ])
-            .numeric(&[1, 5, 6, 7, 8, 9, 10, 12])
-            .limit(0, 32)
-            .limit(2, 40)
-            .limit(4, 16);
-            for p in r.pull_requests.iter().flatten() {
-                let state = if p.is_draft && p.state == ghusage_core::model::PrState::Open {
-                    "draft".to_string()
-                } else {
-                    p.state.as_str().to_string()
-                };
-                t.row(vec![
-                    p.repository.clone(),
-                    p.number.to_string(),
-                    p.title.clone(),
-                    state,
-                    p.author.clone(),
-                    p.events.to_string(),
-                    p.events_by_subject.to_string(),
-                    p.commits.to_string(),
-                    p.reviews.to_string(),
-                    p.comments.to_string(),
-                    p.participants.to_string(),
-                    p.latest_ci.map(|c| c.as_str()).unwrap_or("-").to_string(),
-                    p.diff
-                        .map(|d| format!("+{} -{}", d.additions, d.deletions))
-                        .unwrap_or_else(|| "?".into()),
-                ]);
-            }
-            if t.is_empty() {
-                out.push_str("No pull request activity in this period.\n");
-            } else {
-                out.push_str(&t.render(style));
-                out.push_str(&style.dim(
-                    "Changes: each pull request's base-to-head diff when last synced, not changes made in the period (? not known)\n",
-                ));
-            }
-            if details {
-                out.push('\n');
-                out.push_str(&style.bold("Activity per pull request\n"));
-                if let Some(i) = &r.intensity {
-                    let lines = [
-                        stats_line("Events", &i.events_per_pr, 1.0, ""),
-                        stats_line("Reviews", &i.reviews_per_pr, 1.0, ""),
-                        stats_line("Comments", &i.comments_per_pr, 1.0, ""),
-                        stats_line("Commits", &i.commits_per_pr, 1.0, ""),
-                        stats_line("Participants", &i.participants_per_pr, 1.0, ""),
-                        stats_line(
-                            "Discussion participants",
-                            &i.discussion_participants_per_pr,
-                            1.0,
-                            "",
-                        ),
-                        stats_line("Review threads", &i.threads_per_pr, 1.0, ""),
-                        stats_line("Active days", &i.active_days_per_pr, 1.0, ""),
-                    ];
-                    let refs: Vec<(&str, String)> =
-                        lines.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
-                    out.push_str(&kv(&refs));
-                }
-                out.push_str(&style.bold("Lifecycle timing (your pull requests)\n"));
-                if let Some(tm) = &r.timing {
-                    let lines = [
-                        stats_line(
-                            "Time to first review",
-                            &tm.time_to_first_review,
-                            3600.0,
-                            "h",
-                        ),
-                        stats_line("Creation to merge", &tm.creation_to_merge, 3600.0, "h"),
-                        stats_line(
-                            "Review to your next activity",
-                            &tm.review_to_next_author_activity,
-                            3600.0,
-                            "h",
-                        ),
-                        stats_line(
-                            "First to last activity",
-                            &tm.first_to_last_activity,
-                            3600.0,
-                            "h",
-                        ),
-                    ];
-                    let refs: Vec<(&str, String)> =
-                        lines.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
-                    out.push_str(&kv(&refs));
-                    out.push_str(&style.dim(
-                        "  \"Review to your next activity\" is the next observed event, not necessarily a response.\n",
-                    ));
-                }
-                out.push_str(&style.dim(
-                    "  These are descriptive statistics, not measures of quality or productivity.\n",
-                ));
-            }
-        }
-        ReportKind::Reviews => {
-            out.push_str(&header(r, zone, "Reviews", style));
-            let s = &r.metrics;
-            out.push_str(&kv(&[
-                (
-                    "Submitted",
-                    format!(
-                        "{} on {} PRs (approved {}, changes requested {}, commented {}, dismissed {})",
-                        s.reviews_submitted.total,
-                        s.reviewed_prs,
-                        s.reviews_submitted.approved,
-                        s.reviews_submitted.changes_requested,
-                        s.reviews_submitted.commented,
-                        s.reviews_submitted.dismissed_unknown_state
-                    ),
-                ),
-                (
-                    "Received",
-                    format!(
-                        "{} (approved {}, changes requested {}, commented {}; {} from bots)",
-                        s.reviews_received.total,
-                        s.reviews_received.approved,
-                        s.reviews_received.changes_requested,
-                        s.reviews_received.commented,
-                        s.reviews_received_from_bots
-                    ),
-                ),
-            ]));
-            for (title, rows) in [
-                ("Submitted", r.reviews_submitted.as_deref().unwrap_or(&[])),
-                ("Received", r.reviews_received.as_deref().unwrap_or(&[])),
-            ] {
-                if rows.is_empty() {
-                    continue;
-                }
-                out.push('\n');
-                out.push_str(&style.bold(&format!("{title}\n")));
-                let mut tb = Table::new(&["Time", "Reviewer", "State", "Repository", "#", "Title"])
-                    .numeric(&[4])
-                    .limit(3, 32)
-                    .limit(5, 40);
-                for x in rows {
-                    tb.row(vec![
-                        zone.format(x.submitted_at, "%Y-%m-%d %H:%M"),
-                        x.reviewer.clone(),
-                        x.state
-                            .map(|s| s.as_str().to_ascii_lowercase())
-                            .unwrap_or_default(),
-                        x.repository.clone(),
-                        x.pr_number.map(|n| n.to_string()).unwrap_or_default(),
-                        x.pr_title.clone().unwrap_or_default(),
-                    ]);
-                }
-                out.push_str(&tb.render(style));
-            }
-        }
-        ReportKind::Comments => {
-            out.push_str(&header(r, zone, "Comments", style));
-            out.push_str(&kv(&summary_lines(&r.metrics, r.snapshot.open_prs)[8..11]));
-            let rows = r.comments.as_deref().unwrap_or(&[]);
-            if !rows.is_empty() {
-                out.push('\n');
-                let mut tb = Table::new(&[
-                    "Time",
-                    "Author",
-                    "Type",
-                    "Yours",
-                    "Repository",
-                    "#",
-                    "Edited",
-                ])
-                .numeric(&[5])
-                .limit(4, 32);
-                for c in rows {
-                    tb.row(vec![
-                        zone.format(c.created_at, "%Y-%m-%d %H:%M"),
-                        c.author.clone(),
-                        c.kind.label().to_string(),
-                        if c.written_by_subject { "yes" } else { "" }.into(),
-                        c.repository.clone(),
-                        c.pr_number.map(|n| n.to_string()).unwrap_or_default(),
-                        if c.edited { "edited" } else { "" }.into(),
-                    ]);
-                }
-                out.push_str(&tb.render(style));
-            }
-        }
-        ReportKind::Issues => {
-            out.push_str(&header(r, zone, "Issues", style));
-            let s = &r.metrics;
-            out.push_str(&kv(&[
-                (
-                    "Issues",
-                    format!(
-                        "opened {}, closed {}, reopened {}",
-                        s.issues_opened, s.issues_closed, s.issues_reopened
-                    ),
-                ),
-                (
-                    "Open issues you authored (current)",
-                    r.snapshot.open_issues_authored.to_string(),
-                ),
-            ]));
-            let rows = r.issues.as_deref().unwrap_or(&[]);
-            if !rows.is_empty() {
-                out.push('\n');
-                let mut tb = Table::new(&[
-                    "Repository",
-                    "#",
-                    "Title",
-                    "State",
-                    "Opened",
-                    "Closed",
-                    "Reopened",
-                ])
-                .numeric(&[1, 5, 6])
-                .limit(0, 32)
-                .limit(2, 48);
-                for i in rows {
-                    tb.row(vec![
-                        i.repository.clone(),
-                        i.number.to_string(),
-                        i.title.clone(),
-                        if i.is_open { "open" } else { "closed" }.into(),
-                        if i.opened_in_period { "yes" } else { "" }.into(),
-                        i.closed_in_period.to_string(),
-                        i.reopened_in_period.to_string(),
-                    ]);
-                }
-                out.push_str(&tb.render(style));
-            }
-        }
-    }
-    out.push('\n');
-    out.push_str(&coverage_lines(&r.coverage, r.synced_at, zone, style));
-    out
-}
+include!("render/report.rs");
 
 fn dur(secs: Option<i64>) -> String {
     match secs {
@@ -851,7 +558,7 @@ fn dur(secs: Option<i64>) -> String {
 }
 
 /// Renders a pull request detail report.
-pub fn pr(r: &PrReport, timeline: bool, style: Style) -> String {
+pub(crate) fn pr(r: &PrReport, timeline: bool, style: Style) -> String {
     let zone = Zone::parse(&r.timezone).unwrap_or(Zone::utc());
     let mut out = String::new();
     out.push_str(&style.bold(&format!(
@@ -868,12 +575,12 @@ pub fn pr(r: &PrReport, timeline: bool, style: Style) -> String {
     out.push_str(&kv(&[
         ("Author", sanitize_line(&r.author)),
         ("State (current)", state),
-        ("Created", t(zone, Some(r.created_at))),
+        ("Created", t(&zone, Some(r.created_at))),
         (
             "Merged",
             match (&r.merged_at, &r.merged_by) {
-                (Some(m), Some(b)) => format!("{} by {}", t(zone, Some(*m)), sanitize_line(b)),
-                (Some(m), None) => format!("{} (merger unknown)", t(zone, Some(*m))),
+                (Some(m), Some(b)) => format!("{} by {}", t(&zone, Some(*m)), sanitize_line(b)),
+                (Some(m), None) => format!("{} (merger unknown)", t(&zone, Some(*m))),
                 _ => "-".into(),
             },
         ),
@@ -902,7 +609,7 @@ pub fn pr(r: &PrReport, timeline: bool, style: Style) -> String {
                     } else {
                         "files"
                     },
-                    t(zone, Some(d.observed_at))
+                    t(&zone, Some(d.observed_at))
                 ),
                 None => "unknown (sync the pull request again to fetch it)".into(),
             },
@@ -993,12 +700,12 @@ pub fn pr(r: &PrReport, timeline: bool, style: Style) -> String {
     out.push_str(&style.dim(&format!(
         "Coverage: {}  (synced: {})\n",
         r.coverage.as_str(),
-        t(zone, r.synced_at)
+        t(&zone, r.synced_at)
     )));
     out
 }
 
-fn person(p: &PersonReport, zone: Zone) -> String {
+fn person(p: &PersonReport, zone: &Zone) -> String {
     let who = match (&p.name, &p.login) {
         (Some(n), Some(l)) => format!("{n} ({l})"),
         (Some(n), None) => n.clone(),
@@ -1010,7 +717,7 @@ fn person(p: &PersonReport, zone: Zone) -> String {
 
 /// A commit: facts, message, changed files and, when the report carries
 /// them, the diffs. Every line from GitHub is sanitized.
-pub fn commit(r: &CommitReport, zone: Zone, style: Style) -> String {
+pub(crate) fn commit(r: &CommitReport, zone: Zone, style: Style) -> String {
     let mut out = String::new();
     let headline = ghusage_core::commit::headline(&r.message);
     out.push_str(&style.bold(&format!(
@@ -1035,8 +742,8 @@ pub fn commit(r: &CommitReport, zone: Zone, style: Style) -> String {
     };
     out.push_str(&kv(&[
         ("SHA", sanitize_line(&r.sha)),
-        ("Author", person(&r.author, zone)),
-        ("Committer", person(&r.committer, zone)),
+        ("Author", person(&r.author, &zone)),
+        ("Committer", person(&r.committer, &zone)),
         ("Parents", sanitize_line(&parents)),
         (
             "Changes",
@@ -1047,10 +754,7 @@ pub fn commit(r: &CommitReport, zone: Zone, style: Style) -> String {
         ),
         (
             "URL",
-            r.url
-                .as_deref()
-                .map(sanitize_line)
-                .unwrap_or_else(|| "-".into()),
+            r.url.as_deref().map_or_else(|| "-".into(), sanitize_line),
         ),
         (
             "Source",
@@ -1087,10 +791,7 @@ pub fn commit(r: &CommitReport, zone: Zone, style: Style) -> String {
         out.push_str(&tb.render(style));
         let adds: u64 = r.files.iter().map(|f| f.additions).sum();
         let dels: u64 = r.files.iter().map(|f| f.deletions).sum();
-        out.push_str(&format!(
-            "Total: {} file(s), +{adds} −{dels}\n",
-            r.files.len()
-        ));
+        let _ = writeln!(out, "Total: {} file(s), +{adds} −{dels}", r.files.len());
     }
     if r.files_truncated {
         out.push_str(
@@ -1149,7 +850,7 @@ pub fn commit(r: &CommitReport, zone: Zone, style: Style) -> String {
 
 /// Renders a period report as Markdown, for a profile README or a
 /// pull request comment. `None` for reports that have no Markdown form.
-pub fn report_markdown(r: &Report, kind: ReportKind) -> Option<String> {
+pub(crate) fn report_markdown(r: &Report, kind: ReportKind) -> Option<String> {
     let zone = Zone::parse(&r.timezone).unwrap_or(Zone::utc());
     let title = match kind {
         ReportKind::Overview => "Overview",
@@ -1180,7 +881,7 @@ pub fn report_markdown(r: &Report, kind: ReportKind) -> Option<String> {
                 out.push_str("\n#### Top repositories\n\n");
                 out.push_str(&repo_table(r, Some(5)).markdown());
                 out.push_str(&md_note(&line_note(
-                    r.repositories.iter().take(5).map(|x| &x.summary.diff_stats),
+                    r.repositories.iter().take(5).map(|x| x.summary.diff_stats),
                 )));
             }
         }
@@ -1191,7 +892,7 @@ pub fn report_markdown(r: &Report, kind: ReportKind) -> Option<String> {
             } else {
                 out.push_str(&t.markdown());
                 out.push_str(&md_note(&line_note(
-                    r.repositories.iter().map(|x| &x.summary.diff_stats),
+                    r.repositories.iter().map(|x| x.summary.diff_stats),
                 )));
             }
         }
@@ -1200,8 +901,8 @@ pub fn report_markdown(r: &Report, kind: ReportKind) -> Option<String> {
             out.push_str(&md_note(&line_note(
                 r.activity_breakdown
                     .iter()
-                    .map(|b| &b.summary.diff_stats)
-                    .chain([&r.metrics.diff_stats]),
+                    .map(|b| b.summary.diff_stats)
+                    .chain([r.metrics.diff_stats]),
             )));
         }
     }
@@ -1223,10 +924,11 @@ pub fn report_markdown(r: &Report, kind: ReportKind) -> Option<String> {
     {
         notes.push("private repository names are hidden".into());
     }
-    out.push_str(&format!(
-        "\n<sub>{} · generated by [ghusage](https://github.com/tanahiro2010/ghusage)</sub>\n",
+    let _ = writeln!(
+        out,
+        "\n<sub>{} · generated by [ghusage](https://github.com/tanahiro2010/ghusage)</sub>",
         notes.join(" · ")
-    ));
+    );
     Some(out)
 }
 

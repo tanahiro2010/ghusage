@@ -3,7 +3,7 @@
 //! `cargo bench --bench latency`.
 
 mod common;
-use common::*;
+use common::{EVENTS, ctx, data, subject};
 
 use ghusage_app::report::{self, ReportKind};
 use ghusage_core::metrics::Dataset;
@@ -16,6 +16,11 @@ const WARMUP: usize = 5;
 const RUNS: usize = 50;
 
 /// Nearest-rank percentile.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "The benchmark passes positive percentiles over a nonempty, small fixed sample."
+)]
 fn percentile(sorted: &[Duration], p: f64) -> Duration {
     let rank = ((p * sorted.len() as f64).ceil() as usize).clamp(1, sorted.len());
     sorted[rank - 1]
@@ -80,11 +85,12 @@ fn main() {
         "dataset: {EVENTS} events, 2000 pull requests, 40 repositories, {RUNS} runs after {WARMUP} warm-up"
     );
     let mut all = true;
+    let year = ctx(366);
     all &= measure(
         "100k event aggregation (overview, 1 year)",
         Duration::from_secs(1),
         || {
-            black_box(report::build(&ds, &ctx(366), ReportKind::Overview));
+            black_box(report::build(&ds, &year, ReportKind::Overview));
         },
     );
     all &= measure(
@@ -93,13 +99,57 @@ fn main() {
         || {
             black_box(report::build(
                 &ds,
-                &ctx(366),
+                &year,
                 ReportKind::Breakdown(Granularity::Day),
             ));
         },
     );
+    for (name, granularity) in [
+        ("weekly", Granularity::Week),
+        ("monthly", Granularity::Month),
+    ] {
+        all &= measure(
+            &format!("100k event aggregation ({name}, 1 year)"),
+            Duration::from_secs(1),
+            || {
+                black_box(report::build(
+                    &ds,
+                    &year,
+                    ReportKind::Breakdown(granularity),
+                ));
+            },
+        );
+    }
+    all &= measure(
+        "100k event aggregation (repositories, 1 year)",
+        Duration::from_secs(1),
+        || {
+            black_box(report::build(&ds, &year, ReportKind::Repositories));
+        },
+    );
     for (days, ms) in [(7, 200), (30, 500)] {
         let c = ctx(days);
+        all &= measure(
+            &format!("cached {days}-day database load"),
+            Duration::from_millis(ms),
+            || {
+                black_box(
+                    store
+                        .load_dataset(&subject(), true, Some(c.period))
+                        .unwrap(),
+                );
+            },
+        );
+        let loaded = store
+            .load_dataset(&subject(), true, Some(c.period))
+            .unwrap();
+        all &= measure(
+            &format!("cached {days}-day report aggregation (preloaded)"),
+            Duration::from_millis(ms),
+            || {
+                black_box(report::build(&loaded, &c, ReportKind::Overview));
+            },
+        );
         all &= measure(
             &format!("cached {days}-day aggregation (load + overview)"),
             Duration::from_millis(ms),
@@ -111,6 +161,13 @@ fn main() {
             },
         );
     }
+    all &= measure(
+        "cached pull request detail load (PR_0)",
+        Duration::from_millis(200),
+        || {
+            black_box(store.load_pr_dataset(&subject(), true, "PR_0").unwrap());
+        },
+    );
     if !all {
         std::process::exit(1);
     }

@@ -2,7 +2,6 @@
 
 use std::collections::HashSet;
 
-use chrono::{DateTime, Duration, TimeZone, Utc};
 use ghusage_core::coverage::{CoverageRecord, CoverageStatus, DataKind};
 use ghusage_core::model::{
     ActivityEvent, Actor, ActorKind, CheckOutcome, Collection, EventId, EventMeta, EventType,
@@ -10,9 +9,12 @@ use ghusage_core::model::{
 };
 use ghusage_core::time::Period;
 use ghusage_storage::{PrCommitLink, PrSnapshot, StorageError, Store, SyncLock, WriteBatch};
+use jiff::{SignedDuration, Timestamp};
 
-fn t(day: u32, hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 3, day, hour, 0, 0).unwrap()
+fn t(day: u32, hour: u32) -> Timestamp {
+    format!("2026-03-{day:02}T{hour:02}:00:00Z")
+        .parse()
+        .unwrap()
 }
 
 fn user(login: &str) -> Actor {
@@ -67,14 +69,14 @@ fn event(
     ty: EventType,
     repo_id: &str,
     pr: Option<&str>,
-    at: DateTime<Utc>,
+    at: Timestamp,
 ) -> ActivityEvent {
     ActivityEvent {
         event_id: id.clone(),
         event_type: ty,
         actor: user("alice"),
         repository_id: repo_id.into(),
-        entity_id: id.0.clone(),
+        entity_id: id.0,
         parent_pr_id: pr.map(Into::into),
         occurred_at: at,
         observed_at: t(10, 0),
@@ -85,7 +87,7 @@ fn event(
     }
 }
 
-fn commit_event(repo_id: &str, sha: &str, at: DateTime<Utc>) -> ActivityEvent {
+fn commit_event(repo_id: &str, sha: &str, at: Timestamp) -> ActivityEvent {
     let mut e = event(
         EventId::commit(repo_id, sha),
         EventType::CommitAuthored,
@@ -99,7 +101,7 @@ fn commit_event(repo_id: &str, sha: &str, at: DateTime<Utc>) -> ActivityEvent {
     e
 }
 
-fn pr_commit_event(pr_id: &str, repo_id: &str, sha: &str, at: DateTime<Utc>) -> ActivityEvent {
+fn pr_commit_event(pr_id: &str, repo_id: &str, sha: &str, at: Timestamp) -> ActivityEvent {
     let mut e = event(
         EventId::pr_commit(pr_id, sha),
         EventType::PrCommit,
@@ -113,7 +115,7 @@ fn pr_commit_event(pr_id: &str, repo_id: &str, sha: &str, at: DateTime<Utc>) -> 
     e
 }
 
-fn comment_event(pr_id: &str, comment: &str, at: DateTime<Utc>) -> ActivityEvent {
+fn comment_event(pr_id: &str, comment: &str, at: Timestamp) -> ActivityEvent {
     event(
         EventId::comment(comment),
         EventType::ConversationComment,
@@ -188,6 +190,7 @@ fn base_batch() -> WriteBatch {
             end: t(8, 0),
             status: CoverageStatus::Complete,
             scope: "commit search".into(),
+            description: "commit search".into(),
             reason: None,
             recorded_at: t(10, 0),
         }],
@@ -211,6 +214,231 @@ fn event_by_id<'a>(ds: &'a ghusage_core::metrics::Dataset, id: &EventId) -> &'a 
         .iter()
         .find(|e| &e.event_id == id)
         .unwrap_or_else(|| panic!("event {id} not loaded"))
+}
+
+#[test]
+fn viewed_only_pull_request_keeps_detail_events_out_of_account_activity() {
+    let mut store = store_with_base();
+    let viewed_event = comment_event("PR1", "C_VIEWED", t(4, 0));
+    store
+        .apply(&WriteBatch {
+            account: "alice".into(),
+            repositories: vec![repo("R1", "o", "r")],
+            pull_requests: vec![pr("PR1", "R1", 1)],
+            events: vec![viewed_event.clone()],
+            viewed_pull_requests: vec!["PR1".into()],
+            ..Default::default()
+        })
+        .unwrap();
+
+    assert!(
+        store
+            .pull_request_ids("alice", false)
+            .unwrap()
+            .contains("PR1")
+    );
+    assert!(
+        !store
+            .pull_request_ids("alice", true)
+            .unwrap()
+            .contains("PR1")
+    );
+    let activity = store.load_dataset(&subject("alice"), true, None).unwrap();
+    assert!(
+        !activity
+            .events
+            .iter()
+            .any(|e| e.event_id == viewed_event.event_id)
+    );
+    let detail = store
+        .load_pr_dataset(&subject("alice"), true, "PR1")
+        .unwrap();
+    assert!(
+        detail
+            .events
+            .iter()
+            .any(|e| e.event_id == viewed_event.event_id)
+    );
+}
+
+#[test]
+fn viewing_unrelated_pull_request_does_not_change_account_dataset() {
+    let mut store = store_with_base();
+    let before = alice_dataset(&store);
+    let mut viewed = comment_event("PR2", "C_VIEWED", t(4, 0));
+    viewed.actor = user("bob");
+    store
+        .apply(&WriteBatch {
+            account: "alice".into(),
+            repositories: vec![repo("R3", "bob", "unrelated")],
+            pull_requests: vec![{
+                let mut p = pr("PR2", "R3", 2);
+                p.author = user("bob");
+                p
+            }],
+            events: vec![viewed.clone()],
+            viewed_pull_requests: vec!["PR2".into()],
+            ..Default::default()
+        })
+        .unwrap();
+
+    let after = alice_dataset(&store);
+    assert_eq!(after.repositories, before.repositories);
+    assert_eq!(after.pull_requests, before.pull_requests);
+    assert_eq!(after.issues, before.issues);
+    assert_eq!(after.threads, before.threads);
+    assert_eq!(after.events, before.events);
+    assert_eq!(after.coverage, before.coverage);
+    assert_eq!(after.commit_stats, before.commit_stats);
+    assert_eq!(after.pr_diffs, before.pr_diffs);
+    let detail = store
+        .load_pr_dataset(&subject("alice"), true, "PR2")
+        .unwrap();
+    assert!(detail.events.iter().any(|e| e.event_id == viewed.event_id));
+    assert!(
+        store
+            .pull_request_ids("alice", true)
+            .unwrap()
+            .contains("PR2")
+    );
+
+    // Refreshes are idempotent and retain the offline detail cache.
+    store
+        .apply(&WriteBatch {
+            account: "alice".into(),
+            repositories: vec![repo("R3", "bob", "unrelated")],
+            pull_requests: vec![{
+                let mut p = pr("PR2", "R3", 2);
+                p.author = user("bob");
+                p
+            }],
+            events: vec![viewed],
+            viewed_pull_requests: vec!["PR2".into()],
+            ..Default::default()
+        })
+        .unwrap();
+    let after_refresh = alice_dataset(&store);
+    assert_eq!(after_refresh.repositories, before.repositories);
+    assert_eq!(after_refresh.pull_requests, before.pull_requests);
+    assert_eq!(after_refresh.events, before.events);
+
+    // A later normal sync proves participation and promotes the relationship.
+    let mut participated = comment_event("PR2", "C_ALICE", t(5, 0));
+    participated.actor = user("alice");
+    store
+        .apply(&WriteBatch {
+            account: "alice".into(),
+            repositories: vec![repo("R3", "bob", "unrelated")],
+            pull_requests: vec![{
+                let mut p = pr("PR2", "R3", 2);
+                p.author = user("bob");
+                p
+            }],
+            events: vec![participated.clone()],
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(
+        store
+            .pull_request_ids("alice", false)
+            .unwrap()
+            .contains("PR2")
+    );
+    assert!(
+        !store
+            .pull_request_ids("alice", true)
+            .unwrap()
+            .contains("PR2")
+    );
+    assert!(
+        alice_dataset(&store)
+            .events
+            .iter()
+            .any(|e| e.event_id == participated.event_id)
+    );
+
+    // A stale view after normal participation cannot demote it again.
+    store
+        .apply(&WriteBatch {
+            account: "alice".into(),
+            pull_requests: vec![{
+                let mut p = pr("PR2", "R3", 2);
+                p.author = user("bob");
+                p
+            }],
+            viewed_pull_requests: vec!["PR2".into()],
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(
+        store
+            .pull_request_ids("alice", false)
+            .unwrap()
+            .contains("PR2")
+    );
+}
+
+#[test]
+fn viewing_shared_pull_request_does_not_overwrite_another_accounts_activity() {
+    let mut store = Store::open_in_memory().unwrap();
+    let mut bob = base_batch();
+    bob.account = "bob".into();
+    for p in &mut bob.pull_requests {
+        p.author = user("bob");
+    }
+    for e in &mut bob.events {
+        e.actor = user("bob");
+    }
+    store.apply(&bob).unwrap();
+    let before = store.load_dataset(&subject("bob"), false, None).unwrap();
+
+    let mut stale_event = comment_event("PR1", "C1", t(1, 0));
+    stale_event.actor = user("alice");
+    let mut stale_pr = pr("PR1", "R1", 1);
+    stale_pr.author = user("bob");
+    stale_pr.title = "stale response".into();
+    stale_pr.state = PrState::Closed;
+    store
+        .apply(&WriteBatch {
+            account: "alice".into(),
+            repositories: vec![repo("R1", "other-owner", "renamed")],
+            pull_requests: vec![stale_pr],
+            events: vec![stale_event],
+            pr_snapshots: vec![PrSnapshot {
+                pr_id: "PR1".into(),
+                observed_at: t(10, 0),
+                complete_collections: Collection::ALL.to_vec(),
+                present: HashSet::new(),
+                present_threads: HashSet::new(),
+            }],
+            viewed_pull_requests: vec!["PR1".into()],
+            ..Default::default()
+        })
+        .unwrap();
+
+    let after = store.load_dataset(&subject("bob"), false, None).unwrap();
+    assert_eq!(
+        after.pull_requests["PR1"].title,
+        before.pull_requests["PR1"].title
+    );
+    assert_eq!(
+        after.pull_requests["PR1"].state,
+        before.pull_requests["PR1"].state
+    );
+    assert_eq!(after.events, before.events);
+    assert_eq!(after.repositories, before.repositories);
+    assert!(
+        store
+            .pull_request_ids("bob", false)
+            .unwrap()
+            .contains("PR1")
+    );
+    assert!(
+        !store
+            .pull_request_ids("alice", false)
+            .unwrap()
+            .contains("PR1")
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -240,15 +468,15 @@ fn stored_data_reads_back_unchanged() {
         Some("cursor-1")
     );
     assert_eq!(s.cursor("alice", "missing").unwrap(), None);
-    assert!(s.integrity_check().unwrap().is_empty());
+    assert_eq!(s.integrity_check().unwrap(), Vec::<String>::new());
 }
 
 #[test]
 fn sub_second_timestamps_round_trip_exactly() {
     let mut s = store_with_base();
-    let precise = t(4, 1) + Duration::nanoseconds(123_456_789);
+    let precise = t(4, 1) + SignedDuration::from_nanos(123_456_789);
     let mut e = commit_event("R1", "bbb222", precise);
-    e.meta.author_date = Some(precise - Duration::milliseconds(1500));
+    e.meta.author_date = Some(precise - SignedDuration::from_millis(1500));
     e.observed_at = precise;
     let mut b = WriteBatch {
         account: "alice".into(),
@@ -303,12 +531,12 @@ fn same_commit_from_two_sources_is_stored_once() {
     };
     s.apply(&b).unwrap();
     let ds = alice_dataset(&s);
-    let commits: Vec<_> = ds
+    let commits = ds
         .events
         .iter()
         .filter(|e| e.event_type == EventType::CommitAuthored)
-        .collect();
-    assert_eq!(commits.len(), 1);
+        .count();
+    assert_eq!(commits, 1);
 }
 
 #[test]
@@ -330,6 +558,121 @@ fn same_sha_in_two_repositories_is_two_commits() {
         .filter(|e| e.meta.sha.as_deref() == Some("ccc333"))
         .count();
     assert_eq!(n, 2);
+}
+
+/// alice's commits in copier/tool (R3) and copier/lib (R4), and bob's copy
+/// of one of them.
+fn store_with_copies() -> Store {
+    let mut s = store_with_base();
+    let mut listed = commit_event("R3", "DDD444", t(3, 2));
+    listed.source = Source::Rest;
+    // A commit known through a pull request (same event type, no parent).
+    let mut from_pr = commit_event("R3", "eee555", t(3, 3));
+    from_pr.source = Source::Graphql;
+    s.apply(&WriteBatch {
+        account: "alice".into(),
+        repositories: vec![repo("R3", "copier", "tool"), repo("R4", "copier", "lib")],
+        events: vec![
+            commit_event("R1", "ccc333", t(3, 1)),
+            commit_event("R3", "ccc333", t(3, 1)),
+            listed,
+            from_pr,
+            commit_event("R3", "fff666", t(6, 0)),
+            commit_event("R4", "ggg777", t(3, 4)),
+        ],
+        ..Default::default()
+    })
+    .unwrap();
+    s.apply(&WriteBatch {
+        account: "bob".into(),
+        repositories: vec![repo("R3", "copier", "tool")],
+        events: vec![commit_event("R3", "ccc333", t(3, 1))],
+        ..Default::default()
+    })
+    .unwrap();
+    s
+}
+
+#[test]
+fn commits_in_a_period_list_repository_sha_and_source() {
+    let s = store_with_copies();
+    let period = Period::new(t(3, 0), t(5, 0)).unwrap();
+    let mut got: Vec<(String, String, Source)> = s
+        .commits_in("alice", period)
+        .unwrap()
+        .into_iter()
+        .map(|c| (c.repository_id, c.sha, c.source))
+        .collect();
+    got.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    let want = |r: &str, sha: &str, src: Source| (r.to_owned(), sha.to_owned(), src);
+    // Lower-case SHAs; nothing before or after the period, nothing of
+    // pull request commit links.
+    assert_eq!(
+        got,
+        vec![
+            want("R1", "ccc333", Source::Search),
+            want("R3", "ccc333", Source::Search),
+            want("R3", "ddd444", Source::Rest),
+            want("R3", "eee555", Source::Graphql),
+            want("R4", "ggg777", Source::Search),
+        ]
+    );
+    assert_eq!(s.commits_in("nobody", period).unwrap(), vec![]);
+}
+
+#[test]
+fn listed_commits_are_removed_from_one_account_only() {
+    let mut s = store_with_copies();
+    let commits_of = |s: &Store, repo_id: &str| -> Vec<String> {
+        let mut v: Vec<String> = alice_dataset(s)
+            .events
+            .iter()
+            .filter(|e| e.repository_id == repo_id && e.event_type == EventType::CommitAuthored)
+            .map(|e| e.entity_id.to_ascii_lowercase())
+            .collect();
+        v.sort();
+        v
+    };
+    let pair = |r: &str, sha: &str| (r.to_owned(), sha.to_owned());
+
+    // Commits found by search and listing go; one known through a pull
+    // request stays, and so does the same SHA in another repository.
+    let removed = s
+        .remove_listed_commits(
+            "alice",
+            &[
+                pair("R3", "ccc333"),
+                pair("R3", "DDD444"),
+                pair("R3", "eee555"),
+            ],
+        )
+        .unwrap();
+    assert_eq!(removed, 2);
+    assert_eq!(commits_of(&s, "R3"), vec!["eee555", "fff666"]);
+    assert_eq!(commits_of(&s, "R1"), vec!["aaa111", "ccc333"]);
+    assert!(alice_dataset(&s).repositories.contains_key("R3"));
+    // Another account keeps its link to the same commit.
+    let bob = s.load_dataset(&subject("bob"), false, None).unwrap();
+    assert_eq!(bob.events.len(), 1);
+    assert!(bob.repositories.contains_key("R3"));
+
+    // A repository left with nothing of the account leaves the account.
+    assert_eq!(
+        s.remove_listed_commits("alice", &[pair("R4", "ggg777")])
+            .unwrap(),
+        1
+    );
+    assert!(!alice_dataset(&s).repositories.contains_key("R4"));
+    // Removing again, or a commit that was never stored, changes nothing.
+    assert_eq!(
+        s.remove_listed_commits("alice", &[pair("R4", "ggg777"), pair("R2", "hhh888")])
+            .unwrap(),
+        0
+    );
+    // A repository with an issue of the account stays.
+    let ds = alice_dataset(&s);
+    assert!(ds.repositories.contains_key("R2"));
+    assert!(ds.issues.contains_key("I1"));
 }
 
 #[test]
@@ -402,12 +745,7 @@ fn repository_can_be_marked_inaccessible_keeping_its_data() {
 // ---------------------------------------------------------------------------
 // Removal observations
 
-fn snapshot(
-    pr_id: &str,
-    at: DateTime<Utc>,
-    colls: &[Collection],
-    present: &[EventId],
-) -> PrSnapshot {
+fn snapshot(pr_id: &str, at: Timestamp, colls: &[Collection], present: &[EventId]) -> PrSnapshot {
     PrSnapshot {
         pr_id: pr_id.into(),
         observed_at: at,
@@ -476,12 +814,7 @@ fn comment_missing_from_complete_resync_is_marked_removed_then_restored() {
     assert!(!event_by_id(&alice_dataset(&s), &c1).is_removed());
 }
 
-fn check_run_event(
-    node: &str,
-    sha: &str,
-    outcome: CheckOutcome,
-    at: DateTime<Utc>,
-) -> ActivityEvent {
+fn check_run_event(node: &str, sha: &str, outcome: CheckOutcome, at: Timestamp) -> ActivityEvent {
     let mut e = event(
         EventId::check_run(node),
         EventType::CheckRun,
@@ -503,7 +836,7 @@ fn check_run_event(
 
 /// A resync of PR1 whose head commit is `head`, with the checks of that
 /// head fetched completely.
-fn checks_resync(head: &str, at: DateTime<Utc>, runs: Vec<ActivityEvent>) -> WriteBatch {
+fn checks_resync(head: &str, at: Timestamp, runs: Vec<ActivityEvent>) -> WriteBatch {
     let mut p = pr("PR1", "R1", 1);
     p.head_sha = Some(head.into());
     let present: Vec<EventId> = runs.iter().map(|e| e.event_id.clone()).collect();
@@ -676,7 +1009,7 @@ fn force_push_keeps_old_commit_link_and_marks_its_event_removed() {
             .count(),
         2
     );
-    assert!(s.integrity_check().unwrap().is_empty());
+    assert_eq!(s.integrity_check().unwrap(), Vec::<String>::new());
 
     // An explicit non-current link also marks the event removed.
     let b = WriteBatch {
@@ -703,7 +1036,7 @@ fn count_rows(path: &std::path::Path, sql: &str) -> i64 {
 
 fn march() -> ghusage_core::metrics::Options {
     ghusage_core::metrics::Options {
-        period: Period::new(t(1, 0), Utc.with_ymd_and_hms(2026, 4, 1, 0, 0, 0).unwrap()).unwrap(),
+        period: Period::new(t(1, 0), "2026-04-01T00:00:00Z".parse().unwrap()).unwrap(),
         zone: ghusage_core::time::Zone::utc(),
         filter: ghusage_core::metrics::Filter::default(),
         commit_basis: ghusage_core::metrics::CommitDateBasis::Committer,
@@ -853,6 +1186,7 @@ fn failing_batch_persists_nothing() {
             end: t(2, 0),
             status: CoverageStatus::Partial,
             scope: "issues".into(),
+            description: "issues".into(),
             reason: Some("rate limited".into()),
             recorded_at: t(11, 0),
         }],
@@ -900,7 +1234,7 @@ fn hostile_looking_text_is_stored_verbatim() {
     let b = WriteBatch {
         account: evil.into(),
         repositories: vec![repo("R9", evil, "x\"y")],
-        pull_requests: vec![p.clone()],
+        pull_requests: vec![p],
         events: vec![e.clone()],
         cursors: vec![(evil.into(), evil.into())],
         ..Default::default()
@@ -915,7 +1249,7 @@ fn hostile_looking_text_is_stored_verbatim() {
     assert_eq!(ds.repositories["R9"].owner, evil);
     assert_eq!(s.find_pr(evil, "x\"y", 2).unwrap(), None);
     assert_eq!(s.stats().unwrap().events, 6);
-    assert!(s.integrity_check().unwrap().is_empty());
+    assert_eq!(s.integrity_check().unwrap(), Vec::<String>::new());
 }
 
 // ---------------------------------------------------------------------------
@@ -954,7 +1288,7 @@ fn range_selects_by_event_time_or_commit_author_date() {
             .iter()
             .any(|e| e.event_id == EventId::commit("R1", "aaa111"))
     );
-    let just_after = Period::new(t(1, 10), t(1, 10) + Duration::nanoseconds(1)).unwrap();
+    let just_after = Period::new(t(1, 10), t(1, 10) + SignedDuration::from_nanos(1)).unwrap();
     let ds = s
         .load_dataset(&subject("alice"), true, Some(just_after))
         .unwrap();
@@ -977,8 +1311,8 @@ fn accounts_do_not_see_each_others_data() {
     let bob = s.load_dataset(&subject("bob"), false, None).unwrap();
     assert_eq!(bob.events.len(), 1);
     assert_eq!(bob.repositories.len(), 2);
-    assert!(bob.pull_requests.is_empty());
-    assert!(bob.coverage.is_empty());
+    assert_eq!(bob.pull_requests, std::collections::BTreeMap::new());
+    assert_eq!(bob.coverage, Vec::new());
 
     let alice = alice_dataset(&s);
     assert_eq!(alice.events.len(), 5);
@@ -993,7 +1327,8 @@ fn accounts_do_not_see_each_others_data() {
     );
 
     let nobody = s.load_dataset(&subject("carol"), false, None).unwrap();
-    assert!(nobody.events.is_empty() && nobody.repositories.is_empty());
+    assert_eq!(nobody.events, Vec::new());
+    assert_eq!(nobody.repositories, std::collections::BTreeMap::new());
     // Shared repository rows are not duplicated.
     assert_eq!(s.stats().unwrap().repositories, 3);
 }
@@ -1013,7 +1348,8 @@ fn pull_request_dataset_contains_all_its_activity() {
     assert_eq!(ds.repositories.keys().collect::<Vec<_>>(), vec!["R1"]);
     assert_eq!(ds.coverage.len(), 1);
     let none = s.load_pr_dataset(&subject("alice"), true, "PR404").unwrap();
-    assert!(none.pull_requests.is_empty() && none.events.is_empty());
+    assert_eq!(none.pull_requests, std::collections::BTreeMap::new());
+    assert_eq!(none.events, Vec::new());
 }
 
 // ---------------------------------------------------------------------------
@@ -1091,7 +1427,7 @@ fn clearing_removes_data_but_keeps_schema() {
     assert_eq!(st.schema_version, Store::supported_schema_version());
     assert_eq!(s.meta("k").unwrap(), None);
     assert_eq!(s.last_sync_run("alice").unwrap(), None);
-    assert!(s.integrity_check().unwrap().is_empty());
+    assert_eq!(s.integrity_check().unwrap(), Vec::<String>::new());
     // Still usable afterwards.
     s.apply(&base_batch()).unwrap();
     assert_eq!(s.stats().unwrap().events, 5);
@@ -1113,7 +1449,7 @@ fn data_survives_reopening() {
     }
     let s = Store::open(&path).unwrap();
     assert_eq!(alice_dataset(&s).events.len(), 5);
-    assert!(s.integrity_check().unwrap().is_empty());
+    assert_eq!(s.integrity_check().unwrap(), Vec::<String>::new());
 }
 
 #[test]
@@ -1125,7 +1461,7 @@ fn file_that_is_not_a_database_is_reported_as_corrupt() {
         b"this is definitely not sqlite, just some garbage bytes \x00\xff",
     )
     .unwrap();
-    let err = Store::open(&path).err().expect("garbage must not open");
+    let err = Store::open(&path).expect_err("garbage must not open");
     assert!(matches!(err, StorageError::Corrupt(_)), "{err:?}");
     assert!(err.to_string().contains("not a SQLite database"), "{err}");
     // The file is left alone.
@@ -1178,9 +1514,7 @@ fn database_from_a_newer_version_is_refused() {
         conn.execute_batch("CREATE TABLE future (x); PRAGMA user_version = 4242;")
             .unwrap();
     }
-    let err = Store::open(&path)
-        .err()
-        .expect("newer schema must be refused");
+    let err = Store::open(&path).expect_err("newer schema must be refused");
     match err {
         StorageError::TooNew { found, supported } => {
             assert_eq!(found, 4242);
@@ -1208,8 +1542,7 @@ fn running_as_root() -> bool {
     std::process::Command::new("id")
         .arg("-u")
         .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
-        .unwrap_or(false)
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
 }
 
 #[cfg(unix)]
@@ -1234,14 +1567,14 @@ fn read_only_cache_returns_an_error_and_keeps_data() {
     extra.events.push(commit_event("R1", "zzz999", t(6, 0)));
     match Store::open(&path) {
         Ok(mut s) => assert!(s.apply(&extra).is_err()),
-        Err(e) => assert!(!e.to_string().is_empty()),
+        Err(e) => assert_ne!(e.to_string(), ""),
     }
 
     set_mode(dir.path(), 0o755);
     set_mode(&path, 0o644);
     let s = Store::open(&path).unwrap();
     assert_eq!(s.stats().unwrap().events, 5);
-    assert!(s.integrity_check().unwrap().is_empty());
+    assert_eq!(s.integrity_check().unwrap(), Vec::<String>::new());
 }
 
 #[cfg(unix)]
@@ -1370,8 +1703,8 @@ fn a_period_brings_every_event_of_its_active_pull_requests() {
     let opts = ghusage_core::metrics::Options {
         period,
         zone: ghusage_core::time::Zone::utc(),
-        filter: Default::default(),
-        commit_basis: Default::default(),
+        filter: ghusage_core::metrics::Filter::default(),
+        commit_basis: ghusage_core::metrics::CommitDateBasis::default(),
     };
     assert_eq!(ghusage_core::metrics::summary(&ds, &opts).prs_created, 0);
 }
@@ -1402,6 +1735,151 @@ fn a_period_brings_earlier_events_only_of_the_subjects_own_pull_requests() {
     assert!(ids.contains(&EventId::comment("C21").0));
     assert!(!ids.contains(&EventId::comment("C20").0));
     assert!(ids.contains(&EventId::pr_created("PR1").0));
+}
+
+#[test]
+fn ranged_load_preserves_pr_events_across_account_scoped_batch_boundaries() {
+    let period = Period::new(t(2, 0), t(3, 0)).unwrap();
+    for pr_count in [499_usize, 500, 501, 1001] {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .apply(&WriteBatch {
+                account: "alice".into(),
+                repositories: vec![repo("R1", "alice", "tool")],
+                ..Default::default()
+            })
+            .unwrap();
+
+        let mut pull_requests = Vec::with_capacity(pr_count);
+        let mut alice_events = Vec::with_capacity(pr_count * 2);
+        let mut bob_events = Vec::with_capacity(pr_count);
+        for index in 0..pr_count {
+            let pr_id = format!("PR_BATCH_{index}");
+            pull_requests.push(pr(&pr_id, "R1", index as u64 + 1));
+            alice_events.push(event(
+                EventId::pr_created(&pr_id),
+                EventType::PrOpened,
+                "R1",
+                Some(&pr_id),
+                t(1, 8),
+            ));
+            alice_events.push(comment_event(
+                &pr_id,
+                &format!("ALICE_BATCH_{index}"),
+                t(2, 12),
+            ));
+            let mut bob_event = comment_event(&pr_id, &format!("BOB_BATCH_{index}"), t(2, 13));
+            bob_event.actor = user("bob");
+            bob_events.push(bob_event);
+        }
+        store
+            .apply(&WriteBatch {
+                account: "alice".into(),
+                pull_requests,
+                events: alice_events,
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .apply(&WriteBatch {
+                account: "bob".into(),
+                events: bob_events,
+                ..Default::default()
+            })
+            .unwrap();
+
+        let subject = subject("alice");
+        let all_events = store.load_dataset(&subject, true, None).unwrap();
+        let active_own_prs: HashSet<String> = all_events
+            .events
+            .iter()
+            .filter(|e| period.contains(e.occurred_at))
+            .filter_map(|e| e.parent_pr_id.as_deref())
+            .filter(|id| {
+                all_events
+                    .pull_requests
+                    .get(*id)
+                    .is_some_and(|pr| pr.author.is(&subject))
+            })
+            .map(str::to_owned)
+            .collect();
+        let mut expected = all_events;
+        expected.events.retain(|e| {
+            period.contains(e.occurred_at)
+                || e.parent_pr_id
+                    .as_deref()
+                    .is_some_and(|id| active_own_prs.contains(id))
+        });
+
+        let actual = store.load_dataset(&subject, true, Some(period)).unwrap();
+        let actual_ids: HashSet<_> = actual.events.iter().map(|e| e.event_id.as_str()).collect();
+        assert_eq!(actual.events.len(), pr_count * 2, "{pr_count} PRs");
+        assert_eq!(actual_ids.len(), actual.events.len(), "{pr_count} PRs");
+        assert!(
+            actual
+                .events
+                .iter()
+                .all(|e| !e.event_id.as_str().contains("BOB_BATCH_")),
+            "another account's events leaked for {pr_count} PRs"
+        );
+        assert!(
+            actual.events.iter().any(|e| {
+                e.event_type == EventType::PrOpened && !period.contains(e.occurred_at)
+            }),
+            "related events outside the period were lost for {pr_count} PRs"
+        );
+
+        assert_eq!(actual.events, expected.events, "{pr_count} PRs");
+        assert_eq!(actual.repositories, expected.repositories, "{pr_count} PRs");
+        assert_eq!(
+            actual.pull_requests, expected.pull_requests,
+            "{pr_count} PRs"
+        );
+        assert_eq!(actual.issues, expected.issues, "{pr_count} PRs");
+        assert_eq!(actual.threads, expected.threads, "{pr_count} PRs");
+        assert_eq!(actual.coverage, expected.coverage, "{pr_count} PRs");
+        assert_eq!(actual.commit_stats, expected.commit_stats, "{pr_count} PRs");
+        assert_eq!(actual.pr_diffs, expected.pr_diffs, "{pr_count} PRs");
+        assert_eq!(
+            actual.lines_excluded, expected.lines_excluded,
+            "{pr_count} PRs"
+        );
+
+        let options = ghusage_core::metrics::Options {
+            period,
+            zone: ghusage_core::time::Zone::utc(),
+            filter: ghusage_core::metrics::Filter::default(),
+            commit_basis: ghusage_core::metrics::CommitDateBasis::default(),
+        };
+        assert_eq!(
+            ghusage_core::metrics::summary(&actual, &options),
+            ghusage_core::metrics::summary(&expected, &options),
+            "summary for {pr_count} PRs"
+        );
+        assert_eq!(
+            ghusage_core::metrics::breakdown(
+                &actual,
+                &options,
+                ghusage_core::time::Granularity::Day,
+            ),
+            ghusage_core::metrics::breakdown(
+                &expected,
+                &options,
+                ghusage_core::time::Granularity::Day,
+            ),
+            "daily breakdown for {pr_count} PRs"
+        );
+        assert_eq!(
+            ghusage_core::metrics::by_repository(&actual, &options),
+            ghusage_core::metrics::by_repository(&expected, &options),
+            "repository summary for {pr_count} PRs"
+        );
+        assert_eq!(
+            ghusage_core::metrics::snapshot(&actual, &options),
+            ghusage_core::metrics::snapshot(&expected, &options),
+            "snapshot for {pr_count} PRs"
+        );
+    }
 }
 
 #[cfg(unix)]
@@ -1469,7 +1947,7 @@ fn commit_statistics_are_stored_and_unknown_ones_stay_absent() {
 fn pull_request_diff_keeps_the_latest_observation() {
     use ghusage_core::metrics::PrDiff;
     let mut s = store_with_base();
-    let diff = |additions: u64, at: DateTime<Utc>| PrDiff {
+    let diff = |additions: u64, at: Timestamp| PrDiff {
         additions,
         deletions: 1,
         changed_files: 2,

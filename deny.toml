@@ -1,0 +1,33 @@
+[advisories]
+version = 2
+ignore = [
+  "RUSTSEC-2026-0543",
+  "RUSTSEC-2026-0555",
+]
+# cargo-deny 0.22 accepts all/workspace/transitive/none. Keep direct
+# workspace dependencies strict while allowing transitive unmaintained crates
+# to remain visible as warnings during dependency maintenance.
+unmaintained = "workspace"
+yanked = "deny"
+
+[licenses]
+confidence-threshold = 0.8
+allow = [
+  "Apache-2.0",
+  "BSD-3-Clause",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

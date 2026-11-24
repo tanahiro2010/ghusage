@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use chrono::Utc;
 use common::*;
 use ghusage_github::{ApiError, ClientConfig, GitHubClient};
 use serde_json::json;
@@ -27,7 +26,7 @@ struct Sequence {
 }
 
 impl Sequence {
-    fn new(responses: Vec<ResponseTemplate>) -> Self {
+    const fn new(responses: Vec<ResponseTemplate>) -> Self {
         Self {
             calls: AtomicUsize::new(0),
             responses,
@@ -242,7 +241,7 @@ async fn too_many_requests_gives_up_after_max_attempts() {
 #[tokio::test]
 async fn primary_rate_limit_beyond_max_wait_fails_immediately() {
     let server = MockServer::start().await;
-    let reset = Utc::now().timestamp() + 3600;
+    let reset = jiff::Timestamp::now().as_second() + 3600;
     Mock::given(path("/user"))
         .respond_with(
             ResponseTemplate::new(403)
@@ -261,7 +260,7 @@ async fn primary_rate_limit_beyond_max_wait_fails_immediately() {
     let err = client(&server).viewer().await.unwrap_err();
     match &err {
         ApiError::RateLimited { reset_at } => {
-            assert_eq!(reset_at.map(|r| r.timestamp()), Some(reset));
+            assert_eq!(reset_at.map(jiff::Timestamp::as_second), Some(reset));
         }
         other => panic!("expected RateLimited, got {other:?}"),
     }
@@ -272,7 +271,7 @@ async fn primary_rate_limit_beyond_max_wait_fails_immediately() {
 #[tokio::test]
 async fn primary_rate_limit_waits_for_reset_within_max_wait() {
     let server = MockServer::start().await;
-    let reset = Utc::now().timestamp();
+    let reset = jiff::Timestamp::now().as_second();
     Mock::given(path("/user"))
         .respond_with(Sequence::new(vec![
             ResponseTemplate::new(429)
@@ -427,8 +426,8 @@ async fn raw_server(
                 max.fetch_max(now, Ordering::SeqCst);
                 tokio::time::sleep(delay).await;
                 inf.fetch_sub(1, Ordering::SeqCst);
-                let _ = sock.write_all(response.as_bytes()).await;
-                let _ = sock.shutdown().await;
+                drop(sock.write_all(response.as_bytes()).await);
+                drop(sock.shutdown().await);
             });
         }
     });
@@ -566,18 +565,18 @@ async fn rate_limit_resources_are_reported() {
     Mock::given(path("/rate_limit"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "resources": {
-                "core": { "limit": 5000, "used": 1, "remaining": 4999, "reset": 1700000000 },
-                "search": { "limit": 30, "used": 0, "remaining": 30, "reset": 1700000060 },
-                "graphql": { "limit": 5000, "used": 7, "remaining": 4993, "reset": 1700000000 }
+                "core": { "limit": 5000, "used": 1, "remaining": 4999, "reset": 1_700_000_000 },
+                "search": { "limit": 30, "used": 0, "remaining": 30, "reset": 1_700_000_060 },
+                "graphql": { "limit": 5000, "used": 7, "remaining": 4993, "reset": 1_700_000_000 }
             },
-            "rate": { "limit": 5000, "used": 1, "remaining": 4999, "reset": 1700000000 }
+            "rate": { "limit": 5000, "used": 1, "remaining": 4999, "reset": 1_700_000_000 }
         })))
         .mount(&server)
         .await;
     let r = client(&server).rate_limit().await.unwrap();
     assert_eq!(r.core_remaining, 4999);
     assert_eq!(r.core_limit, 5000);
-    assert_eq!(r.core_reset.timestamp(), 1_700_000_000);
+    assert_eq!(r.core_reset.as_second(), 1_700_000_000);
     assert_eq!(r.search_limit, 30);
     assert_eq!(r.graphql_remaining, 4993);
 }

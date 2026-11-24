@@ -1,6 +1,6 @@
 //! Read-only checks against the real GitHub API. Ignored by default; run
 //! with `GHUSAGE_LIVE_TESTS=1 cargo test -p ghusage-github --test live -- --ignored`.
-//! Credentials come from GH_TOKEN, GITHUB_TOKEN or `gh auth token`.
+//! Credentials come from `GH_TOKEN`, `GITHUB_TOKEN` or `gh auth token`.
 
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::model::{EventType, PrState};
@@ -18,7 +18,7 @@ fn live_client() -> Option<GitHubClient> {
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires GH_TOKEN and makes live GitHub API requests"]
 async fn live_pull_request_of_a_public_repository() {
     let Some(c) = live_client() else { return };
     let (o, r, n) = parse_pr_url("https://github.com/cli/cli/pull/15109").unwrap();
@@ -37,17 +37,17 @@ async fn live_pull_request_of_a_public_repository() {
             .iter()
             .any(|e| e.event_type == EventType::ReviewSubmitted)
     );
-    assert!(!b.current_commit_shas.is_empty());
+    assert_ne!(b.current_commit_shas, Vec::<String>::new());
     eprintln!("{:?}", c.stats());
 }
 
 #[tokio::test]
-#[ignore]
+#[ignore = "requires GH_TOKEN and makes live GitHub API requests"]
 async fn live_search_and_metadata() {
     let Some(c) = live_client() else { return };
     let viewer = c.viewer().await.unwrap();
-    let end = chrono::Utc::now();
-    let period = Period::new(end - chrono::Duration::days(7), end).unwrap();
+    let end = jiff::Timestamp::now();
+    let period = Period::new(end - jiff::SignedDuration::from_secs(7 * 24 * 60 * 60), end).unwrap();
     let commits = c.search_commits(&viewer.login, period, true).await.unwrap();
     eprintln!(
         "commits={} status={:?}",

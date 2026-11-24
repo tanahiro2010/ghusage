@@ -1,0 +1,178 @@
+name: CI speed experiments
+
+# This workflow is intentionally manual-only. It measures alternatives without
+# changing required checks or adding work to the production CI path.
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: Experiment to run
+        required: true
+        type: choice
+        default: baseline
+        options:
+          - baseline
+          - nextest
+          - incremental
+          - sccache
+          - split
+      cache_mode:
+        description: Restore the existing Rust target cache or start without it
+        required: true
+        type: choice
+        default: warm
+        options:
+          - warm
+          - cold
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: ci-speed-experiment
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # baseline/nextest/incremental/sccache are run on every production-CI OS so
+  # improvements are not accepted based on Linux-only behavior.
+  benchmark:
+    if: inputs.scenario != 'split'
+    name: ${{ inputs.scenario }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - macos-15
+          - macos-15-intel
+          - windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: Set up Node.js for the benchmark harness
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Set up repository Rust toolchain
+        uses: ./.github/actions/setup-rust
+
+      - id: rust-cache
+        if: inputs.cache_mode == 'warm' && inputs.scenario != 'sccache'
+        uses: Swatinem/rust-cache@v2.9.3
+        with:
+          cache-on-failure: true
+
+      - name: Set cache metadata for the report
+        shell: bash
+        env:
+          RUST_CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit || 'not-run' }}
+        run: |
+          echo "CI_SPEED_CACHE_MODE=${{ inputs.cache_mode }}" >> "$GITHUB_ENV"
+          echo "CI_SPEED_RUST_CACHE_HIT=$RUST_CACHE_HIT" >> "$GITHUB_ENV"
+
+      - name: Set up sccache
+        if: inputs.scenario == 'sccache'
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba
+
+      - name: Enable sccache
+        if: inputs.scenario == 'sccache'
+        shell: bash
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+
+      - name: Install cargo-nextest
+        if: inputs.scenario == 'nextest'
+        uses: taiki-e/install-action@v2.90.8
+        with:
+          tool: cargo-nextest
+
+      - name: Run benchmark
+        run: >-
+          node scripts/ci/ci-speed-benchmark.mjs
+          --scenario "${{ inputs.scenario }}"
+          --output "${{ runner.temp }}/ci-speed-${{ matrix.os }}.json"
+
+      - name: Upload benchmark result
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-speed-${{ inputs.scenario }}-${{ matrix.os }}
+          path: ${{ runner.temp }}/ci-speed-${{ matrix.os }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+  # Splitting is intentionally measured as a Linux-only experiment. Each
+  # package gets a separate runner, so the wall-clock estimate is the maximum
+  # package duration while the artifact set exposes the total compute cost.
+  split:
+    if: inputs.scenario == 'split'
+    name: split (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - ghusage
+          - ghusage-core
+          - ghusage-github
+          - ghusage-storage
+          - ghusage-app
+          - ghusage-tui
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: Set up Node.js for the benchmark harness
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Set up repository Rust toolchain
+        uses: ./.github/actions/setup-rust
+
+      - id: rust-cache
+        if: inputs.cache_mode == 'warm'
+        uses: Swatinem/rust-cache@v2.9.3
+        with:
+          cache-on-failure: true
+
+      - name: Set cache metadata for the report
+        shell: bash
+        env:
+          RUST_CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit || 'not-run' }}
+        run: |
+          echo "CI_SPEED_CACHE_MODE=${{ inputs.cache_mode }}" >> "$GITHUB_ENV"
+          echo "CI_SPEED_RUST_CACHE_HIT=$RUST_CACHE_HIT" >> "$GITHUB_ENV"
+
+      - name: Run package benchmark
+        run: >-
+          node scripts/ci/ci-speed-benchmark.mjs
+          --scenario "${{ inputs.scenario }}"
+          --package "${{ matrix.package }}"
+          --output "${{ runner.temp }}/ci-speed-${{ matrix.package }}.json"
+
+      - name: Upload package result
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-speed-split-${{ matrix.package }}
+          path: ${{ runner.temp }}/ci-speed-${{ matrix.package }}.json
+          if-no-files-found: error
+          retention-days: 30

@@ -2,20 +2,23 @@
 //! returned by the GitHub REST and GraphQL APIs (including fields the
 //! client ignores).
 
-#![allow(dead_code)]
+#![expect(
+    dead_code,
+    reason = "shared fixtures are only used by some integration test targets"
+)]
 
 use std::time::Duration;
 
-use chrono::{DateTime, TimeZone, Utc};
 use ghusage_core::time::Period;
 use ghusage_github::{ClientConfig, Credentials, GitHubClient, Secret, TokenSource};
+use jiff::{Timestamp, civil::Date};
 use serde_json::{Value, json};
 use wiremock::MockServer;
 
 /// A recognizable fake token; it must never show up in any error output.
-pub const TOKEN: &str = "ghp_SENTINELtoken0123456789abcdefNEVERPRINT";
+pub(crate) const TOKEN: &str = "ghp_SENTINELtoken0123456789abcdefNEVERPRINT";
 
-pub fn config(server: &MockServer) -> ClientConfig {
+pub(crate) fn config(server: &MockServer) -> ClientConfig {
     ClientConfig {
         api_base: server.uri(),
         graphql_url: format!("{}/graphql", server.uri()),
@@ -29,37 +32,46 @@ pub fn config(server: &MockServer) -> ClientConfig {
     }
 }
 
-pub fn credentials() -> Credentials {
+pub(crate) fn credentials() -> Credentials {
     Credentials {
         token: Secret::new(TOKEN),
         source: TokenSource::GhTokenEnv,
     }
 }
 
-pub fn client(server: &MockServer) -> GitHubClient {
+pub(crate) fn client(server: &MockServer) -> GitHubClient {
     GitHubClient::new(Some(credentials()), config(server)).unwrap()
 }
 
-pub fn client_with(server: &MockServer, f: impl FnOnce(&mut ClientConfig)) -> GitHubClient {
+pub(crate) fn client_with(server: &MockServer, f: impl FnOnce(&mut ClientConfig)) -> GitHubClient {
     let mut c = config(server);
     f(&mut c);
     GitHubClient::new(Some(credentials()), c).unwrap()
 }
 
-pub fn ts(s: &str) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+pub(crate) fn ts(s: &str) -> Timestamp {
+    s.parse().unwrap()
 }
 
-pub fn period(start: &str, end: &str) -> Period {
+pub(crate) fn period(start: &str, end: &str) -> Period {
     Period::new(ts(start), ts(end)).unwrap()
 }
 
-pub fn day(y: i32, m: u32, d: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(y, m, d, 0, 0, 0).unwrap()
+pub(crate) fn day(y: i32, m: u8, d: u8) -> Timestamp {
+    Date::new(
+        i16::try_from(y).expect("test year fits i16"),
+        i8::try_from(m).expect("test month fits i8"),
+        i8::try_from(d).expect("test day fits i8"),
+    )
+    .unwrap()
+    .at(0, 0, 0, 0)
+    .to_zoned_datetime(jiff::tz::TimeZone::UTC)
+    .unwrap()
+    .timestamp()
 }
 
 /// Asserts that a rendered error contains no trace of the token.
-pub fn assert_no_token(e: &impl std::fmt::Debug, display: &str) {
+pub(crate) fn assert_no_token(e: &impl std::fmt::Debug, display: &str) {
     let debug = format!("{e:?}");
     for s in [&debug, display] {
         assert!(!s.contains(TOKEN), "token leaked: {s}");
@@ -75,12 +87,12 @@ pub fn assert_no_token(e: &impl std::fmt::Debug, display: &str) {
 // REST fixtures
 // ---------------------------------------------------------------------------
 
-pub fn rest_user(login: &str, node_id: &str, kind: &str) -> Value {
+pub(crate) fn rest_user(login: &str, node_id: &str, kind: &str) -> Value {
     json!({
         "login": login,
         "id": 1000,
         "node_id": node_id,
-        "avatar_url": format!("https://avatars.githubusercontent.com/u/1000?v=4"),
+        "avatar_url": "https://avatars.githubusercontent.com/u/1000?v=4",
         "gravatar_id": "",
         "url": format!("https://api.github.com/users/{login}"),
         "html_url": format!("https://github.com/{login}"),
@@ -90,7 +102,7 @@ pub fn rest_user(login: &str, node_id: &str, kind: &str) -> Value {
     })
 }
 
-pub fn rest_repo(
+pub(crate) fn rest_repo(
     node_id: &str,
     owner: &str,
     owner_type: &str,
@@ -114,12 +126,12 @@ pub fn rest_repo(
 }
 
 /// A 40-character hex SHA derived from `n`.
-pub fn sha(n: u64) -> String {
+pub(crate) fn sha(n: u64) -> String {
     format!("{n:040x}")
 }
 
 /// One item of `GET /search/commits`.
-pub fn search_commit(
+pub(crate) fn search_commit(
     repo: &Value,
     sha: &str,
     author: Option<&str>,
@@ -159,12 +171,12 @@ pub fn search_commit(
     })
 }
 
-pub fn search_page(total: u64, incomplete: bool, items: Vec<Value>) -> Value {
+pub(crate) fn search_page(total: u64, incomplete: bool, items: Vec<Value>) -> Value {
     json!({ "total_count": total, "incomplete_results": incomplete, "items": items })
 }
 
 /// One item of `GET /search/issues`.
-pub fn search_issue(
+pub(crate) fn search_issue(
     owner: &str,
     name: &str,
     number: u64,
@@ -207,7 +219,7 @@ pub fn search_issue(
 }
 
 /// A `Link` header with only a `next` relation.
-pub fn next_link(server: &MockServer, path_and_query: &str) -> String {
+pub(crate) fn next_link(server: &MockServer, path_and_query: &str) -> String {
     format!("<{}{}>; rel=\"next\"", server.uri(), path_and_query)
 }
 
@@ -215,23 +227,29 @@ pub fn next_link(server: &MockServer, path_and_query: &str) -> String {
 // GraphQL fixtures
 // ---------------------------------------------------------------------------
 
-pub fn gql_actor(typename: &str, login: &str, id: &str) -> Value {
+pub(crate) fn gql_actor(typename: &str, login: &str, id: &str) -> Value {
     json!({ "__typename": typename, "login": login, "id": id })
 }
 
-pub fn user(login: &str) -> Value {
+pub(crate) fn user(login: &str) -> Value {
     gql_actor("User", login, &format!("U_{login}"))
 }
 
-pub fn page_info(has_next: bool, cursor: Option<&str>) -> Value {
+pub(crate) fn page_info(has_next: bool, cursor: Option<&str>) -> Value {
     json!({ "hasNextPage": has_next, "endCursor": cursor })
 }
 
-pub fn connection(nodes: Vec<Value>, has_next: bool, cursor: Option<&str>) -> Value {
+pub(crate) fn connection(nodes: Vec<Value>, has_next: bool, cursor: Option<&str>) -> Value {
     json!({ "pageInfo": page_info(has_next, cursor), "nodes": nodes })
 }
 
-pub fn gql_repo(id: &str, owner: Value, name: &str, visibility: &str, is_fork: bool) -> Value {
+pub(crate) fn gql_repo(
+    id: &str,
+    owner: Value,
+    name: &str,
+    visibility: &str,
+    is_fork: bool,
+) -> Value {
     let login = owner["login"].as_str().unwrap().to_string();
     json!({
         "id": id,
@@ -244,8 +262,7 @@ pub fn gql_repo(id: &str, owner: Value, name: &str, visibility: &str, is_fork: b
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn pr_commit(
+pub(crate) fn pr_commit(
     owner: &str,
     name: &str,
     number: u64,
@@ -255,9 +272,11 @@ pub fn pr_commit(
     committed: &str,
     parents: u64,
 ) -> Value {
-    let user = |l: Option<&str>| match l {
-        Some(l) => json!({ "user": { "id": format!("U_{l}"), "login": l } }),
-        None => json!({ "user": null }),
+    let user = |l: Option<&str>| {
+        l.map_or_else(
+            || json!({ "user": null }),
+            |l| json!({ "user": { "id": format!("U_{l}"), "login": l } }),
+        )
     };
     json!({
         "url": format!("https://github.com/{owner}/{name}/pull/{number}/commits/{oid}"),
@@ -273,7 +292,7 @@ pub fn pr_commit(
     })
 }
 
-pub fn review(
+pub(crate) fn review(
     id: &str,
     state: &str,
     body: &str,
@@ -292,7 +311,7 @@ pub fn review(
     })
 }
 
-pub fn review_comment(
+pub(crate) fn review_comment(
     id: &str,
     author: Value,
     created_at: &str,
@@ -312,7 +331,7 @@ pub fn review_comment(
     })
 }
 
-pub fn thread(
+pub(crate) fn thread(
     id: &str,
     resolved: bool,
     outdated: bool,
@@ -335,7 +354,12 @@ pub fn thread(
     })
 }
 
-pub fn issue_comment(id: &str, author: Value, created_at: &str, edited: Option<&str>) -> Value {
+pub(crate) fn issue_comment(
+    id: &str,
+    author: Value,
+    created_at: &str,
+    edited: Option<&str>,
+) -> Value {
     json!({
         "id": id,
         "createdAt": created_at,
@@ -345,7 +369,7 @@ pub fn issue_comment(id: &str, author: Value, created_at: &str, edited: Option<&
     })
 }
 
-pub fn tl(typename: &str, id: &str, created_at: &str, actor: Value, extra: Value) -> Value {
+pub(crate) fn tl(typename: &str, id: &str, created_at: &str, actor: Value, extra: Value) -> Value {
     let mut v =
         json!({ "__typename": typename, "id": id, "createdAt": created_at, "actor": actor });
     if let (Some(obj), Some(extra)) = (v.as_object_mut(), extra.as_object()) {
@@ -356,6 +380,6 @@ pub fn tl(typename: &str, id: &str, created_at: &str, actor: Value, extra: Value
     v
 }
 
-pub fn gql_data(data: Value) -> Value {
+pub(crate) fn gql_data(data: Value) -> Value {
     json!({ "data": data })
 }

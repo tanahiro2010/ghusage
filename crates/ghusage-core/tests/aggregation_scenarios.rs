@@ -6,8 +6,9 @@ mod common;
 use common::*;
 use ghusage_core::coverage::{CoverageRecord, CoverageStatus, DataKind, summarize};
 use ghusage_core::metrics::{
-    self, CommitDateBasis, Dataset, Filter, Ownership, Participation, PrSort, ReviewDirection,
-    Summary, VisibilityFilter, by_repository, pr_detail, pr_rows, review_rows, snapshot, summary,
+    self, CommitDateBasis, Dataset, Filter, Ownership, Participation, PrRow, PrSort, RepoSummary,
+    ReviewDirection, Summary, VisibilityFilter, by_repository, pr_detail, pr_rows, review_rows,
+    snapshot, summary,
 };
 use ghusage_core::model::{
     ActivityEvent, Actor, EventId, EventType, Issue, PrState, ReviewState, Source, Visibility,
@@ -112,8 +113,11 @@ fn empty_activity_reports_zero_everywhere() {
     // 2026-11-01 .. 2026-11-07 inclusive = 7 local days, each empty.
     assert_eq!(days.len(), 7);
     assert!(days.iter().all(|b| b.summary == Summary::default()));
-    assert!(by_repository(&ds, &opts).is_empty());
-    assert!(pr_rows(&ds, &opts, Participation::All, None, PrSort::Activity).is_empty());
+    assert_eq!(by_repository(&ds, &opts), Vec::<RepoSummary>::new());
+    assert_eq!(
+        pr_rows(&ds, &opts, Participation::All, None, PrSort::Activity),
+        Vec::<PrRow>::new()
+    );
     assert_eq!(snapshot(&ds, &opts), metrics::Snapshot::default());
 }
 
@@ -149,7 +153,7 @@ fn single_commit_counts_once_on_its_committer_day() {
 #[test]
 fn merge_commit_is_identified_separately() {
     let merge = with_meta(commit("R_tool", "m1", me(), "2026-11-20T10:00:00Z"), |m| {
-        m.is_merge_commit = Some(true)
+        m.is_merge_commit = Some(true);
     });
     let plain = commit("R_tool", "p1", me(), "2026-11-20T11:00:00Z");
     let ds = dataset(vec![tool()], vec![], vec![], vec![merge, plain]);
@@ -163,7 +167,7 @@ fn merge_commit_is_identified_separately() {
 fn author_date_basis_moves_commit_to_author_day() {
     // Authored 11-18, committed (rebased) 11-20.
     let c = with_meta(commit("R_tool", "abc", me(), "2026-11-20T10:00:00Z"), |m| {
-        m.author_date = Some(utc("2026-11-18T09:00:00Z"))
+        m.author_date = Some(utc("2026-11-18T09:00:00Z"));
     });
     let ds = dataset(vec![tool()], vec![], vec![], vec![c]);
     let mut opts = local_days("2026-11-17", "2026-11-21", zone("UTC"));
@@ -1126,7 +1130,7 @@ fn spring_forward_day_has_23_hours_and_keeps_its_events() {
     let days = metrics::breakdown(&ds, &opts, Granularity::Day);
     let hours: Vec<i64> = days
         .iter()
-        .map(|b| (b.bucket.end - b.bucket.start).num_hours())
+        .map(|b| (b.bucket.end - b.bucket.start).as_hours())
         .collect();
     assert_eq!(hours, vec![24, 23, 24]);
     let per: Vec<u64> = days.iter().map(|b| b.summary.commits).collect();
@@ -1152,7 +1156,7 @@ fn fall_back_day_has_25_hours_and_keeps_its_events() {
     let days = metrics::breakdown(&ds, &opts, Granularity::Day);
     let hours: Vec<i64> = days
         .iter()
-        .map(|b| (b.bucket.end - b.bucket.start).num_hours())
+        .map(|b| (b.bucket.end - b.bucket.start).as_hours())
         .collect();
     assert_eq!(hours, vec![25, 24]);
     let per: Vec<u64> = days.iter().map(|b| b.summary.commits).collect();
@@ -1271,6 +1275,8 @@ fn unknown_actor_is_never_the_user() {
 
 #[test]
 fn ci_results_are_never_human_activity() {
+    use ghusage_core::model::CheckOutcome::*;
+
     let pr = pull("P1", "R_tool", 1, me());
     let check = |id: &str, kind: EventType, actor: Actor, outcome, at: &str| {
         let eid = if kind == EventType::CheckRun {
@@ -1283,7 +1289,6 @@ fn ci_results_are_never_human_activity() {
             |m| m.check_outcome = Some(outcome),
         )
     };
-    use ghusage_core::model::CheckOutcome::*;
     let events = vec![
         check(
             "k1",
@@ -1333,7 +1338,10 @@ fn ci_results_are_never_human_activity() {
     assert_eq!(s.active_prs, 0);
     assert_eq!(s.active_prs_all_participants, 0);
     assert_eq!(s.last_activity, None);
-    assert!(pr_rows(&ds, &opts, Participation::All, None, PrSort::Activity).is_empty());
+    assert_eq!(
+        pr_rows(&ds, &opts, Participation::All, None, PrSort::Activity),
+        Vec::<PrRow>::new()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1654,7 +1662,7 @@ fn cross_repository_contribution_from_a_fork() {
     assert!(fork_row.owned);
     assert_eq!(fork_row.summary.commits, 1);
 
-    let mut ext = opts.clone();
+    let mut ext = opts;
     ext.filter.ownership = Some(Ownership::External);
     let s = summary(&ds, &ext);
     assert_eq!((s.commits, s.prs_created), (0, 1));
@@ -1672,6 +1680,7 @@ fn coverage_with_equal_recording_times_does_not_depend_on_record_order() {
         end: utc("2026-12-01T00:00:00Z"),
         status,
         scope: "commits".into(),
+        description: "commits".into(),
         reason: None,
         recorded_at: utc("2026-11-21T00:00:00Z"),
     };
@@ -1697,6 +1706,7 @@ fn conflicting_coverage_records_with_equal_recording_times_are_not_complete() {
         end: utc("2026-12-01T00:00:00Z"),
         status,
         scope: "commits".into(),
+        description: "commits".into(),
         reason: None,
         recorded_at: utc("2026-11-21T00:00:00Z"),
     };
@@ -1727,7 +1737,7 @@ fn hundred_thousand_events_aggregate_to_expected_totals() {
     let mut events = Vec::with_capacity(100_000);
     for i in 0..100_000u32 {
         // one event every 5 minutes: 100,000 * 300 s ≈ 347 days, all in 2026
-        let at = start + chrono::Duration::seconds(i64::from(i) * 300);
+        let at = start + jiff::SignedDuration::from_secs(i64::from(i) * 300);
         let pr = format!("P{}", i % 1000);
         let e = match i % 5 {
             // 2 of every 5: the user's commits -> 40,000
@@ -2655,7 +2665,7 @@ fn intensity_dataset() -> Dataset {
 }
 
 /// (count, min, median, mean, p90, max)
-fn stat(s: Option<metrics::Stats>) -> (u64, f64, f64, f64, f64, f64) {
+const fn stat(s: Option<metrics::Stats>) -> (u64, f64, f64, f64, f64, f64) {
     let s = s.expect("statistics");
     (s.count, s.min, s.median, s.mean, s.p90, s.max)
 }

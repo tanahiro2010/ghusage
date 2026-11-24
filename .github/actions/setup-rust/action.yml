@@ -1,0 +1,32 @@
+name: Set up repository Rust toolchain
+description: Install the Rust toolchain declared by rust-toolchain.toml
+inputs:
+  components:
+    description: Additional Rust components to install
+    required: false
+    default: ""
+  toolchain:
+    description: Optional toolchain override, for example the workspace MSRV
+    required: false
+    default: ""
+  targets:
+    description: Optional Rust compilation targets to install
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - id: toolchain
+      if: inputs.toolchain == ''
+      shell: bash
+      run: |
+        channel=$(sed -nE 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' rust-toolchain.toml)
+        test -n "$channel" || { echo "rust-toolchain.toml has no channel" >&2; exit 1; }
+        echo "channel=$channel" >> "$GITHUB_OUTPUT"
+    - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master as of 2026-11-23
+      with:
+        toolchain: ${{ inputs.toolchain || steps.toolchain.outputs.channel }}
+        components: ${{ inputs.components }}
+        targets: ${{ inputs.targets }}
+    - shell: bash
+      run: echo "RUSTUP_TOOLCHAIN=${{ inputs.toolchain || steps.toolchain.outputs.channel }}" >> "$GITHUB_ENV"

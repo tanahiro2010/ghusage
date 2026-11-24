@@ -408,7 +408,10 @@ async fn close_without_merge_is_marked_as_not_merged() {
         .await
         .unwrap();
     assert_eq!(b.pull_request.state, PrState::Closed);
-    assert!(of_type(&b, EventType::PrMerged).is_empty());
+    assert_eq!(
+        of_type(&b, EventType::PrMerged),
+        Vec::<&ghusage_core::model::ActivityEvent>::new()
+    );
     let closes = of_type(&b, EventType::PrClosed);
     assert_eq!(closes.len(), 2);
     assert!(closes.iter().all(|e| e.meta.via_merge == Some(false)));
@@ -464,7 +467,7 @@ async fn multiple_reviews_including_pending_and_dismissed() {
     let b = fetch_rich().await;
     let reviews = of_type(&b, EventType::ReviewSubmitted);
     let mut ids: Vec<_> = reviews.iter().map(|e| e.entity_id.as_str()).collect();
-    ids.sort();
+    ids.sort_unstable();
     // The pending review is not a submission.
     assert_eq!(ids, vec!["PRR_1", "PRR_2", "PRR_3", "PRR_5"]);
     let state = |id: &str| find(&b, &EventId::review(id)).meta.review_state;
@@ -495,7 +498,7 @@ async fn inline_conversation_and_summary_comments_are_kept_apart() {
     // review and the thread.
     let inline = of_type(&b, EventType::InlineComment);
     let mut ids: Vec<_> = inline.iter().map(|e| e.entity_id.as_str()).collect();
-    ids.sort();
+    ids.sort_unstable();
     assert_eq!(ids, vec!["PRRC_1", "PRRC_2", "PRRC_3"]);
     let reply = find(&b, &EventId::comment("PRRC_2"));
     assert_eq!(reply.meta.thread_id.as_deref(), Some("PRRT_1"));
@@ -615,12 +618,12 @@ async fn checks_and_statuses_of_the_head_commit() {
     assert_eq!(status.event_type, EventType::CommitStatus);
     assert_eq!(status.meta.check_name.as_deref(), Some("ci/legacy"));
     assert_eq!(status.meta.check_outcome, Some(CheckOutcome::Success));
-    assert!(
+    assert_eq!(
         b.events
             .iter()
             .filter(|e| e.event_type.is_automation())
-            .count()
-            == 3
+            .count(),
+        3
     );
 }
 
@@ -694,10 +697,13 @@ async fn head_commit_without_statuses_needs_no_rest_request() {
         .await
         .unwrap();
     assert_eq!(b.status, CoverageStatus::Complete, "{:?}", b.notes);
-    assert!(rest_paths(&server).await.is_empty());
+    assert_eq!(rest_paths(&server).await, Vec::<String>::new());
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
     assert_eq!(of_type(&b, EventType::CheckRun).len(), 2);
-    assert!(of_type(&b, EventType::CommitStatus).is_empty());
+    assert_eq!(
+        of_type(&b, EventType::CommitStatus),
+        Vec::<&ghusage_core::model::ActivityEvent>::new()
+    );
 }
 
 /// Fetches the rich pull request with a modified head commit and returns
@@ -733,7 +739,7 @@ async fn incomplete_check_data_in_the_query_falls_back_to_rest() {
         (
             "more check runs in a suite than one page",
             Box::new(|c: &mut Value| {
-                c["checkSuites"]["nodes"][1]["checkRuns"]["pageInfo"]["hasNextPage"] = json!(true)
+                c["checkSuites"]["nodes"][1]["checkRuns"]["pageInfo"]["hasNextPage"] = json!(true);
             }),
             None,
         ),
@@ -752,7 +758,7 @@ async fn incomplete_check_data_in_the_query_falls_back_to_rest() {
         (
             "null check run",
             Box::new(|c: &mut Value| {
-                c["checkSuites"]["nodes"][0]["checkRuns"]["nodes"][0] = Value::Null
+                c["checkSuites"]["nodes"][0]["checkRuns"]["nodes"][0] = Value::Null;
             }),
             None,
         ),
@@ -1984,7 +1990,10 @@ async fn pull_request_commits_reviews_and_threads_beyond_100_are_paginated() {
     assert!(b.current_commit_shas.contains(&oid(3)));
     // 100 + 20 submitted reviews; none has a body, so no summaries.
     assert_eq!(of_type(&b, EventType::ReviewSubmitted).len(), 120);
-    assert!(of_type(&b, EventType::ReviewSummary).is_empty());
+    assert_eq!(
+        of_type(&b, EventType::ReviewSummary),
+        Vec::<&ghusage_core::model::ActivityEvent>::new()
+    );
     // 50 + 50 + 10 threads with one inline comment each.
     assert_eq!(b.threads.len(), 110);
     assert_eq!(
@@ -2133,7 +2142,7 @@ async fn threads_with_only_pending_comments_are_not_counted() {
         .await
         .unwrap();
     let mut ids: Vec<&str> = b.threads.iter().map(|t| t.id.as_str()).collect();
-    ids.sort();
+    ids.sort_unstable();
     // Only the two threads with submitted comments.
     assert_eq!(ids, vec!["PRRT_1", "PRRT_2"]);
     let t1 = b.threads.iter().find(|t| t.id == "PRRT_1").unwrap();
@@ -2176,7 +2185,7 @@ async fn pull_request_diff_and_commit_line_counts_are_kept() {
 async fn without_counts_from_github_nothing_is_assumed() {
     let b = fetch_rich().await;
     assert_eq!(b.diff, None);
-    assert!(b.commit_stats.is_empty());
+    assert_eq!(b.commit_stats, Vec::new());
 }
 
 #[tokio::test]

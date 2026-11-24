@@ -23,17 +23,25 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: "1.94.0"
 
 jobs:
   source:
     name: check the release source
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: false
           fetch-depth: 0
+      # Ancestor checks also admit merged dev commits; manual publishing must
+      # originate from the release branch itself.
+      - name: Manual publishing is allowed only from release
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/release" ]; then
+            echo "::error::Manual publishing is allowed only from refs/heads/release." >&2
+            exit 1
+          fi
       - name: Releases come only from the release branch
         if: github.ref_type == 'tag' || inputs.publish
         run: |
@@ -58,12 +66,11 @@ jobs:
           - { os: windows-latest, target: x86_64-pc-windows-msvc, bin: ghusage.exe }
           - { os: windows-11-arm, target: aarch64-pc-windows-msvc, bin: ghusage.exe }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: false
-      - uses: dtolnay/rust-toolchain@master
+      - uses: ./.github/actions/setup-rust
         with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
       - name: Install musl tools
         if: contains(matrix.target, 'musl')
@@ -85,7 +92,7 @@ jobs:
       - name: Show binary details
         if: runner.os == 'Linux'
         run: file "target/${{ matrix.target }}/release/${{ matrix.bin }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bin-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/${{ matrix.bin }}
@@ -98,13 +105,13 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: bin-*
           path: artifacts
@@ -138,7 +145,7 @@ jobs:
           mkdir -p tgz
           for d in dist/*/; do (cd "$d" && npm pack --pack-destination ../../tgz); done
           ls -l tgz
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: npm-packages
           path: tgz/*.tgz
@@ -160,10 +167,10 @@ jobs:
           - { os: windows-latest, pkg: ghusage-ghusage-win32-x64 }
           - { os: windows-11-arm, pkg: ghusage-ghusage-win32-arm64 }
     steps:
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: npm-packages
           path: tgz
@@ -198,13 +205,13 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
       # Trusted publishing (OIDC) needs npm 11.5.1 or newer.
       - run: npm install -g npm@^11.5.1 && npm --version
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: npm-packages
           path: tgz

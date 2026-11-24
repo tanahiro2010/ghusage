@@ -13,6 +13,7 @@ use serde_json::Value;
 pub struct InFlight {
     /// What the request is for, e.g. `search commits p3` or `octo/app#12`.
     pub label: String,
+    /// Elapsed time since the request started.
     pub elapsed: Duration,
 }
 
@@ -49,6 +50,7 @@ impl Activity {
         }
     }
 
+    /// Returns a point-in-time snapshot of in-flight and completed requests.
     pub fn snapshot(&self) -> ActivitySnapshot {
         let Ok(inner) = self.inner.lock() else {
             return ActivitySnapshot::default();
@@ -69,15 +71,12 @@ impl Activity {
 
     /// Records a request until the returned guard is dropped.
     pub(crate) fn start(&self, label: String) -> Running<'_> {
-        let id = match self.inner.lock() {
-            Ok(mut inner) => {
-                let id = inner.next;
-                inner.next += 1;
-                inner.running.insert(id, (label, Instant::now()));
-                Some(id)
-            }
-            Err(_) => None,
-        };
+        let id = self.inner.lock().map_or(None, |mut inner| {
+            let id = inner.next;
+            inner.next += 1;
+            inner.running.insert(id, (label, Instant::now()));
+            Some(id)
+        });
         Running { activity: self, id }
     }
 }
@@ -99,7 +98,10 @@ impl Drop for Running<'_> {
 
 /// A short description of a request for a progress display.
 pub(crate) fn label(url: &Url, body: Option<&[u8]>) -> String {
-    let segments: Vec<&str> = url.path_segments().map(|s| s.collect()).unwrap_or_default();
+    let segments: Vec<&str> = url
+        .path_segments()
+        .map(Iterator::collect)
+        .unwrap_or_default();
     let page = url
         .query_pairs()
         .find(|(k, _)| k == "page")
@@ -111,7 +113,7 @@ pub(crate) fn label(url: &Url, body: Option<&[u8]>) -> String {
         ["user"] => "account".to_string(),
         ["user", "repos"] | ["users", _, "repos"] => "repository list".to_string(),
         ["repos", owner, name] => format!("{owner}/{name}"),
-        ["repos", owner, name, "pulls", n, ..] | ["repos", owner, name, "issues", n, ..] => {
+        ["repos", owner, name, "pulls" | "issues", n, ..] => {
             format!("{owner}/{name}#{n}")
         }
         ["repos", owner, name, "commits"] => format!("{owner}/{name} commits"),
@@ -133,10 +135,10 @@ fn graphql_label(body: Option<&[u8]>) -> String {
     };
     let vars = &v["variables"];
     if let (Some(owner), Some(name)) = (vars["owner"].as_str(), vars["name"].as_str()) {
-        return match vars["number"].as_u64() {
-            Some(n) => format!("{owner}/{name}#{n}"),
-            None => format!("{owner}/{name}"),
-        };
+        return vars["number"].as_u64().map_or_else(
+            || format!("{owner}/{name}"),
+            |n| format!("{owner}/{name}#{n}"),
+        );
     }
     let op = v["query"]
         .as_str()
@@ -146,8 +148,7 @@ fn graphql_label(body: Option<&[u8]>) -> String {
                 .nth(1)
         })
         .map(|name| name.split('(').next().unwrap_or(name).to_string());
-    op.map(|o| format!("GraphQL {o}"))
-        .unwrap_or_else(|| "GraphQL".to_string())
+    op.map_or_else(|| "GraphQL".to_string(), |o| format!("GraphQL {o}"))
 }
 
 #[cfg(test)]

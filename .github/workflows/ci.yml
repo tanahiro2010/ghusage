@@ -4,6 +4,8 @@ on:
   push:
     branches: [dev, release]
   pull_request:
+  schedule:
+    - cron: "17 3 * * 1"
 
 permissions:
   contents: read
@@ -29,7 +31,7 @@ jobs:
       rust: ${{ steps.hash.outputs.rust }}
       npm: ${{ steps.hash.outputs.npm }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: false
       - id: hash
@@ -42,8 +44,8 @@ jobs:
             printf '%s\n' "$files" | sha256sum | cut -c1-40
           }
           # Assignments, so a failing digest stops the step (bash -e).
-          rust=$(digest crates src tests benches Cargo.toml Cargo.lock .cargo rust-toolchain rust-toolchain.toml scripts/tui-pty-smoke.py .github/workflows/ci.yml)
-          npm=$(digest npm scripts/bench-report.mjs scripts/bench-report.test.mjs .github/workflows/ci.yml)
+          rust=$(digest crates src tests benches Cargo.toml Cargo.lock .cargo rust-toolchain rust-toolchain.toml .github/actions/setup-rust scripts/tui-pty-smoke.py .github/workflows/ci.yml)
+          npm=$(digest npm scripts/bench-report.mjs scripts/bench-report.test.mjs .github/scripts/pr-guidance.cjs .github/scripts/pr-guidance.test.cjs .github/workflows/ci.yml)
           echo "rust=$rust" >> "$GITHUB_OUTPUT"
           echo "npm=$npm" >> "$GITHUB_OUTPUT"
           cat "$GITHUB_OUTPUT"
@@ -60,21 +62,20 @@ jobs:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-latest]
     env:
       VERIFIED_KEY: ci-verified-test-${{ matrix.os }}-${{ needs.inputs.outputs.rust }}
-      # One runner covers what does not depend on the platform: formatting,
-      # and the heavy 100k-event checks (benchmarks in test mode, terminal
-      # UI responsiveness), which mean little in an unoptimized build. The
-      # benchmark workflow measures performance in release builds.
+      # One runner covers formatting and the platform-independent 100k-event
+      # checks. The benchmark workflow measures benchmark targets separately
+      # in release builds.
       FULL_OS: ubuntu-latest
       # The default MSVC linker is slow to link the many test binaries.
       CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld.exe
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The build must never depend on private submodules.
           submodules: false
       - id: verified
         name: Look for an earlier successful run with the same inputs
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .ci-verified
           key: ${{ env.VERIFIED_KEY }}
@@ -82,22 +83,32 @@ jobs:
       - if: steps.verified.outputs.cache-hit == 'true'
         run: echo "Inputs ${{ needs.inputs.outputs.rust }} already passed on ${{ matrix.os }}; skipping."
       # Pinned so lint results are reproducible; upgraded deliberately.
-      - if: steps.verified.outputs.cache-hit != 'true'
-        uses: dtolnay/rust-toolchain@master
+      # Formatting and Clippy are platform-independent, so install their
+      # components only on the full Linux runner. Other runners only need
+      # the compiler for their platform-specific tests.
+      - if: steps.verified.outputs.cache-hit != 'true' && matrix.os == env.FULL_OS
+        uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.94.0"
           components: rustfmt, clippy
+      - if: steps.verified.outputs.cache-hit != 'true' && matrix.os != env.FULL_OS
+        uses: ./.github/actions/setup-rust
       - if: steps.verified.outputs.cache-hit != 'true'
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.9.3
         with:
           # Keep compiled dependencies even when a test fails.
           cache-on-failure: true
       - if: steps.verified.outputs.cache-hit != 'true' && matrix.os == env.FULL_OS
         run: cargo fmt --all -- --check
-      - if: steps.verified.outputs.cache-hit != 'true'
+      # Clippy is covered once on FULL_OS; repeating it on every OS only
+      # duplicates a platform-independent compile and lint pass.
+      - if: steps.verified.outputs.cache-hit != 'true' && matrix.os == env.FULL_OS
         run: cargo clippy --workspace --all-targets -- -D warnings
       - if: steps.verified.outputs.cache-hit != 'true' && matrix.os == env.FULL_OS
-        run: cargo test --workspace --all-targets --no-fail-fast
+        name: cargo test (workspace tests)
+        # Bench targets run in bench.yml with release optimizations. Keeping
+        # CI focused on test targets avoids rebuilding and executing the same
+        # benchmark binaries here while preserving the full test suite.
+        run: cargo test --workspace --lib --bins --tests --no-fail-fast
       - if: steps.verified.outputs.cache-hit != 'true' && matrix.os != env.FULL_OS
         name: cargo test (without the platform-independent 100k-event checks)
         run: >-
@@ -109,7 +120,7 @@ jobs:
         shell: bash
         run: echo "${{ needs.inputs.outputs.rust }}" > .ci-verified
       - if: steps.verified.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .ci-verified
           key: ${{ env.VERIFIED_KEY }}
@@ -132,13 +143,13 @@ jobs:
     env:
       VERIFIED_KEY: ci-verified-build-${{ matrix.os }}-${{ needs.inputs.outputs.rust }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The build must never depend on private submodules.
           submodules: false
       - id: verified
         name: Look for an earlier successful run with the same inputs
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .ci-verified
           key: ${{ env.VERIFIED_KEY }}
@@ -147,11 +158,9 @@ jobs:
         run: echo "Inputs ${{ needs.inputs.outputs.rust }} already passed on ${{ matrix.os }}; skipping."
       # The same pinned toolchain as the tests.
       - if: steps.verified.outputs.cache-hit != 'true'
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.94.0"
+        uses: ./.github/actions/setup-rust
       - if: steps.verified.outputs.cache-hit != 'true'
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.9.3
         with:
           # Keep compiled dependencies even when a later step fails.
           cache-on-failure: true
@@ -192,7 +201,7 @@ jobs:
         shell: bash
         run: echo "${{ needs.inputs.outputs.rust }}" > .ci-verified
       - if: steps.verified.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .ci-verified
           key: ${{ env.VERIFIED_KEY }}
@@ -208,11 +217,11 @@ jobs:
     env:
       VERIFIED_KEY: ci-verified-npm-${{ matrix.os }}-${{ needs.inputs.outputs.npm }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: false
       - id: verified
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .ci-verified
           key: ${{ env.VERIFIED_KEY }}
@@ -220,7 +229,7 @@ jobs:
       - if: steps.verified.outputs.cache-hit == 'true'
         run: echo "Inputs ${{ needs.inputs.outputs.npm }} already passed on ${{ matrix.os }}; skipping."
       - if: steps.verified.outputs.cache-hit != 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
       - if: steps.verified.outputs.cache-hit != 'true'
@@ -228,12 +237,15 @@ jobs:
       - name: Benchmark report script tests
         if: steps.verified.outputs.cache-hit != 'true'
         run: node --test scripts/bench-report.test.mjs
+      - name: Pull request guidance script tests
+        if: steps.verified.outputs.cache-hit != 'true'
+        run: node --test .github/scripts/pr-guidance.test.cjs
       - name: Remember that these inputs passed
         if: steps.verified.outputs.cache-hit != 'true'
         shell: bash
         run: echo "${{ needs.inputs.outputs.npm }}" > .ci-verified
       - if: steps.verified.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .ci-verified
           key: ${{ env.VERIFIED_KEY }}
@@ -243,10 +255,60 @@ jobs:
     name: dependency audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+      - uses: taiki-e/install-action@v2.90.8
+        with:
+          tool: cargo-audit
+      - run: cargo audit
+      - uses: taiki-e/install-action@v2.90.8
+        with:
+          tool: cargo-deny
+      - run: cargo deny check
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Audit documentation dependencies
+        working-directory: docs
+        run: |
+          npm ci
+          # The static-site toolchain is dev-only; see docs/SECURITY.md.
+          npm audit --audit-level=high --omit=dev
+      - name: Report documentation development dependency advisories
+        working-directory: docs
+        continue-on-error: true
+        run: |
+          # Keep visibility into the complete build toolchain while the
+          # documented VitePress 1 exceptions remain accepted.
+          npm audit --audit-level=high
+      - name: Audit npm launcher dependencies
+        working-directory: npm/ghusage
+        run: npm audit --audit-level=high --package-lock=false
+
+  msrv:
+    name: MSRV check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: "1.94.0"
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          cache-on-failure: true
+      - run: cargo check --workspace --locked
+
+  unused-dependencies:
+    name: unused dependency check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
         with:
           submodules: false
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-audit
-      - run: cargo audit
+          tool: cargo-machete
+      - run: cargo machete

@@ -3,14 +3,15 @@
 //! the latest thing the sync did. Shown only when stderr is a terminal, and
 //! erased when the sync ends.
 
+use std::fmt::Write as _;
 use std::io::{IsTerminal, Write};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use ghusage_app::session::{ApiActivity, ApiActivitySnapshot};
 use ghusage_app::sync::SyncProgress;
 use ghusage_core::coverage::DataKind;
-use ghusage_github::{Activity, ActivitySnapshot};
 
 const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const TICK: Duration = Duration::from_millis(100);
@@ -39,7 +40,7 @@ struct State {
 }
 
 impl State {
-    fn slot(&mut self, k: DataKind) -> &mut KindState {
+    const fn slot(&mut self, k: DataKind) -> &mut KindState {
         match k {
             DataKind::PullRequests => &mut self.prs,
             DataKind::Commits => &mut self.commits,
@@ -62,7 +63,7 @@ impl State {
 /// The lines of one frame: status, requests in flight, latest step.
 fn frame(
     state: &State,
-    activity: Option<&ActivitySnapshot>,
+    activity: Option<&ApiActivitySnapshot>,
     tick: usize,
     elapsed: Duration,
     width: usize,
@@ -88,12 +89,13 @@ fn frame(
         secs % 60
     );
     if let Some(a) = activity {
-        status.push_str(&format!(
+        let _ = write!(
+            status,
             " · {}/{} in parallel · {} requests done",
             a.running.len(),
             a.limit,
             a.done
-        ));
+        );
     }
     if !parts.is_empty() {
         status.push_str(" · ");
@@ -131,24 +133,23 @@ fn truncate(s: &str, width: usize) -> String {
 
 fn terminal_width() -> usize {
     ratatui::crossterm::terminal::size()
-        .map(|(w, _)| w as usize)
-        .unwrap_or(80)
+        .map_or(80, |(w, _)| w as usize)
         .max(20)
 }
 
 /// Draws the progress until it is dropped or the sync finishes.
-pub struct Progress {
+pub(crate) struct Progress {
     shared: Option<Arc<Shared>>,
     painter: Option<JoinHandle<()>>,
 }
 
 /// Sync progress plus, when known, the client's requests in flight.
-type Shared = (Mutex<State>, Condvar, Option<Arc<Activity>>);
+type Shared = (Mutex<State>, Condvar, Option<ApiActivity>);
 
 impl Progress {
     /// Starts drawing on stderr if it is a terminal; otherwise does nothing.
     /// `activity` adds the requests in flight.
-    pub fn start(activity: Option<Arc<Activity>>) -> Self {
+    pub(crate) fn start(activity: Option<ApiActivity>) -> Self {
         if !std::io::stderr().is_terminal() {
             return Self {
                 shared: None,
@@ -164,7 +165,7 @@ impl Progress {
         }
     }
 
-    pub fn update(&self, p: SyncProgress) {
+    pub(crate) fn update(&self, p: SyncProgress) {
         if let Some(shared) = &self.shared {
             let (lock, cv, _) = &**shared;
             if let Ok(mut st) = lock.lock() {
@@ -179,7 +180,7 @@ impl Drop for Progress {
     fn drop(&mut self) {
         self.update(SyncProgress::Finished);
         if let Some(h) = self.painter.take() {
-            let _ = h.join();
+            drop(h.join());
         }
     }
 }
@@ -197,8 +198,8 @@ fn paint(shared: &Shared) {
         };
         if st.finished {
             if drawn > 0 {
-                let _ = write!(err, "{}", redraw(&[], drawn));
-                let _ = err.flush();
+                drop(write!(err, "{}", redraw(&[], drawn)));
+                drop(err.flush());
             }
             return;
         }
@@ -206,7 +207,7 @@ fn paint(shared: &Shared) {
         if started.elapsed() < Duration::from_millis(300) {
             continue;
         }
-        let snapshot = activity.as_ref().map(|a| a.snapshot());
+        let snapshot = activity.as_ref().map(ApiActivity::snapshot);
         let lines = frame(
             &st,
             snapshot.as_ref(),
@@ -215,8 +216,8 @@ fn paint(shared: &Shared) {
             terminal_width() - 1,
         );
         drop(st);
-        let _ = write!(err, "{}", redraw(&lines, drawn));
-        let _ = err.flush();
+        drop(write!(err, "{}", redraw(&lines, drawn)));
+        drop(err.flush());
         drawn = lines.len();
         tick += 1;
     }
@@ -235,12 +236,14 @@ fn redraw(lines: &[String], previous: usize) -> String {
         out.push_str("\x1b[2K");
         match lines.get(i) {
             Some(line) if i == 0 => out.push_str(line),
-            Some(line) => out.push_str(&format!("\x1b[2m{line}\x1b[0m")),
+            Some(line) => {
+                let _ = write!(out, "\x1b[2m{line}\x1b[0m");
+            }
             None => {}
         }
     }
     if total > 1 {
-        out.push_str(&format!("\x1b[{}A", total - 1));
+        let _ = write!(out, "\x1b[{}A", total - 1);
     }
     out.push('\r');
     out
@@ -284,12 +287,12 @@ mod tests {
     fn frame_lists_requests_in_flight_and_counts_the_rest() {
         let st = State::default();
         let running = (0..6)
-            .map(|i| ghusage_github::InFlight {
+            .map(|i| ghusage_app::session::ApiInFlight {
                 label: format!("search commits p{}", i + 2),
                 elapsed: Duration::from_millis(1200),
             })
             .collect();
-        let a = ActivitySnapshot {
+        let a = ApiActivitySnapshot {
             running,
             limit: 8,
             done: 41,

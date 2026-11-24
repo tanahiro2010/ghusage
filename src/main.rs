@@ -1,22 +1,24 @@
+//! Command-line entry point for ghusage.
+
 mod cli;
 mod progress;
 mod render;
 
+use std::fmt::Write as _;
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 
-use chrono::Utc;
 use clap::Parser;
 use ghusage_app::report::{self, QueryContext, ReportKind};
-use ghusage_app::session::{self, Session, SessionConfig};
-use ghusage_app::{AppError, Result, csv_out, exit};
+use ghusage_app::session::{Session, SessionConfig};
+use ghusage_app::{AppError, Result, commands, csv_out, exit};
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::metrics::{
     CommitDateBasis, Filter, Ownership, Participation, PrSort, VisibilityFilter,
 };
 use ghusage_core::model::{EventType, PrState};
 use ghusage_core::time::{Granularity, Period, Zone, resolve_period};
-use ghusage_github::ClientConfig;
+use jiff::{SignedDuration, Timestamp};
 
 use cli::{AuthCommand, CacheCommand, Cli, Command, Format, GlobalArgs};
 use render::Style;
@@ -31,8 +33,8 @@ fn main() -> ExitCode {
             } else {
                 0
             };
-            let _ = e.print();
-            return ExitCode::from(code as u8);
+            drop(e.print());
+            return ExitCode::from(u8::try_from(code).unwrap_or(u8::MAX));
         }
     };
     init_logging();
@@ -43,14 +45,14 @@ fn main() -> ExitCode {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: cannot start runtime: {e}");
-            return ExitCode::from(exit::GENERAL as u8);
+            return ExitCode::from(u8::try_from(exit::GENERAL).unwrap_or(u8::MAX));
         }
     };
     match runtime.block_on(run(cli)) {
-        Ok(code) => ExitCode::from(code as u8),
+        Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(u8::MAX)),
         Err(e) => {
             eprintln!("error: {}", clean(&e));
-            ExitCode::from(e.exit_code() as u8)
+            ExitCode::from(u8::try_from(e.exit_code()).unwrap_or(u8::MAX))
         }
     }
 }
@@ -58,11 +60,13 @@ fn main() -> ExitCode {
 fn init_logging() {
     let filter = tracing_subscriber::EnvFilter::try_from_env("GHUSAGE_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .try_init();
+    drop(
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .with_ansi(false)
+            .try_init(),
+    );
 }
 
 fn style(g: &GlobalArgs, stream_is_tty: bool) -> Style {
@@ -80,49 +84,8 @@ fn session_config(g: &GlobalArgs) -> SessionConfig {
         user: g.user.clone(),
         token_file: g.token_file.clone(),
         public_only: g.public_only,
-        client: client_config(g),
+        client: ghusage_app::session::client_config(g.concurrency as usize),
     }
-}
-
-/// Client settings. `GHUSAGE_API_URL` and `GHUSAGE_GRAPHQL_URL` point the
-/// client at another API endpoint (for example GitHub Enterprise Server).
-fn client_config(g: &GlobalArgs) -> ClientConfig {
-    let mut c = ClientConfig {
-        concurrency: g.concurrency as usize,
-        ..ClientConfig::default()
-    };
-    if let Some(url) = std::env::var("GHUSAGE_API_URL")
-        .ok()
-        .filter(|v| !v.is_empty())
-    {
-        c.api_base = url.trim_end_matches('/').to_string();
-        // GitHub Enterprise Server serves REST at /api/v3 and GraphQL at
-        // /api/graphql; github.com-style bases append /graphql.
-        c.graphql_url = match c.api_base.strip_suffix("/api/v3") {
-            Some(host) => format!("{host}/api/graphql"),
-            None => format!("{}/graphql", c.api_base),
-        };
-    }
-    if let Some(url) = std::env::var("GHUSAGE_GRAPHQL_URL")
-        .ok()
-        .filter(|v| !v.is_empty())
-    {
-        c.graphql_url = url;
-    }
-    if let Some(ms) = std::env::var("GHUSAGE_BACKOFF_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-    {
-        c.backoff_base = std::time::Duration::from_millis(ms);
-    }
-    if let Some(ms) = std::env::var("GHUSAGE_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|ms| *ms > 0)
-    {
-        c.request_timeout = std::time::Duration::from_millis(ms);
-    }
-    c
 }
 
 fn filter(g: &GlobalArgs) -> Filter {
@@ -140,14 +103,14 @@ fn filter(g: &GlobalArgs) -> Filter {
     }
 }
 
-fn commit_basis(g: &GlobalArgs) -> CommitDateBasis {
+const fn commit_basis(g: &GlobalArgs) -> CommitDateBasis {
     match g.commit_date {
         cli::CommitDateArg::Committer => CommitDateBasis::Committer,
         cli::CommitDateArg::Author => CommitDateBasis::Author,
     }
 }
 
-fn default_since(cmd: &Command) -> &'static str {
+const fn default_since(cmd: &Command) -> &'static str {
     match cmd {
         Command::Weekly => "8w",
         Command::Monthly => "6m",
@@ -157,13 +120,13 @@ fn default_since(cmd: &Command) -> &'static str {
     }
 }
 
-fn period(g: &GlobalArgs, cmd: &Command, zone: Zone) -> Result<Period> {
+fn period(g: &GlobalArgs, cmd: &Command, zone: &Zone) -> Result<Period> {
     Ok(resolve_period(
         g.since.as_deref(),
         g.until.as_deref(),
         default_since(cmd),
         zone,
-        Utc::now(),
+        Timestamp::now(),
     )?)
 }
 
@@ -175,7 +138,7 @@ fn clean(e: &dyn std::fmt::Display) -> String {
 
 fn print_stdout(s: &str) -> Result<()> {
     let mut out = std::io::stdout().lock();
-    match out.write_all(s.as_bytes()).and_then(|_| out.flush()) {
+    match out.write_all(s.as_bytes()).and_then(|()| out.flush()) {
         Ok(()) => Ok(()),
         // A closed pipe (e.g. `| head`) is not an error.
         Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
@@ -190,7 +153,7 @@ fn to_json<T: serde::Serialize>(v: &T) -> Result<String> {
 }
 
 /// The command as typed, for messages.
-fn command_name(cmd: &Command) -> &'static str {
+const fn command_name(cmd: &Command) -> &'static str {
     match cmd {
         Command::Overview => "overview",
         Command::Daily => "daily",
@@ -386,20 +349,21 @@ async fn run(cli: Cli) -> Result<i32> {
 /// at that sync instead of fetching the last few minutes again.
 async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<(Session, Period)> {
     let mut s = Session::open(session_config(g)).await?;
-    if let Some(reason) = &s.offline_reason {
+    if let Some(reason) = &s.offline_state().reason {
         eprintln!(
             "warning: GitHub is not reachable ({}); showing cached data",
             clean(reason)
         );
     }
     if !s.is_offline() && s.needs_sync(period)? {
-        let now = Utc::now();
-        let max_age = chrono::Duration::from_std(g.max_age).unwrap_or(chrono::Duration::MAX);
+        let now = Timestamp::now();
+        let max_age =
+            SignedDuration::from_secs(i64::try_from(g.max_age.as_secs()).unwrap_or(i64::MAX));
         if let Some(until) = s.synced_until(period)?
             && until < period.end
-            && now - until <= max_age
+            && until.duration_until(now) <= max_age
         {
-            let mins = (now - until).num_minutes();
+            let mins = until.duration_until(now).as_secs() / 60;
             eprintln!(
                 "note: showing data synced {} ago (up to {}); use --max-age 0 to fetch the latest",
                 if mins < 1 {
@@ -411,10 +375,10 @@ async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<
             );
             return Ok((s, Period::new(period.start, until)?));
         }
-        let progress = progress::Progress::start(s.client.as_ref().map(|c| c.activity()));
+        let progress = progress::Progress::start(s.api_activity());
         let synced = s
             .sync(period, false, g.concurrency as usize, &|p| {
-                progress.update(p)
+                progress.update(p);
             })
             .await;
         drop(progress);
@@ -452,7 +416,7 @@ async fn report_cmd(
     kind: ReportKind,
     details: bool,
 ) -> Result<i32> {
-    let (s, period) = prepared_session(g, period(g, cmd, zone)?, zone).await?;
+    let (s, period) = prepared_session(g, period(g, cmd, &zone)?, zone.clone()).await?;
     let ds = s.dataset(Some(period))?;
     let ctx = QueryContext {
         period,
@@ -491,66 +455,39 @@ async fn pr_cmd(g: &GlobalArgs, a: &cli::PrArgs, zone: Zone) -> Result<i32> {
     };
     let mut types = Vec::new();
     for t in &a.event_types {
-        match EventType::parse(t.trim()) {
-            Some(t) => types.push(t),
-            None => {
-                let valid: Vec<&str> = EventType::ALL.iter().map(|t| t.as_str()).collect();
-                return Err(AppError::InvalidArgs(format!(
-                    "unknown event type {t}; valid types: {}",
-                    valid.join(", ")
-                )));
-            }
+        if let Some(t) = EventType::parse(t.trim()) {
+            types.push(t);
+        } else {
+            let valid: Vec<&str> = EventType::ALL.iter().map(|t| t.as_str()).collect();
+            return Err(AppError::InvalidArgs(format!(
+                "unknown event type {t}; valid types: {}",
+                valid.join(", ")
+            )));
         }
     }
     let mut s = Session::open(session_config(g)).await?;
-    if let Some(reason) = &s.offline_reason {
+    if let Some(reason) = &s.offline_state().reason {
         eprintln!(
             "warning: GitHub is not reachable ({}); showing cached data",
             clean(reason)
         );
     }
-    // A single pull request is always refreshed when online. GitHub resolves
-    // old URLs of renamed repositories, so the fetched id is authoritative.
-    let mut fetched_id = None;
-    if let Some(client) = &s.client {
-        let bundle = client
-            .fetch_pull_request(&owner, &name, number)
-            .await
-            .map_err(AppError::from);
-        match bundle {
-            Ok(b) => {
-                fetched_id = Some(b.pull_request.id.clone());
-                let involved = ghusage_app::sync::involves(&s.subject, &b);
-                let mut batch = ghusage_app::sync::pr_batch(&s.subject, b);
-                if !involved {
-                    // Viewing someone else's pull request must not add it
-                    // to your own activity.
-                    batch.account =
-                        format!("{}{}", s.subject.login, ghusage_app::sync::VIEWED_SUFFIX);
-                    batch
-                        .events
-                        .retain(|e| e.event_type != EventType::CommitAuthored);
-                }
-                s.store.apply(&batch)?;
-            }
-            Err(e @ AppError::AuthRejected(_)) => return Err(e),
-            Err(e) => {
-                if s.store.find_pr(&owner, &name, number)?.is_none() {
-                    return Err(e);
-                }
+    let loaded = s.load_pr(&owner, &name, number).await;
+    let loaded = match loaded {
+        Ok(result) => {
+            if let Some(error) = result.refresh_error.as_deref() {
                 eprintln!(
                     "warning: could not refresh pull request, showing cached data: {}",
-                    clean(&e)
+                    clean(&error)
                 );
             }
+            result
         }
-    }
-    let pr_id = match fetched_id {
-        Some(id) => Some(id),
-        None => s.store.find_pr(&owner, &name, number)?,
+        Err(e) => return Err(e),
     };
+    let pr_id = loaded.pr_id;
     let Some(pr_id) = pr_id else {
-        let hint = if s.client.is_none() {
+        let hint = if s.is_offline() {
             "run without --offline to fetch it; if the repository was renamed, use its current URL"
         } else {
             "it could not be fetched from GitHub"
@@ -581,7 +518,7 @@ async fn commit_cmd(g: &GlobalArgs, a: &cli::CommitArgs, zone: Zone) -> Result<i
         )));
     };
     let mut s = Session::open(session_config(g)).await?;
-    if let Some(reason) = &s.offline_reason {
+    if let Some(reason) = &s.offline_state().reason {
         eprintln!(
             "warning: GitHub is not reachable ({}); showing cached data",
             clean(reason)
@@ -610,17 +547,15 @@ async fn sync_cmd(
             "sync cannot run with --offline".into(),
         ));
     }
-    let period = period(g, cmd, zone)?;
+    let period = period(g, cmd, &zone)?;
     let mut s = Session::open(session_config(g)).await?;
-    if let Some(reason) = &s.offline_reason {
-        return Err(AppError::Api(ghusage_github::ApiError::Network(
-            reason.clone(),
-        )));
+    if let Some(error) = s.offline_error() {
+        return Err(error);
     }
-    let progress = progress::Progress::start(s.client.as_ref().map(|c| c.activity()));
+    let progress = progress::Progress::start(s.api_activity());
     let synced = s
         .sync(period, full, g.concurrency as usize, &|p| {
-            progress.update(p)
+            progress.update(p);
         })
         .await;
     let synced = match synced {
@@ -628,9 +563,10 @@ async fn sync_cmd(
             let counts = s.fetch_line_counts(period, &|p| progress.update(p)).await;
             counts.map(|c| {
                 r.diff_stats = Some(c);
-                if let Some(client) = &s.client {
-                    r.api = client.stats();
-                }
+                let stats = s.api_stats();
+                r.api.requests = stats.requests;
+                r.api.retries = stats.retries;
+                r.api.total_api_time_ms = stats.total_api_time_ms;
                 r
             })
         }
@@ -638,53 +574,52 @@ async fn sync_cmd(
     };
     drop(progress);
     let mut r = synced?;
-    let out = match g.format {
-        Format::Json => {
-            if !g.include_private {
-                let public = report::public_names(&s.dataset(Some(period))?);
-                for f in &mut r.failures {
-                    *f = report::scrub_names(f, &public);
-                }
-                for c in &mut r.coverage {
-                    if let Some(reason) = &c.reason {
-                        c.reason = Some(report::scrub_names(reason, &public));
-                    }
+    let out = if g.format == Format::Json {
+        if !g.include_private {
+            let public = report::public_names(&s.dataset(Some(period))?);
+            for f in &mut r.failures {
+                *f = report::scrub_names(f, &public);
+            }
+            for c in &mut r.coverage {
+                if let Some(reason) = &c.reason {
+                    c.reason = Some(report::scrub_names(reason, &public));
                 }
             }
-            to_json(&r)?
         }
-        _ => {
-            let mut o = format!(
-                "Synced {} for {} → {}\n  commits found: {}\n  pull requests found: {} (fetched {}, unchanged {})\n  issues found: {} (fetched {}, unchanged {})\n  API requests: {} (retries {}, {} ms)\n",
-                ghusage_core::sanitize::sanitize_line(&s.subject.login),
-                zone.format(period.start, "%Y-%m-%d %H:%M"),
-                zone.format(period.end, "%Y-%m-%d %H:%M"),
-                r.commits_found,
-                r.pull_requests_found,
-                r.pull_requests_fetched,
-                r.pull_requests_unchanged,
-                r.issues_found,
-                r.issues_fetched,
-                r.issues_unchanged,
-                r.api.requests,
-                r.api.retries,
-                r.api.total_api_time_ms,
+        to_json(&r)?
+    } else {
+        let mut o = format!(
+            "Synced {} for {} → {}\n  commits found: {}\n  pull requests found: {} (fetched {}, unchanged {})\n  issues found: {} (fetched {}, unchanged {})\n  API requests: {} (retries {}, {} ms)\n",
+            ghusage_core::sanitize::sanitize_line(&s.identity().login),
+            zone.format(period.start, "%Y-%m-%d %H:%M"),
+            zone.format(period.end, "%Y-%m-%d %H:%M"),
+            r.commits_found,
+            r.pull_requests_found,
+            r.pull_requests_fetched,
+            r.pull_requests_unchanged,
+            r.issues_found,
+            r.issues_fetched,
+            r.issues_unchanged,
+            r.api.requests,
+            r.api.retries,
+            r.api.total_api_time_ms,
+        );
+        let _ = writeln!(o, "  status: {}", r.status);
+        if let Some(d) = &r.diff_stats {
+            let _ = writeln!(
+                o,
+                "  line counts: {} commits (already known {}, fetched {}, unavailable {})",
+                d.commits, d.already_known, d.fetched, d.unavailable
             );
-            o.push_str(&format!("  status: {}\n", r.status));
-            if let Some(d) = &r.diff_stats {
-                o.push_str(&format!(
-                    "  line counts: {} commits (already known {}, fetched {}, unavailable {})\n",
-                    d.commits, d.already_known, d.fetched, d.unavailable
-                ));
-            }
-            for f in &r.failures {
-                o.push_str(&format!(
-                    "  incomplete: {}\n",
-                    ghusage_core::sanitize::sanitize_line(f)
-                ));
-            }
-            o
         }
+        for f in &r.failures {
+            let _ = writeln!(
+                o,
+                "  incomplete: {}",
+                ghusage_core::sanitize::sanitize_line(f)
+            );
+        }
+        o
     };
     print_stdout(&out)?;
     let status = if r.is_complete() {
@@ -701,7 +636,7 @@ async fn sync_cmd(
 }
 
 async fn tui_cmd(g: &GlobalArgs, cmd: &Command, zone: Zone) -> Result<i32> {
-    let period = period(g, cmd, zone)?;
+    let period = period(g, cmd, &zone)?;
     let mut cfg = session_config(g);
     let online = !g.offline;
     // The TUI reads from the cache and syncs in the background.
@@ -735,240 +670,146 @@ async fn tui_cmd(g: &GlobalArgs, cmd: &Command, zone: Zone) -> Result<i32> {
 }
 
 async fn auth_status_cmd(g: &GlobalArgs) -> Result<i32> {
-    let creds = session::credentials(g.token_file.as_deref())?;
-    let source = creds.source.describe();
-    let client = ghusage_github::GitHubClient::new(Some(creds), session_config(g).client)?;
-    let viewer = client.viewer().await?;
-    let rate = client.rate_limit().await.ok();
-    match g.format {
-        Format::Json => {
-            #[derive(serde::Serialize)]
-            struct Out {
-                authenticated: bool,
-                source: String,
-                login: String,
-                id: String,
-                scopes: Option<Vec<String>>,
-                rate_limit: Option<ghusage_github::RateLimitInfo>,
-            }
-            print_stdout(&to_json(&Out {
-                authenticated: true,
-                source,
-                login: viewer.login,
-                id: viewer.id,
-                scopes: viewer.scopes,
-                rate_limit: rate,
-            })?)?;
+    let status = commands::auth_status(&session_config(g)).await?;
+    if g.format == Format::Json {
+        #[derive(serde::Serialize)]
+        struct Out {
+            authenticated: bool,
+            source: String,
+            login: String,
+            id: String,
+            scopes: Option<Vec<String>>,
+            rate_limit: Option<commands::RateLimit>,
         }
-        _ => {
-            let mut o = format!(
-                "Logged in as {} (credentials from {})\n",
-                ghusage_core::sanitize::sanitize_line(&viewer.login),
-                source
+        print_stdout(&to_json(&Out {
+            authenticated: true,
+            source: status.source,
+            login: status.login,
+            id: status.id,
+            scopes: status.scopes,
+            rate_limit: status.rate_limit,
+        })?)?;
+    } else {
+        let mut o = format!(
+            "Logged in as {} (credentials from {})\n",
+            ghusage_core::sanitize::sanitize_line(&status.login),
+            status.source
+        );
+        if let Some(scopes) = status.scopes {
+            let _ = writeln!(o, "  token scopes: {}", scopes.join(", "));
+        }
+        if let Some(r) = status.rate_limit {
+            let _ = writeln!(
+                o,
+                "  rate limit: core {}/{} (resets {}), search {}/{}, graphql {}/{}",
+                r.core_remaining,
+                r.core_limit,
+                r.core_reset.strftime("%Y-%m-%dT%H:%M:%S%.f%:z"),
+                r.search_remaining,
+                r.search_limit,
+                r.graphql_remaining,
+                r.graphql_limit
             );
-            if let Some(scopes) = viewer.scopes {
-                o.push_str(&format!("  token scopes: {}\n", scopes.join(", ")));
-            }
-            if let Some(r) = rate {
-                o.push_str(&format!(
-                    "  rate limit: core {}/{} (resets {}), search {}/{}, graphql {}/{}\n",
-                    r.core_remaining,
-                    r.core_limit,
-                    r.core_reset.to_rfc3339(),
-                    r.search_remaining,
-                    r.search_limit,
-                    r.graphql_remaining,
-                    r.graphql_limit
-                ));
-            }
-            print_stdout(&o)?;
         }
+        print_stdout(&o)?;
     }
     Ok(exit::SUCCESS)
 }
 
 fn cache_cmd(g: &GlobalArgs, c: CacheCommand, zone: Zone) -> Result<i32> {
     let cfg = session_config(g);
-    let (mut store, dir) = session::open_store(&cfg)?;
     match c {
         CacheCommand::Clear => {
-            // Never clear underneath a running sync.
-            let _lock = match &dir {
-                Some(d) => Some(ghusage_storage::SyncLock::acquire(d)?),
-                None => None,
-            };
-            store.clear()?;
+            commands::clear_cache(&cfg)?;
             print_stdout("Cache cleared. Credentials were not changed.\n")?;
-            Ok(exit::SUCCESS)
         }
         CacheCommand::Status => {
-            let stats = store.stats()?;
-            let login = store.meta(ghusage_app::sync::META_VIEWER_LOGIN)?;
-            let account = g.user.clone().or(login);
-            let last = match &account {
-                Some(a) => store.last_sync_run(a)?,
-                None => None,
-            };
-            let now = Utc::now();
-            let p30 = Period::new(now - chrono::Duration::days(30), now)?;
-            let coverage = match &account {
-                Some(a) => {
-                    let recs = store.coverage(a)?;
-                    ghusage_core::coverage::DataKind::ALL
-                        .iter()
-                        .map(|k| ghusage_core::coverage::summarize(&recs, *k, p30.start, p30.end))
-                        .collect()
-                }
-                None => Vec::new(),
-            };
-            match g.format {
-                Format::Json => {
-                    let v = serde_json::json!({
-                        "path": dir.map(|d| ghusage_app::paths::db_path(&d)),
-                        "file_size_bytes": stats.file_size_bytes,
-                        "schema_version": stats.schema_version,
-                        "account": account,
-                        "repositories": stats.repositories,
-                        "pull_requests": stats.pull_requests,
-                        "issues": stats.issues,
-                        "events": stats.events,
-                        "last_sync": last.as_ref().map(|r| serde_json::json!({
-                            "started_at": r.started_at,
-                            "finished_at": r.finished_at,
-                            "status": r.status,
-                            "message": r.message,
-                        })),
-                        "coverage_last_30_days": coverage,
-                    });
-                    print_stdout(&to_json(&v)?)?;
-                }
-                _ => {
-                    let style = style(g, std::io::stdout().is_terminal());
-                    let mut o = format!(
-                        "Cache: {}\n  size: {:.1} MiB, schema version {}\n  repositories {}, pull requests {}, issues {}, events {}\n",
-                        dir.map(|d| ghusage_app::paths::db_path(&d).display().to_string())
-                            .unwrap_or_else(|| "(in memory)".into()),
-                        stats.file_size_bytes as f64 / (1024.0 * 1024.0),
-                        stats.schema_version,
-                        stats.repositories,
-                        stats.pull_requests,
-                        stats.issues,
-                        stats.events
-                    );
-                    match &last {
-                        Some(r) => o.push_str(&format!(
-                            "  last sync: {} ({})\n",
-                            r.finished_at
-                                .map(|t| zone.format(t, "%Y-%m-%d %H:%M"))
-                                .unwrap_or_else(|| "not finished".into()),
+            let status = commands::cache_status(&cfg, g.user.as_deref(), Timestamp::now())?;
+            if g.format == Format::Json {
+                let v = serde_json::json!({
+                    "path": status.path,
+                    "file_size_bytes": status.file_size_bytes,
+                    "schema_version": status.schema_version,
+                    "account": status.account,
+                    "repositories": status.repositories,
+                    "pull_requests": status.pull_requests,
+                    "issues": status.issues,
+                    "events": status.events,
+                    "last_sync": status.last_sync.as_ref().map(|r| serde_json::json!({
+                        "started_at": r.started_at,
+                        "finished_at": r.finished_at,
+                        "status": r.status,
+                        "message": r.message,
+                    })),
+                    "coverage_last_30_days": status.coverage_last_30_days,
+                });
+                print_stdout(&to_json(&v)?)?;
+            } else {
+                let style = style(g, std::io::stdout().is_terminal());
+                let mut o = format!(
+                    "Cache: {}\n  size: {:.1} MiB, schema version {}\n  repositories {}, pull requests {}, issues {}, events {}\n",
+                    status
+                        .path
+                        .as_ref()
+                        .map_or_else(|| "(in memory)".into(), |path| path.display().to_string()),
+                    status.file_size_bytes as f64 / (1024.0 * 1024.0),
+                    status.schema_version,
+                    status.repositories,
+                    status.pull_requests,
+                    status.issues,
+                    status.events
+                );
+                match &status.last_sync {
+                    Some(r) => {
+                        let _ = writeln!(
+                            o,
+                            "  last sync: {} ({})",
+                            r.finished_at.map_or_else(
+                                || "not finished".into(),
+                                |t| zone.format(t, "%Y-%m-%d %H:%M")
+                            ),
                             r.status
-                        )),
-                        None => o.push_str("  last sync: never\n"),
+                        );
                     }
-                    if !coverage.is_empty() {
-                        o.push_str("Last 30 days:\n");
-                        o.push_str(&render::coverage_lines(
-                            &coverage,
-                            last.and_then(|r| r.finished_at),
-                            zone,
-                            style,
-                        ));
-                    }
-                    print_stdout(&o)?;
+                    None => o.push_str("  last sync: never\n"),
                 }
+                if !status.coverage_last_30_days.is_empty() {
+                    o.push_str("Last 30 days:\n");
+                    o.push_str(&render::coverage_lines(
+                        &status.coverage_last_30_days,
+                        status.last_sync.as_ref().and_then(|r| r.finished_at),
+                        &zone,
+                        style,
+                    ));
+                }
+                print_stdout(&o)?;
             }
-            Ok(exit::SUCCESS)
         }
     }
+    Ok(exit::SUCCESS)
 }
 
 async fn doctor_cmd(g: &GlobalArgs, zone: Zone) -> Result<i32> {
-    let mut lines: Vec<(bool, String)> = Vec::new();
-    let cfg = session_config(g);
-    match session::open_store(&cfg) {
-        Ok((store, dir)) => {
-            let path = dir
-                .map(|d| ghusage_app::paths::db_path(&d).display().to_string())
-                .unwrap_or_else(|| "(in memory)".into());
-            lines.push((true, format!("cache opened: {path}")));
-            match store.integrity_check() {
-                Ok(p) if p.is_empty() => lines.push((true, "cache integrity: ok".into())),
-                Ok(p) => lines.push((false, format!("cache integrity problems: {}", p.join("; ")))),
-                Err(e) => lines.push((false, format!("cache integrity check failed: {e}"))),
-            }
-            if let Ok(Some(login)) = store.meta(ghusage_app::sync::META_VIEWER_LOGIN)
-                && let Ok(Some(r)) = store.last_sync_run(&login)
-            {
-                lines.push((
-                    r.status != "failed",
-                    format!(
-                        "last sync: {} ({})",
-                        r.finished_at
-                            .map(|t| zone.format(t, "%Y-%m-%d %H:%M"))
-                            .unwrap_or_else(|| "not finished".into()),
-                        r.status
-                    ),
-                ));
-            }
-        }
-        Err(e) => lines.push((false, format!("cache: {e}"))),
-    }
-    if g.offline {
-        lines.push((true, "offline: GitHub checks skipped".into()));
+    let report = commands::doctor(&session_config(g), zone).await?;
+    if g.format == Format::Json {
+        let v = serde_json::json!({
+            "ok": report.ok,
+            "checks": report.checks.iter().map(|check| serde_json::json!({
+                "ok": check.state != commands::DoctorState::Failed,
+                "message": check.message,
+            })).collect::<Vec<_>>(),
+        });
+        print_stdout(&to_json(&v)?)?;
     } else {
-        match session::credentials(g.token_file.as_deref()) {
-            Ok(c) => {
-                lines.push((true, format!("credentials found: {}", c.source.describe())));
-                match ghusage_github::GitHubClient::new(Some(c), cfg.client.clone()) {
-                    Ok(client) => {
-                        match client.viewer().await {
-                            Ok(v) => lines.push((
-                                true,
-                                format!(
-                                    "authenticated as {}",
-                                    ghusage_core::sanitize::sanitize_line(&v.login)
-                                ),
-                            )),
-                            Err(e) => lines.push((false, format!("authentication: {e}"))),
-                        }
-                        match client.rate_limit().await {
-                            Ok(r) => lines.push((
-                                r.core_remaining > 0,
-                                format!(
-                                    "rate limit: core {}/{}, search {}/{}, graphql {}/{}",
-                                    r.core_remaining,
-                                    r.core_limit,
-                                    r.search_remaining,
-                                    r.search_limit,
-                                    r.graphql_remaining,
-                                    r.graphql_limit
-                                ),
-                            )),
-                            Err(e) => lines.push((false, format!("rate limit: {e}"))),
-                        }
-                    }
-                    Err(e) => lines.push((false, format!("client: {e}"))),
-                }
-            }
-            Err(e) => lines.push((false, format!("credentials: {e}"))),
+        let mut o = String::new();
+        for check in &report.checks {
+            let label = match check.state {
+                commands::DoctorState::Passed | commands::DoctorState::Skipped => "ok  ",
+                commands::DoctorState::Failed => "FAIL",
+            };
+            let _ = writeln!(o, "{label} {}", check.message);
         }
+        print_stdout(&o)?;
     }
-    let ok = lines.iter().all(|(ok, _)| *ok);
-    match g.format {
-        Format::Json => {
-            let v = serde_json::json!({
-                "ok": ok,
-                "checks": lines.iter().map(|(ok, m)| serde_json::json!({"ok": ok, "message": m})).collect::<Vec<_>>(),
-            });
-            print_stdout(&to_json(&v)?)?;
-        }
-        _ => {
-            let mut o = String::new();
-            for (ok, m) in &lines {
-                o.push_str(&format!("{} {m}\n", if *ok { "ok  " } else { "FAIL" }));
-            }
-            print_stdout(&o)?;
-        }
-    }
-    Ok(if ok { exit::SUCCESS } else { exit::GENERAL })
+    Ok(report.exit_code)
 }

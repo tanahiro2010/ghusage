@@ -30,32 +30,29 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Check out the pull request
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           # The build must never depend on private submodules.
           submodules: false
           persist-credentials: false
       - name: Check out the base
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           path: .bench-base
           submodules: false
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Report script tests
         run: node --test scripts/bench-report.test.mjs
-      # Pinned like the main CI so both sides build with the same compiler.
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.94.0"
+      - uses: ./.github/actions/setup-rust
       # Each checkout keeps its own target directory: Cargo decides freshness
       # from file times and workspace-relative paths, so a shared one could
       # reuse the other side's build of the workspace crates.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           workspaces: |
             . -> target
@@ -99,7 +96,7 @@ jobs:
           cp "$RUNNER_TEMP/bench-report.md" "$RUNNER_TEMP/latency-base.txt" \
             "$RUNNER_TEMP/latency-head.txt" "$CRITERION_HOME/"
       - name: Upload the report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bench-report
           path: ${{ runner.temp }}/criterion

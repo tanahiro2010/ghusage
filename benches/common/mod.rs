@@ -1,16 +1,18 @@
 //! Synthetic data shared by the benchmarks.
-#![allow(dead_code)]
 
-use chrono::{Duration, TimeZone, Utc};
 use ghusage_app::report::QueryContext;
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::metrics::{CommitDateBasis, Filter};
-use ghusage_core::model::*;
+use ghusage_core::model::{
+    ActivityEvent, Actor, ActorKind, EventId, EventMeta, EventType, PrState, PullRequest,
+    Repository, ReviewState, Source, Subject, Visibility,
+};
 use ghusage_core::time::{Period, Zone};
+use jiff::{SignedDuration, Timestamp};
 
-pub const EVENTS: usize = 100_000;
+pub(crate) const EVENTS: usize = 100_000;
 
-pub fn actor(i: usize) -> Actor {
+pub(crate) fn actor(i: usize) -> Actor {
     if i.is_multiple_of(3) {
         Actor::new(Some("U_me".into()), Some("me".into()), Some("User"))
     } else {
@@ -23,8 +25,8 @@ pub fn actor(i: usize) -> Actor {
 }
 
 /// 100k events over one year across 40 repositories and 2,000 pull requests.
-pub fn data() -> (Vec<Repository>, Vec<PullRequest>, Vec<ActivityEvent>) {
-    let start = Utc.with_ymd_and_hms(2025, 11, 21, 0, 0, 0).unwrap();
+pub(crate) fn data() -> (Vec<Repository>, Vec<PullRequest>, Vec<ActivityEvent>) {
+    let start: Timestamp = "2025-11-21T00:00:00Z".parse().unwrap();
     let repos: Vec<Repository> = (0..40)
         .map(|i: u32| Repository {
             id: format!("R_{i}"),
@@ -56,10 +58,18 @@ pub fn data() -> (Vec<Repository>, Vec<PullRequest>, Vec<ActivityEvent>) {
             author: actor(i),
             state: PrState::Merged,
             is_draft: false,
-            created_at: start + Duration::hours(i as i64 * 4),
+            created_at: start
+                + SignedDuration::from_secs(
+                    i64::try_from(i).expect("fixture index fits i64") * 4 * 60 * 60,
+                ),
             updated_at: None,
             closed_at: None,
-            merged_at: Some(start + Duration::hours(i as i64 * 4 + 20)),
+            merged_at: Some(
+                start
+                    + SignedDuration::from_secs(
+                        (i64::try_from(i).expect("fixture index fits i64") * 4 + 20) * 60 * 60,
+                    ),
+            ),
             merged_by: None,
             head_sha: None,
             latest_ci: None,
@@ -72,7 +82,10 @@ pub fn data() -> (Vec<Repository>, Vec<PullRequest>, Vec<ActivityEvent>) {
         .map(|i| {
             let t = types[i % types.len()];
             let pr = (i % 2000).to_string();
-            let at = start + Duration::seconds((i as i64) * 315);
+            let at = start
+                + SignedDuration::from_secs(
+                    i64::try_from(i).expect("fixture index fits i64") * 315,
+                );
             let mut meta = EventMeta::default();
             if matches!(t, EventType::CommitAuthored | EventType::PrCommit) {
                 meta.sha = Some(format!("{i:040x}"));
@@ -99,17 +112,17 @@ pub fn data() -> (Vec<Repository>, Vec<PullRequest>, Vec<ActivityEvent>) {
     (repos, prs, events)
 }
 
-pub fn subject() -> Subject {
+pub(crate) fn subject() -> Subject {
     Subject {
         id: Some("U_me".into()),
         login: "me".into(),
     }
 }
 
-pub fn ctx(days: i64) -> QueryContext {
-    let end = Utc.with_ymd_and_hms(2026, 11, 21, 0, 0, 0).unwrap();
+pub(crate) fn ctx(days: i64) -> QueryContext {
+    let end: Timestamp = "2026-11-21T00:00:00Z".parse().unwrap();
     QueryContext {
-        period: Period::new(end - Duration::days(days), end).unwrap(),
+        period: Period::new(end - SignedDuration::from_secs(days * 24 * 60 * 60), end).unwrap(),
         zone: Zone::parse("Asia/Tokyo").unwrap(),
         filter: Filter::default(),
         commit_basis: CommitDateBasis::Committer,

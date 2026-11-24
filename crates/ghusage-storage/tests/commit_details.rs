@@ -1,12 +1,14 @@
 //! Commits fetched on demand, kept in the cache for offline use.
 
-use chrono::{DateTime, TimeZone, Utc};
 use ghusage_core::commit::{CommitDetail, CommitFile, CommitPerson, DiffStats, FileStatus};
 use ghusage_core::model::{ActorKind, Repository, Visibility};
 use ghusage_storage::{Store, WriteBatch};
+use jiff::Timestamp;
 
-fn t(day: u32, hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 3, day, hour, 0, 0).unwrap()
+fn t(day: u32, hour: u32) -> Timestamp {
+    format!("2026-03-{day:02}T{hour:02}:00:00Z")
+        .parse()
+        .unwrap()
 }
 
 fn detail(repository: &str, sha: &str, message: &str) -> CommitDetail {
@@ -102,7 +104,7 @@ fn commit_details_survive_reopening_and_are_removed_by_clear() {
     );
     s.clear().unwrap();
     assert_eq!(s.commit_detail("acme/widget", "abcdef0111").unwrap(), None);
-    assert!(s.integrity_check().unwrap().is_empty());
+    assert_eq!(s.integrity_check().unwrap(), Vec::<String>::new());
 }
 
 #[test]

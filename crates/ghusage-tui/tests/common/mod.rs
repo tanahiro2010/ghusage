@@ -1,7 +1,5 @@
 //! Synthetic activity used by the UI tests.
-#![allow(dead_code)]
 
-use chrono::{DateTime, Duration, Utc};
 use ghusage_core::coverage::{CoverageRecord, CoverageStatus, DataKind};
 use ghusage_core::metrics::{Dataset, Filter};
 use ghusage_core::model::{
@@ -11,38 +9,39 @@ use ghusage_core::model::{
 use ghusage_core::time::{Period, Zone, resolve_period};
 use ghusage_tui::app::{App, AppConfig};
 use ghusage_tui::source::{DataSource, MemorySource};
+use jiff::{SignedDuration, Timestamp};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-pub const MALICIOUS_TITLE: &str =
+pub(crate) const MALICIOUS_TITLE: &str =
     "\u{1b}[31mred\u{1b}[0m \u{1b}]0;pwned\u{7}title\u{9b}2J\u{202e}evil\r\nnext";
 
-pub fn utc(s: &str) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+pub(crate) fn utc(s: &str) -> Timestamp {
+    s.parse().unwrap()
 }
 
-pub fn now() -> DateTime<Utc> {
+pub(crate) fn now() -> Timestamp {
     utc("2026-11-21T12:00:00Z")
 }
 
-pub fn zone() -> Zone {
+pub(crate) fn zone() -> Zone {
     Zone::parse("Asia/Tokyo").unwrap()
 }
 
-pub fn period_30d() -> Period {
-    resolve_period(Some("30d"), None, "30d", zone(), now()).unwrap()
+pub(crate) fn period_30d() -> Period {
+    resolve_period(Some("30d"), None, "30d", &zone(), now()).unwrap()
 }
 
-pub fn alice() -> Actor {
+pub(crate) fn alice() -> Actor {
     Actor::new(Some("U1".into()), Some("alice".into()), Some("User"))
 }
 
-pub fn bob() -> Actor {
+pub(crate) fn bob() -> Actor {
     Actor::new(Some("U2".into()), Some("bob".into()), Some("User"))
 }
 
-pub fn bot() -> Actor {
+pub(crate) fn bot() -> Actor {
     Actor::new(
         Some("B1".into()),
         Some("ci-helper[bot]".into()),
@@ -50,7 +49,7 @@ pub fn bot() -> Actor {
     )
 }
 
-fn repo(id: &str, owner: &str, name: &str, vis: Visibility) -> Repository {
+pub(crate) fn repo(id: &str, owner: &str, name: &str, vis: Visibility) -> Repository {
     Repository {
         id: id.into(),
         owner: owner.into(),
@@ -64,7 +63,7 @@ fn repo(id: &str, owner: &str, name: &str, vis: Visibility) -> Repository {
     }
 }
 
-fn pr(
+pub(crate) fn pr(
     id: &str,
     repo: &str,
     number: u64,
@@ -84,9 +83,11 @@ fn pr(
         state,
         is_draft: false,
         created_at: created,
-        updated_at: Some(created + Duration::days(1)),
-        closed_at: (state != PrState::Open).then(|| created + Duration::days(2)),
-        merged_at: (state == PrState::Merged).then(|| created + Duration::days(2)),
+        updated_at: Some(created + SignedDuration::from_secs(24 * 60 * 60)),
+        closed_at: (state != PrState::Open)
+            .then(|| created + SignedDuration::from_secs(2 * 24 * 60 * 60)),
+        merged_at: (state == PrState::Merged)
+            .then(|| created + SignedDuration::from_secs(2 * 24 * 60 * 60)),
         merged_by: (state == PrState::Merged).then(alice),
         head_sha: None,
         latest_ci: None,
@@ -95,13 +96,13 @@ fn pr(
     }
 }
 
-pub fn event(
+pub(crate) fn event(
     id: &str,
     t: EventType,
     actor: Actor,
     repo: &str,
     pr: Option<&str>,
-    at: DateTime<Utc>,
+    at: Timestamp,
     meta: EventMeta,
 ) -> ActivityEvent {
     ActivityEvent {
@@ -120,21 +121,21 @@ pub fn event(
     }
 }
 
-fn sha(s: &str) -> EventMeta {
+pub(crate) fn sha(s: &str) -> EventMeta {
     EventMeta {
         sha: Some(s.into()),
         ..EventMeta::default()
     }
 }
 
-fn review(state: ReviewState) -> EventMeta {
+pub(crate) fn review(state: ReviewState) -> EventMeta {
     EventMeta {
         review_state: Some(state),
         ..EventMeta::default()
     }
 }
 
-fn coverage(start: DateTime<Utc>, end: DateTime<Utc>) -> Vec<CoverageRecord> {
+pub(crate) fn coverage(start: Timestamp, end: Timestamp) -> Vec<CoverageRecord> {
     DataKind::ALL
         .iter()
         .map(|k| CoverageRecord {
@@ -143,6 +144,7 @@ fn coverage(start: DateTime<Utc>, end: DateTime<Utc>) -> Vec<CoverageRecord> {
             end,
             status: CoverageStatus::Complete,
             scope: "test".into(),
+            description: "test".into(),
             reason: None,
             recorded_at: now(),
         })
@@ -150,7 +152,7 @@ fn coverage(start: DateTime<Utc>, end: DateTime<Utc>) -> Vec<CoverageRecord> {
 }
 
 /// A small world with Japanese, emoji and hostile text.
-pub fn dataset() -> Dataset {
+pub(crate) fn dataset() -> Dataset {
     let repos = vec![
         repo("R1", "alice", "parser", Visibility::Public),
         repo("R2", "org", "ウェブアプリ", Visibility::Public),
@@ -317,11 +319,14 @@ pub fn dataset() -> Dataset {
         vec![],
         vec![],
         events,
-        coverage(p.start - Duration::days(400), p.end),
+        coverage(
+            p.start - SignedDuration::from_secs(400 * 24 * 60 * 60),
+            p.end,
+        ),
     )
 }
 
-pub fn empty_dataset() -> Dataset {
+pub(crate) fn empty_dataset() -> Dataset {
     Dataset::new(
         Subject {
             id: Some("U1".into()),
@@ -337,7 +342,7 @@ pub fn empty_dataset() -> Dataset {
     )
 }
 
-pub fn config(background_sync: bool) -> AppConfig {
+pub(crate) fn config(background_sync: bool) -> AppConfig {
     AppConfig {
         period: period_30d(),
         zone: zone(),
@@ -347,7 +352,7 @@ pub fn config(background_sync: bool) -> AppConfig {
 }
 
 /// UI state computing reports synchronously, for step-by-step checks.
-pub fn app_with(ds: Dataset, background_sync: bool) -> App {
+pub(crate) fn app_with(ds: Dataset, background_sync: bool) -> App {
     let mut app = App::inline(
         Box::new(MemorySource::new(ds)),
         config(background_sync),
@@ -358,34 +363,34 @@ pub fn app_with(ds: Dataset, background_sync: bool) -> App {
 }
 
 /// UI state computing reports on a worker thread, as the real UI does.
-pub fn threaded_app(source: Box<dyn DataSource + Send>) -> App {
+pub(crate) fn threaded_app(source: Box<dyn DataSource + Send>) -> App {
     let mut app = App::with_clock(source, config(false), Box::new(now)).unwrap();
     app.prepare();
     app
 }
 
-pub const SETTLE: std::time::Duration = std::time::Duration::from_secs(30);
+pub(crate) const SETTLE: std::time::Duration = std::time::Duration::from_secs(30);
 
-pub fn app() -> App {
+pub(crate) fn app() -> App {
     app_with(dataset(), false)
 }
 
-pub fn key(c: char) -> KeyEvent {
+pub(crate) const fn key(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
 }
 
-pub fn code(c: KeyCode) -> KeyEvent {
+pub(crate) const fn code(c: KeyCode) -> KeyEvent {
     KeyEvent::new(c, KeyModifiers::NONE)
 }
 
-pub fn press(app: &mut App, keys: &str) {
+pub(crate) fn press(app: &mut App, keys: &str) {
     for c in keys.chars() {
         app.handle_key(key(c));
     }
 }
 
 /// Renders the app and returns the screen as lines of text.
-pub fn render(app: &App, w: u16, h: u16) -> Vec<String> {
+pub(crate) fn render(app: &App, w: u16, h: u16) -> Vec<String> {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| ghusage_tui::ui::draw(f, app)).unwrap();
     let buf = term.backend().buffer().clone();
@@ -400,18 +405,17 @@ pub fn render(app: &App, w: u16, h: u16) -> Vec<String> {
         .collect()
 }
 
-pub fn screen_text(app: &App, w: u16, h: u16) -> String {
+pub(crate) fn screen_text(app: &App, w: u16, h: u16) -> String {
     render(app, w, h).join("\n")
 }
 
 /// No escape or other control characters anywhere in the rendered buffer.
-pub fn assert_clean(app: &App, w: u16, h: u16) {
+pub(crate) fn assert_clean(app: &App, w: u16, h: u16) {
     let text = screen_text(app, w, h);
     for c in text.chars() {
         assert!(
             c == '\n' || !c.is_control(),
-            "control character {:?} rendered on screen:\n{text}",
-            c
+            "control character {c:?} rendered on screen:\n{text}"
         );
         assert!(
             !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'),

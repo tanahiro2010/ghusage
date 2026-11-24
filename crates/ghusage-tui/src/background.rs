@@ -12,15 +12,21 @@ use ghusage_core::time::Period;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyncMsg {
     /// Connected and authenticated; `auth` describes the token source.
-    Started { auth: Option<String> },
+    Started {
+        /// Safe description of the credential source.
+        auth: Option<String>,
+    },
     /// Human-readable progress.
     Progress(String),
     /// Current rate limit, when GitHub reported it.
     RateLimit(String),
     /// The sync ended. `failures` lists what could not be fetched.
     Finished {
+        /// Whether all requested data was fetched completely.
         complete: bool,
+        /// Resources that failed to fetch.
         failures: Vec<String>,
+        /// Human-readable summary of the run.
         summary: String,
     },
     /// The sync could not run or stopped with an error (including network
@@ -29,6 +35,7 @@ pub enum SyncMsg {
 }
 
 /// Formats a progress notification.
+#[must_use]
 pub fn describe_progress(p: &SyncProgress) -> String {
     match p {
         SyncProgress::Searching(k) => format!("searching {}", k.as_str()),
@@ -61,15 +68,15 @@ pub fn spawn_sync(
             match result {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
-                    let _ = tx.send(SyncMsg::Failed(e));
+                    drop(tx.send(SyncMsg::Failed(e)));
                 }
                 Err(payload) => {
                     let what = payload
                         .downcast_ref::<&str>()
-                        .map(|s| s.to_string())
+                        .map(ToString::to_string)
                         .or_else(|| payload.downcast_ref::<String>().cloned())
                         .unwrap_or_else(|| "unknown error".into());
-                    let _ = panic_tx.send(SyncMsg::Failed(format!("internal error: {what}")));
+                    drop(panic_tx.send(SyncMsg::Failed(format!("internal error: {what}"))));
                 }
             }
         })
@@ -87,29 +94,27 @@ fn sync_blocking(
         .map_err(|e| format!("cannot start the sync runtime: {e}"))?;
     rt.block_on(async {
         let mut session = Session::open(cfg).await.map_err(|e| e.to_string())?;
-        let _ = tx.send(SyncMsg::Started {
-            auth: session.token_source.as_ref().map(|s| s.describe()),
-        });
+        drop(tx.send(SyncMsg::Started {
+            auth: session.token_source_description(),
+        }));
         let progress = |p: SyncProgress| {
-            let _ = tx.send(SyncMsg::Progress(describe_progress(&p)));
+            drop(tx.send(SyncMsg::Progress(describe_progress(&p))));
         };
         let report = session
             .sync(period, false, concurrency.max(1), &progress)
             .await
             .map_err(|e| e.to_string())?;
-        if let Some(client) = &session.client
-            && let Ok(r) = client.rate_limit().await
-        {
-            let _ = tx.send(SyncMsg::RateLimit(format!(
+        if let Some(r) = session.rate_limit().await.map_err(|e| e.to_string())? {
+            drop(tx.send(SyncMsg::RateLimit(format!(
                 "core {}/{} (resets {}), graphql {}/{}, search {}/{}",
                 r.core_remaining,
                 r.core_limit,
-                r.core_reset.format("%Y-%m-%d %H:%M UTC"),
+                r.core_reset.strftime("%Y-%m-%d %H:%M UTC"),
                 r.graphql_remaining,
                 r.graphql_limit,
                 r.search_remaining,
                 r.search_limit
-            )));
+            ))));
         }
         let summary = format!(
             "{} · {} commits, {} pull requests ({} fetched), {} issues · {} requests",
@@ -120,11 +125,11 @@ fn sync_blocking(
             report.issues_found,
             report.api.requests
         );
-        let _ = tx.send(SyncMsg::Finished {
+        drop(tx.send(SyncMsg::Finished {
             complete: report.is_complete(),
             failures: report.failures.clone(),
             summary,
-        });
+        }));
         Ok(())
     })
 }

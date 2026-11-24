@@ -10,7 +10,7 @@ use ghusage_storage::{Store, WriteBatch};
 use std::hint::black_box;
 
 mod common;
-use common::*;
+use common::{ctx, data, subject};
 
 fn benches(c: &mut Criterion) {
     let (repos, prs, events) = data();
@@ -25,7 +25,7 @@ fn benches(c: &mut Criterion) {
         vec![],
     );
     c.bench_function("aggregate 100k events (overview, 1 year)", |b| {
-        b.iter(|| black_box(report::build(&ds, &ctx(366), ReportKind::Overview)))
+        b.iter(|| black_box(report::build(&ds, &ctx(366), ReportKind::Overview)));
     });
     c.bench_function("aggregate 100k events (daily, 1 year)", |b| {
         b.iter(|| {
@@ -34,7 +34,24 @@ fn benches(c: &mut Criterion) {
                 &ctx(366),
                 ReportKind::Breakdown(Granularity::Day),
             ))
-        })
+        });
+    });
+    for (name, granularity) in [
+        ("weekly", Granularity::Week),
+        ("monthly", Granularity::Month),
+    ] {
+        c.bench_function(&format!("aggregate 100k events ({name}, 1 year)"), |b| {
+            b.iter(|| {
+                black_box(report::build(
+                    &ds,
+                    &ctx(366),
+                    ReportKind::Breakdown(granularity),
+                ))
+            });
+        });
+    }
+    c.bench_function("aggregate 100k events (repositories, 1 year)", |b| {
+        b.iter(|| black_box(report::build(&ds, &ctx(366), ReportKind::Repositories)));
     });
 
     // Cached aggregation: load from SQLite + aggregate.
@@ -51,6 +68,15 @@ fn benches(c: &mut Criterion) {
         .unwrap();
     for days in [7, 30] {
         let ctx = ctx(days);
+        c.bench_function(&format!("load 100k event dataset ({days} days)"), |b| {
+            b.iter(|| {
+                black_box(
+                    store
+                        .load_dataset(&subject(), true, Some(ctx.period))
+                        .unwrap(),
+                )
+            });
+        });
         c.bench_function(
             &format!("cached {days}-day aggregation (load + overview)"),
             |b| {
@@ -59,10 +85,13 @@ fn benches(c: &mut Criterion) {
                         .load_dataset(&subject(), true, Some(ctx.period))
                         .unwrap();
                     black_box(report::build(&ds, &ctx, ReportKind::Overview))
-                })
+                });
             },
         );
     }
+    c.bench_function("load pull request detail (PR_0)", |b| {
+        b.iter(|| black_box(store.load_pr_dataset(&subject(), true, "PR_0").unwrap()));
+    });
 }
 
 criterion_group! {

@@ -40,13 +40,17 @@ use crate::source::SessionSource;
 /// Options for the terminal UI.
 #[derive(Debug, Clone)]
 pub struct TuiOptions {
+    /// Report period shown when the UI starts.
     pub period: Period,
+    /// Time zone used to display dates.
     pub zone: Zone,
+    /// Repository filter applied to reports.
     pub filter: Filter,
     /// Session configuration; the UI reads the cache offline.
     pub session: SessionConfig,
     /// Fill missing data from GitHub in the background.
     pub background_sync: bool,
+    /// Maximum concurrent background API requests.
     pub concurrency: usize,
     /// Which commit date counts for daily totals and period membership.
     pub commit_basis: ghusage_core::metrics::CommitDateBasis,
@@ -95,7 +99,7 @@ fn run_here(opts: TuiOptions) -> Result<(), TuiError> {
         Box::new(SessionSource::new(session)),
         AppConfig {
             period: opts.period,
-            zone: opts.zone,
+            zone: opts.zone.clone(),
             filter: opts.filter.clone(),
             background_sync: opts.background_sync,
         },
@@ -141,7 +145,7 @@ where
             match commit_fetch::spawn(
                 opts.session.clone(),
                 opts.background_sync,
-                opts.zone,
+                opts.zone.clone(),
                 commit_tx.clone(),
             ) {
                 Ok(tx) => commit_loader = Some(tx),

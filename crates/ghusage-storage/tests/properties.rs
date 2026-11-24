@@ -3,7 +3,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::{DateTime, Duration, TimeZone, Utc};
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::metrics::{
     self, CommitDateBasis, Dataset, Filter, Options, Participation, PrSort,
@@ -14,6 +13,7 @@ use ghusage_core::model::{
 };
 use ghusage_core::time::{Period, Zone};
 use ghusage_storage::{PrCommitLink, PrSnapshot, Store, WriteBatch};
+use jiff::{SignedDuration, Timestamp};
 use proptest::prelude::*;
 use proptest::test_runner::{Config, FileFailurePersistence};
 
@@ -34,8 +34,10 @@ fn config() -> Config {
     }
 }
 
-fn at(day: u32, hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 3, day, hour, 0, 0).unwrap()
+fn at(day: u32, hour: u32) -> Timestamp {
+    format!("2026-03-{day:02}T{hour:02}:00:00Z")
+        .parse()
+        .unwrap()
 }
 
 fn user(login: &str) -> Actor {
@@ -105,7 +107,7 @@ fn fetch() -> impl Strategy<Value = Fetch> {
         )
 }
 
-fn bit(mask: u8, k: usize) -> bool {
+const fn bit(mask: u8, k: usize) -> bool {
     mask >> k & 1 == 1
 }
 
@@ -115,10 +117,10 @@ struct Built {
     events: Vec<ActivityEvent>,
     threads: Vec<ReviewThread>,
     shas: BTreeSet<String>,
-    observed_at: DateTime<Utc>,
+    observed_at: Timestamp,
 }
 
-fn base_event(id: EventId, ty: EventType, actor: Actor, occurred: DateTime<Utc>) -> ActivityEvent {
+fn base_event(id: EventId, ty: EventType, actor: Actor, occurred: Timestamp) -> ActivityEvent {
     ActivityEvent {
         entity_id: id.0.clone(),
         event_id: id,
@@ -139,8 +141,10 @@ fn base_event(id: EventId, ty: EventType, actor: Actor, occurred: DateTime<Utc>)
 /// merge is never undone, so later fetches stay merged.
 fn build(f: &Fetch, index: usize, merged_before: bool) -> Built {
     // Fetches happen in April, after all activity (March), one day apart.
-    let observed_at =
-        Utc.with_ymd_and_hms(2026, 4, 1, 0, 0, 0).unwrap() + Duration::days(index as i64);
+    let observed_at = "2026-04-01T00:00:00Z".parse::<Timestamp>().unwrap()
+        + SignedDuration::from_secs(
+            i64::try_from(index).expect("test index fits i64") * 24 * 60 * 60,
+        );
     let merged = merged_before || f.state == 2;
     let state = if merged {
         PrState::Merged
@@ -172,10 +176,10 @@ fn build(f: &Fetch, index: usize, merged_before: bool) -> Built {
             EventId::comment(&format!("C{k}")),
             EventType::ConversationComment,
             user(author),
-            at(3 + k as u32, 10),
+            at(3 + u32::try_from(k).expect("fixture index fits u32"), 10),
         );
         if bit(f.edited, k) {
-            e.meta.edited_at = Some(observed_at - Duration::hours(1));
+            e.meta.edited_at = Some(observed_at - SignedDuration::from_secs(60 * 60));
         }
         events.push(e);
     }
@@ -186,7 +190,7 @@ fn build(f: &Fetch, index: usize, merged_before: bool) -> Built {
             EventId::review(&format!("RV{k}")),
             EventType::ReviewSubmitted,
             user(author),
-            at(10 + k as u32, 15),
+            at(10 + u32::try_from(k).expect("fixture index fits u32"), 15),
         );
         e.meta.review_id = Some(format!("RV{k}"));
         // A dismissal or re-request can change what the latest fetch reports.
@@ -215,7 +219,7 @@ fn build(f: &Fetch, index: usize, merged_before: bool) -> Built {
             EventId::comment(&format!("IC{k}")),
             EventType::InlineComment,
             user("me"),
-            at(14 + k as u32, 8),
+            at(14 + u32::try_from(k).expect("fixture index fits u32"), 8),
         );
         e.meta.thread_id = Some(format!("TH{k}"));
         e.meta.reply_to = Some(format!("ROOT{k}"));
@@ -229,9 +233,9 @@ fn build(f: &Fetch, index: usize, merged_before: bool) -> Built {
             EventId::pr_commit(PR, &s),
             EventType::PrCommit,
             user("me"),
-            at(2 + k as u32, 11),
+            at(2 + u32::try_from(k).expect("fixture index fits u32"), 11),
         );
-        e.entity_id = s.clone();
+        e.entity_id.clone_from(&s);
         e.meta.sha = Some(s.clone());
         e.meta.time_basis = Some("commit_date".into());
         events.push(e);
@@ -251,7 +255,7 @@ fn build(f: &Fetch, index: usize, merged_before: bool) -> Built {
         state,
         is_draft: false,
         created_at: at(2, 9),
-        updated_at: Some(observed_at - Duration::hours(1)),
+        updated_at: Some(observed_at - SignedDuration::from_secs(60 * 60)),
         closed_at: (state != PrState::Open).then(|| at(20, 12)),
         merged_at,
         merged_by: merged.then(|| user("bob")),
@@ -307,7 +311,7 @@ fn batch(b: &Built) -> WriteBatch {
 
 fn march() -> Options {
     Options {
-        period: Period::new(at(1, 0), Utc.with_ymd_and_hms(2026, 4, 1, 0, 0, 0).unwrap()).unwrap(),
+        period: Period::new(at(1, 0), "2026-04-01T00:00:00Z".parse().unwrap()).unwrap(),
         zone: Zone::utc(),
         filter: Filter::default(),
         commit_basis: CommitDateBasis::Committer,

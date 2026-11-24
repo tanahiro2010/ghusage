@@ -25,6 +25,12 @@ cargo build --workspace --release
 
 Run a single test with `cargo test -p <crate> <test_name>`. Never skip, delete, or relax a failing or flaky test to make CI pass.
 
+## Rust toolchain policy
+
+- CI and release builds use the latest stable Rust toolchain declared in `rust-toolchain.toml`.
+- The MSRV is the stable release from six Rust release cycles earlier and is updated together with the pinned stable toolchain.
+- CI checks the workspace with the MSRV so dependency updates cannot silently raise the supported compiler version.
+
 ## Architecture
 
 Stack: clap (CLI), ratatui + crossterm (TUI), Tokio, reqwest (GitHub GraphQL + REST), serde, SQLite via rusqlite, chrono/chrono-tz, tracing, thiserror/anyhow, Criterion (benches).
