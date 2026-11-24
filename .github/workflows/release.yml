@@ -33,6 +33,15 @@ jobs:
         with:
           submodules: false
           fetch-depth: 0
+      # Ancestor checks also admit merged dev commits; manual publishing must
+      # originate from the release branch itself.
+      - name: Manual publishing is allowed only from release
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/release" ]; then
+            echo "::error::Manual publishing is allowed only from refs/heads/release." >&2
+            exit 1
+          fi
       - name: Releases come only from the release branch
         if: github.ref_type == 'tag' || inputs.publish
         run: |
