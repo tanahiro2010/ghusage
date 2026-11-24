@@ -1165,7 +1165,7 @@ dependencies = [
 
 [[package]]
 name = "ghusage"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "assert_cmd",
  "chrono",
@@ -1192,7 +1192,7 @@ dependencies = [
 
 [[package]]
 name = "ghusage-app"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "csv",
  "directories",
@@ -1216,7 +1216,7 @@ dependencies = [
 
 [[package]]
 name = "ghusage-core"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "iana-time-zone",
  "jiff",
@@ -1228,7 +1228,7 @@ dependencies = [
 
 [[package]]
 name = "ghusage-github"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "futures",
  "ghusage-core",
@@ -1246,7 +1246,7 @@ dependencies = [
 
 [[package]]
 name = "ghusage-storage"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "fs4",
  "ghusage-core",
@@ -1262,7 +1262,7 @@ dependencies = [
 
 [[package]]
 name = "ghusage-tui"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "ghusage-app",
  "ghusage-core",

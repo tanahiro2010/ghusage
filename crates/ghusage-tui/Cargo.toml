@@ -14,8 +14,8 @@ workspace = true
 
 [dependencies]
 jiff = { version = "1.0.2", features = ["serde"] }
-ghusage-app = { version = "0.1.6", path = "../ghusage-app" }
-ghusage-core = { version = "0.1.6", path = "../ghusage-core" }
+ghusage-app = { version = "0.2.0", path = "../ghusage-app" }
+ghusage-core = { version = "0.2.0", path = "../ghusage-core" }
 ratatui = "0.30"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync"] }
@@ -24,5 +24,5 @@ tokio = { version = "1.54.1", features = ["rt-multi-thread", "sync"] }
 signal-hook = "0.4.6"
 
 [dev-dependencies]
-ghusage-storage = { version = "0.1.6", path = "../ghusage-storage" }
+ghusage-storage = { version = "0.2.0", path = "../ghusage-storage" }
 tempfile = "3.27.0"

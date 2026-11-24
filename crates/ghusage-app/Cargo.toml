@@ -17,9 +17,9 @@ jiff = { version = "1.0.2", features = ["serde"] }
 csv = "1.4.0"
 directories = "6.0.0"
 futures = "0.3.34"
-ghusage-core = { version = "0.1.6", path = "../ghusage-core" }
-ghusage-github = { version = "0.1.6", path = "../ghusage-github" }
-ghusage-storage = { version = "0.1.6", path = "../ghusage-storage" }
+ghusage-core = { version = "0.2.0", path = "../ghusage-core" }
+ghusage-github = { version = "0.2.0", path = "../ghusage-github" }
+ghusage-storage = { version = "0.2.0", path = "../ghusage-storage" }
 hex = "0.4.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
@@ -29,7 +29,7 @@ tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "
 tracing = "0.1.44"
 
 [dev-dependencies]
-ghusage-github = { version = "0.1.6", path = "../ghusage-github" }
+ghusage-github = { version = "0.2.0", path = "../ghusage-github" }
 proptest = "1.11.0"
 rusqlite = { version = "0.43", features = ["bundled"] }
 tempfile = "3.27.0"
