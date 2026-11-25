@@ -123,7 +123,26 @@ fn empty_activity_reports_zero_everywhere() {
 
 #[test]
 fn combined_report_aggregates_match_the_individual_calculations() {
-    let pr = pull("P1", "R_tool", 1, me());
+    let public = tool();
+    let private = repo("R_private", "me", "private", Visibility::Private);
+    let external = repo("R_external", "acme", "external", Visibility::Public);
+    let prs = vec![
+        pull("P1", "R_tool", 1, me()),
+        pull("P2", "R_private", 2, me()),
+        pull("P3", "R_external", 3, user("alice")),
+    ];
+    let duplicated_commit = commit("R_tool", "abc", me(), "2026-11-01T15:00:00Z");
+    let ci = with_meta(
+        event(
+            EventId::check_run("ci-1"),
+            EventType::CheckRun,
+            bot("ci-bot"),
+            "R_tool",
+            Some("P1"),
+            utc("2026-11-05T03:00:00Z"),
+        ),
+        |meta| meta.check_outcome = Some(ghusage_core::model::CheckOutcome::Success),
+    );
     let events = vec![
         lifecycle(
             EventId::pr_created("P1"),
@@ -133,7 +152,11 @@ fn combined_report_aggregates_match_the_individual_calculations() {
             me(),
             "2026-11-02T01:00:00Z",
         ),
-        commit("R_tool", "abc", me(), "2026-11-03T02:00:00Z"),
+        // Tokyo's November window starts at 2026-10-31T15:00Z. The event
+        // exactly on that boundary is included; the preceding second is not.
+        duplicated_commit.clone(),
+        duplicated_commit,
+        commit("R_tool", "before", me(), "2026-10-31T14:59:59Z"),
         comment(
             EventType::ConversationComment,
             "R_tool",
@@ -142,29 +165,113 @@ fn combined_report_aggregates_match_the_individual_calculations() {
             user("alice"),
             "2026-11-04T03:00:00Z",
         ),
+        review(
+            "R_tool",
+            "P1",
+            "review-1",
+            user("alice"),
+            ReviewState::Approved,
+            "2026-11-06T01:00:00Z",
+        ),
+        review(
+            "R_tool",
+            "P1",
+            "review-2",
+            user("bob"),
+            ReviewState::ChangesRequested,
+            "2026-11-07T01:00:00Z",
+        ),
+        lifecycle(
+            EventId::pr_created("P2"),
+            EventType::PrOpened,
+            "R_private",
+            "P2",
+            me(),
+            "2026-11-08T02:00:00Z",
+        ),
+        comment(
+            EventType::ConversationComment,
+            "R_private",
+            "P2",
+            "private-comment",
+            user("carol"),
+            "2026-11-09T02:00:00Z",
+        ),
+        lifecycle(
+            EventId::pr_created("P3"),
+            EventType::PrOpened,
+            "R_external",
+            "P3",
+            user("alice"),
+            "2026-11-10T02:00:00Z",
+        ),
+        review(
+            "R_external",
+            "P3",
+            "review-3",
+            me(),
+            ReviewState::Commented,
+            "2026-11-11T02:00:00Z",
+        ),
+        ci,
+        // The exclusive end of Tokyo's November window.
+        commit("R_tool", "at-end", me(), "2026-11-30T15:00:00Z"),
     ];
     let ds = dataset(
-        vec![tool()],
-        vec![pr],
-        vec![thread("T1", "P1", Some(user("alice")))],
+        vec![public, private, external],
+        prs,
+        vec![
+            thread("T1", "P1", Some(user("alice"))),
+            thread("T2", "P2", Some(user("carol"))),
+        ],
         events,
     );
-    let opts = local_days("2026-11-01", "2026-12-01", zone("Asia/Tokyo"));
+    let cases = [
+        (
+            "Tokyo month",
+            local_days("2026-11-01", "2026-12-01", zone("Asia/Tokyo")),
+        ),
+        (
+            "UTC month",
+            local_days("2026-11-01", "2026-12-01", zone("UTC")),
+        ),
+        ("public only", {
+            let mut opts = local_days("2026-11-01", "2026-12-01", zone("Asia/Tokyo"));
+            opts.filter.visibility = Some(VisibilityFilter::Public);
+            opts
+        }),
+        ("private only", {
+            let mut opts = local_days("2026-11-01", "2026-12-01", zone("Asia/Tokyo"));
+            opts.filter.visibility = Some(VisibilityFilter::Private);
+            opts
+        }),
+        (
+            "empty period",
+            options("2027-01-01T00:00:00Z", "2027-02-01T00:00:00Z", zone("UTC")),
+        ),
+    ];
 
-    for granularity in [
-        Granularity::Day,
-        Granularity::Week,
-        Granularity::Month,
-        Granularity::Year,
-    ] {
-        let combined = metrics::report_aggregates(&ds, &opts, granularity);
-        assert_eq!(combined.summary, summary(&ds, &opts));
-        assert_eq!(combined.snapshot, snapshot(&ds, &opts));
-        assert_eq!(combined.repositories, by_repository(&ds, &opts));
-        assert_eq!(
-            combined.breakdown,
-            metrics::breakdown(&ds, &opts, granularity)
-        );
+    for (case, opts) in cases {
+        for granularity in [
+            Granularity::Day,
+            Granularity::Week,
+            Granularity::Month,
+            Granularity::Year,
+        ] {
+            let combined = metrics::report_aggregates(&ds, &opts, granularity);
+            assert_eq!(combined.summary, summary(&ds, &opts), "{case}: Overview");
+            assert_eq!(combined.snapshot, snapshot(&ds, &opts), "{case}: Snapshot");
+            assert_eq!(
+                combined.repositories,
+                by_repository(&ds, &opts),
+                "{case}: Repositories"
+            );
+            assert_eq!(
+                combined.breakdown,
+                metrics::breakdown(&ds, &opts, granularity),
+                "{case}: {granularity:?}"
+            );
+        }
     }
 }
 
