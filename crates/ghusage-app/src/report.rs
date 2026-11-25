@@ -195,16 +195,16 @@ fn build_on(ds: &Dataset, opts: &metrics::Options, ctx: &QueryContext, kind: Rep
         ReportKind::Breakdown(g) => Some(g),
         _ => None,
     };
-    let breakdown = metrics::breakdown(ds, opts, gran.unwrap_or(Granularity::Day));
+    let aggregates = metrics::report_aggregates(ds, opts, gran.unwrap_or(Granularity::Day));
     let mut r = Report {
         schema_version: SCHEMA_VERSION,
         account: account(ds),
         period: period_info(ctx),
         timezone: ctx.zone.name().to_string(),
-        metrics: metrics::summary(ds, opts),
-        snapshot: metrics::snapshot(ds, opts),
-        repositories: metrics::by_repository(ds, opts),
-        activity_breakdown: breakdown,
+        metrics: aggregates.summary,
+        snapshot: aggregates.snapshot,
+        repositories: aggregates.repositories,
+        activity_breakdown: aggregates.breakdown,
         granularity: gran,
         coverage: coverage_for(ds, ctx.period),
         synced_at: ctx.synced_at,

@@ -7,6 +7,109 @@ pub struct BucketSummary {
     pub summary: Summary,
 }
 
+/// Activity totals shared by every report that contains the common sections.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportAggregates {
+    /// Summary for the full period.
+    pub summary: Summary,
+    /// Current-state counts and active review threads.
+    pub snapshot: Snapshot,
+    /// Activity grouped by repository.
+    pub repositories: Vec<RepoSummary>,
+    /// Activity grouped by calendar bucket.
+    pub breakdown: Vec<BucketSummary>,
+}
+
+/// Builds common report totals by selecting events once and grouping them as
+/// they are observed.
+#[must_use]
+pub fn report_aggregates(ds: &Dataset, opts: &Options, gran: Granularity) -> ReportAggregates {
+    let mut summary = SummaryAccumulator::default();
+    let mut by_date: BTreeMap<Date, SummaryAccumulator<'_>> = BTreeMap::new();
+    let mut by_repo: BTreeMap<&str, SummaryAccumulator<'_>> = BTreeMap::new();
+    let mut active_prs = BTreeSet::new();
+
+    for event in selected(ds, opts) {
+        summary.observe(ds, event, &opts.zone, opts.commit_basis);
+        by_date
+            .entry(bucket_key(
+                event_time(event, opts.commit_basis),
+                &opts.zone,
+                gran,
+            ))
+            .or_default()
+            .observe(ds, event, &opts.zone, opts.commit_basis);
+        by_repo
+            .entry(event.repository_id.as_str())
+            .or_default()
+            .observe(ds, event, &opts.zone, opts.commit_basis);
+        if !event.event_type.is_automation()
+            && let Some(pr_id) = event.parent_pr_id.as_deref()
+        {
+            active_prs.insert(pr_id);
+        }
+    }
+
+    let mut snapshot = Snapshot::default();
+    for pr in ds.pull_requests.values() {
+        if pr.state == PrState::Open
+            && pr.author.is(&ds.subject)
+            && opts.filter.matches_repo(ds, &pr.repository_id)
+        {
+            snapshot.open_prs += 1;
+        }
+    }
+    for issue in ds.issues.values() {
+        if issue.is_open
+            && issue.author.is(&ds.subject)
+            && opts.filter.matches_repo(ds, &issue.repository_id)
+        {
+            snapshot.open_issues_authored += 1;
+        }
+    }
+    for thread in ds.threads.values() {
+        if active_prs.contains(thread.pr_id.as_str()) {
+            snapshot.threads.add(thread);
+        }
+    }
+
+    let buckets = buckets(opts.period, &opts.zone, gran)
+        .into_iter()
+        .map(|bucket| BucketSummary {
+            summary: by_date
+                .remove(&bucket.key)
+                .map_or_else(|| SummaryAccumulator::default().finish(), SummaryAccumulator::finish),
+            bucket,
+        })
+        .collect();
+    let mut repositories: Vec<RepoSummary> = by_repo
+        .into_iter()
+        .map(|(id, accumulator)| {
+            let repo = ds.repositories.get(id);
+            RepoSummary {
+                repository_id: id.to_owned(),
+                full_name: ds.repo_name(id),
+                visibility: repo.map_or(Visibility::Unknown, |r| r.visibility),
+                owned: repo.is_some_and(|r| r.is_owned_by(&ds.subject, ds.subject_is_viewer)),
+                accessible: repo.is_none_or(|r| r.accessible),
+                summary: accumulator.finish(),
+            }
+        })
+        .collect();
+    repositories.sort_by(|a, b| {
+        activity_weight(&b.summary)
+            .cmp(&activity_weight(&a.summary))
+            .then_with(|| a.full_name.cmp(&b.full_name))
+    });
+
+    ReportAggregates {
+        summary: summary.finish(),
+        snapshot,
+        repositories,
+        breakdown: buckets,
+    }
+}
+
 /// Per-day/week/month summaries. Buckets partition the period, so additive
 /// counts sum to the whole-period summary.
 #[must_use]

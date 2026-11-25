@@ -122,6 +122,53 @@ fn empty_activity_reports_zero_everywhere() {
 }
 
 #[test]
+fn combined_report_aggregates_match_the_individual_calculations() {
+    let pr = pull("P1", "R_tool", 1, me());
+    let events = vec![
+        lifecycle(
+            EventId::pr_created("P1"),
+            EventType::PrOpened,
+            "R_tool",
+            "P1",
+            me(),
+            "2026-11-02T01:00:00Z",
+        ),
+        commit("R_tool", "abc", me(), "2026-11-03T02:00:00Z"),
+        comment(
+            EventType::ConversationComment,
+            "R_tool",
+            "P1",
+            "c1",
+            user("alice"),
+            "2026-11-04T03:00:00Z",
+        ),
+    ];
+    let ds = dataset(
+        vec![tool()],
+        vec![pr],
+        vec![thread("T1", "P1", Some(user("alice")))],
+        events,
+    );
+    let opts = local_days("2026-11-01", "2026-12-01", zone("Asia/Tokyo"));
+
+    for granularity in [
+        Granularity::Day,
+        Granularity::Week,
+        Granularity::Month,
+        Granularity::Year,
+    ] {
+        let combined = metrics::report_aggregates(&ds, &opts, granularity);
+        assert_eq!(combined.summary, summary(&ds, &opts));
+        assert_eq!(combined.snapshot, snapshot(&ds, &opts));
+        assert_eq!(combined.repositories, by_repository(&ds, &opts));
+        assert_eq!(
+            combined.breakdown,
+            metrics::breakdown(&ds, &opts, granularity)
+        );
+    }
+}
+
+#[test]
 fn single_commit_counts_once_on_its_committer_day() {
     let ds = dataset(
         vec![tool()],
