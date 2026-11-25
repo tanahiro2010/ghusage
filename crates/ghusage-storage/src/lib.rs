@@ -267,6 +267,7 @@ pub struct Store {
 
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const SQLITE_CACHE_SIZE_KIB: i32 = 32 * 1024;
 
 /// Turns SQLite corruption codes into [`StorageError::Corrupt`] with a
 /// message that tells the user what to do.
@@ -288,6 +289,8 @@ fn configure(conn: &Connection) -> Result<()> {
     conn.busy_timeout(BUSY_TIMEOUT)?;
     conn.pragma_update(None, "foreign_keys", true)?;
     let _mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
+    // A larger page cache reduces repeated reads when the TUI loads reports.
+    conn.pragma_update(None, "cache_size", -SQLITE_CACHE_SIZE_KIB)?;
     Ok(())
 }
 
