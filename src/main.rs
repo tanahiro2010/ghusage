@@ -400,7 +400,10 @@ async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<
         drop(progress);
         match synced {
             Ok(r) => {
-                for f in r.failures.iter().take(5) {
+                // Failed phases first: they must not be hidden behind the
+                // failures of single pull requests or issues.
+                let single = r.failures.iter().filter(|f| !r.failed_phases.contains(f));
+                for f in r.failed_phases.iter().chain(single.take(5)) {
                     eprintln!("warning: {}", ghusage_core::sanitize::sanitize_line(f));
                 }
                 match counted {
@@ -660,6 +663,9 @@ async fn sync_cmd(
                     c.reason = Some(report::scrub_names(reason, &public));
                 }
             }
+            for f in &mut r.failed_phases {
+                *f = report::scrub_names(f, &public);
+            }
         }
         to_json(&r)?
     } else {
@@ -697,6 +703,11 @@ async fn sync_cmd(
         o
     };
     print_stdout(&out)?;
+    // The other phases still ran, so this is not an error, but it must not
+    // go unnoticed either (JSON output on stdout may not be read by a person).
+    for f in &r.failed_phases {
+        eprintln!("warning: {}", ghusage_core::sanitize::sanitize_line(f));
+    }
     let status = if r.is_complete() {
         CoverageStatus::Complete
     } else {

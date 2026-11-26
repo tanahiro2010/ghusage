@@ -212,7 +212,9 @@ pub struct SyncRun {
     pub started_at: Timestamp,
     /// Run completion time, when finished.
     pub finished_at: Option<Timestamp>,
-    /// `running`, `success`, `partial`, `failed`.
+    /// `running`, `success`, `partial` (finished with some data missing),
+    /// `incomplete` (a whole phase, such as the issue search, failed; the
+    /// others finished) or `failed`.
     pub status: String,
     /// Start of the requested period, when supplied.
     pub period_start: Option<Timestamp>,

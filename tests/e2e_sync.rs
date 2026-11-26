@@ -2277,18 +2277,22 @@ async fn a_failed_first_sync_leaves_the_next_one_first_and_a_partial_one_does_no
     let server = serve(&World::base()).await;
     mount_line_counts(&server).await;
     let env = Env::new(&server);
-    // The first sync fails: pull request search answers 500 while `failing`.
+    // The first sync fails: pull request and issue search reject the token
+    // while `failing` (a search that only answers 500 fails its own phase,
+    // which leaves the sync partial, not failed).
     let failing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let on = std::sync::Arc::clone(&failing);
     Mock::given(method("GET"))
         .and(path("/search/issues"))
         .and(move |_: &wiremock::Request| on.load(std::sync::atomic::Ordering::SeqCst))
-        .respond_with(ResponseTemplate::new(500))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "message": "Bad credentials"
+        })))
         .with_priority(1)
         .mount(&server)
         .await;
     let failed = sync_in(&env, None, &["--no-diff-stats"]).await;
-    assert_ne!(failed.code, Some(0), "{}", failed.stderr);
+    failed.expect_code(3);
     failing.store(false, std::sync::atomic::Ordering::SeqCst);
     // So the next sync is still the first finished one and fetches them.
     let r = sync_in(&env, None, &[]).await;
@@ -2315,6 +2319,46 @@ async fn a_failed_first_sync_leaves_the_next_one_first_and_a_partial_one_does_no
     let r = sync_in(&env, None, &["--full"]).await;
     r.expect_code(0).assert_clean();
     assert!(r.json()["diff_stats"].is_null(), "{}", r.stdout);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_first_sync_whose_search_failed_leaves_the_next_one_first() {
+    let server = serve(&World::base()).await;
+    mount_line_counts(&server).await;
+    let env = Env::new(&server);
+    // The commit search answers 500 while `failing`: the other searches
+    // still run, but the sync did not fetch everything it was asked for.
+    let failing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let on = std::sync::Arc::clone(&failing);
+    Mock::given(method("GET"))
+        .and(path("/search/commits"))
+        .and(move |_: &wiremock::Request| on.load(std::sync::atomic::Ordering::SeqCst))
+        .respond_with(ResponseTemplate::new(500))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let failed = sync_in(&env, None, &["--no-diff-stats"]).await;
+    failed.expect_code(4).assert_clean();
+    assert!(
+        failed.stderr.contains("commit sync failed"),
+        "{}",
+        failed.stderr
+    );
+    failing.store(false, std::sync::atomic::Ordering::SeqCst);
+    // So the next sync is still the first finished one and fetches them.
+    let r = sync_in(&env, None, &[]).await;
+    r.expect_code(0).assert_clean();
+    assert!(r.json()["diff_stats"].is_object(), "{}", r.stdout);
+    // The cache shows the run in which the search failed for what it was.
+    let db = rusqlite::Connection::open(env.db_path()).unwrap();
+    let statuses: Vec<String> = db
+        .prepare("SELECT status FROM sync_runs ORDER BY id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(statuses, vec!["incomplete", "success"]);
 }
 
 /// GitHub's answer to a request over the secondary rate limit: 403 with
