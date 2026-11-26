@@ -66,7 +66,10 @@ lines each of your commits added and deleted.
   in CI (when `CI` is set, as GitHub Actions does), fetch them without the
   flag; this includes the sync a report runs on its own. `--no-diff-stats`
   turns that off. Fetched this way, a failure only prints a warning and the
-  sync or report still succeeds. After the normal sync, it looks for your
+  sync or report still succeeds. Syncs of the [terminal UI](./tui.md) do
+  not fetch line counts this way; a report with `--no-cache` starts from an
+  empty cache every time, so each such report is a first sync and fetches
+  them. After the normal sync, it looks for your
   non-merge commits in the period (by committer or author date) whose line
   counts are not in the cache yet, and fetches them through GraphQL, 100
   commits per query, with several queries in parallel (up to
