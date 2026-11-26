@@ -2503,12 +2503,11 @@ impl wiremock::Respond for UpdatedDuringSync {
             .find_map(|t| t.strip_prefix("updated:"))
             .unwrap_or_else(|| panic!("search without updated: {q}"));
         let time = |s: &str| s.parse::<jiff::Timestamp>().unwrap();
-        let (lo, hi) = match range.strip_prefix(">=") {
-            Some(lo) => (time(lo), None),
-            None => {
-                let (lo, hi) = range.split_once("..").unwrap();
-                (time(lo), Some(time(hi)))
-            }
+        let (lo, hi) = if let Some(lo) = range.strip_prefix(">=") {
+            (time(lo), None)
+        } else {
+            let (lo, hi) = range.split_once("..").unwrap();
+            (time(lo), Some(time(hi)))
         };
         let items: Vec<Value> = self
             .items
