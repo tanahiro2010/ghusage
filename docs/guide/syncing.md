@@ -130,7 +130,7 @@ Exit codes of `sync`:
 - `0`: everything was fetched completely;
 - `4`: the sync finished but some data could not be fetched completely
   (failed or partially fetched pull requests or issues, repositories whose
-  commits could not be listed, search caps);
+  commits could not be listed, search caps, a search that failed);
   the `incomplete:` lines explain what is missing;
 - `6` instead of `4` when `--require-complete` is given;
 - `3`: authentication failed; `5`: cache error (including another sync
@@ -146,6 +146,10 @@ authentication, they print a warning and show what is in the cache:
 ```text
 warning: sync failed, showing cached data: ...
 ```
+
+If only some of the data could be fetched, they print what is missing as
+warnings (for example `warning: issue search failed: ...`) and show the
+report, whose coverage tells which data kinds are incomplete.
 
 ### Recently synced data
 
@@ -242,7 +246,7 @@ Every report shows coverage per data kind for the requested period:
 | Status | Meaning |
 |---|---|
 | `complete` | Everything in scope was fetched for the whole range. |
-| `partial` | Something is missing: a search hit a cap, GitHub reported incomplete results, a repository's commits could not be listed, a pull request or issue failed or was only partially fetched. The reason is shown. |
+| `partial` | Something is missing: a search hit a cap or failed, GitHub reported incomplete results, a repository's commits could not be listed, a pull request or issue failed or was only partially fetched. The reason is shown. |
 | `not_yet_synced` | The range has never been synced for this account. |
 | `not_available` | The data cannot be obtained. |
 | `unknown` | The status could not be determined. |
@@ -374,8 +378,18 @@ deleting a repository that was already in the account's cache.
   total with exponential backoff for timeouts, network errors and HTTP
   500/502/503/504.
 - When the primary rate limit is exhausted, `ghusage` waits for the reset if
-  it is at most 15 minutes away; otherwise it stops with a rate-limit error.
-  Secondary rate limits and `Retry-After` are honored.
+  it is at most 15 minutes away; otherwise the request fails with a
+  rate-limit error. Secondary rate limits and `Retry-After` are honored.
+- Pull requests, commits and issues are synced at the same time. If the
+  search of one of them fails (a rate limit too far away, or an error that
+  persists after the retries), only that data kind is marked `partial`, with
+  the error as reason, and the others are still fetched to the end. The
+  error is printed as `warning: <kind> search failed: ...` on stderr and
+  listed in `failures`, and `sync` exits with code 4. Commits use the
+  repositories found by the pull request and issue searches, so when one of
+  those fails, commits coverage is `partial` as well and says which
+  repositories are unknown. The next sync fetches what is missing. A
+  rejected token (HTTP 401) stops the whole sync with exit code 3.
 - While a search waits for the secondary rate limit, work that does not need
   its results goes on. For example, the default branches of the repositories
   from step 1 of [How commits are found](#how-commits-are-found) are listed

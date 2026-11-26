@@ -331,7 +331,7 @@ request's life (opened, commits, force pushes, ..., merged, closed, reopened).
 | `commits_found` | Distinct commits found by commit search and the default-branch commit lists (commits found only inside pull requests are not included) |
 | `pull_requests_found`, `pull_requests_fetched`, `pull_requests_unchanged` | Pull requests found by search / fetched / skipped as unchanged |
 | `issues_found`, `issues_fetched`, `issues_unchanged` | Issues found by search / fetched / skipped as unchanged |
-| `failures` | Descriptions of pull requests or issues that failed or were partially fetched |
+| `failures` | Descriptions of pull requests or issues that failed or were partially fetched, and of searches that failed |
 | `coverage` | Coverage records written: `kind`, `start`, `end`, `status`, `scope`, `reason`, `recorded_at` |
 | `api` | `requests`, `retries`, `rate_limit_waits`, `total_api_time_ms`, `bytes_received` (including the line count requests) |
 | `diff_stats` | Only when line counts were fetched (`--diff-stats`, the first sync of an account, or a sync in CI): `commits` (your non-merge commits in the period whose line counts go into the totals), `already_known` (already in the cache, not fetched again), `fetched` (fetched now), `unavailable` (not returned by GitHub; left unknown) |
