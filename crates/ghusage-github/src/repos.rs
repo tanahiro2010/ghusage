@@ -93,44 +93,59 @@ impl RestRepo {
     }
 }
 
+/// Size of the first page of the repository list. A recent start is
+/// usually reached within the first few repositories, and GitHub answers a
+/// small page much faster than a page of 100.
+const FIRST_REPO_PAGE: &str = "30";
+
+/// Size of the pages after the first one.
+const REPO_PAGE: &str = "100";
+
 /// Repositories sorted by last push, newest first, until one was last
 /// pushed before `pushed_since`. `user` is `None` for the authenticated
 /// user (`GET /user/repos`: owned, collaborator and organization member
 /// repositories) and a login otherwise (`GET /users/{login}/repos`: only
 /// repositories the user owns).
+///
+/// The list starts with one small page. If that page neither reaches an
+/// older repository nor ends the list, the list is read again from the
+/// beginning in pages of 100; repositories seen twice are kept once.
 pub(crate) async fn pushed_repositories(
     t: &Transport,
     user: Option<&str>,
     pushed_since: Timestamp,
 ) -> Result<Vec<PushedRepository>, ApiError> {
-    let first = user.map_or_else(
-        || {
-            t.rest_url(
-                &["user", "repos"],
-                &[
-                    ("affiliation", "owner,collaborator,organization_member"),
-                    ("sort", "pushed"),
-                    ("direction", "desc"),
-                    ("per_page", "100"),
-                ],
-            )
-        },
-        |login| {
-            t.rest_url(
-                &["users", login, "repos"],
-                &[
-                    ("type", "owner"),
-                    ("sort", "pushed"),
-                    ("direction", "desc"),
-                    ("per_page", "100"),
-                ],
-            )
-        },
-    );
+    let list_url = |per_page: &str| {
+        user.map_or_else(
+            || {
+                t.rest_url(
+                    &["user", "repos"],
+                    &[
+                        ("affiliation", "owner,collaborator,organization_member"),
+                        ("sort", "pushed"),
+                        ("direction", "desc"),
+                        ("per_page", per_page),
+                    ],
+                )
+            },
+            |login| {
+                t.rest_url(
+                    &["users", login, "repos"],
+                    &[
+                        ("type", "owner"),
+                        ("sort", "pushed"),
+                        ("direction", "desc"),
+                        ("per_page", per_page),
+                    ],
+                )
+            },
+        )
+    };
     let mut out = Vec::new();
     let mut seen_ids = HashSet::new();
     let mut seen_urls = HashSet::new();
-    let mut next = Some(first);
+    let mut next = Some(list_url(FIRST_REPO_PAGE));
+    let mut first = true;
     while let Some(url) = next.take() {
         if !seen_urls.insert(url.to_string()) || seen_urls.len() > MAX_PAGES {
             return Err(ApiError::InvalidResponse(
@@ -170,6 +185,11 @@ pub(crate) async fn pushed_repositories(
             break;
         }
         next = t.next_link(&headers)?;
+        if std::mem::take(&mut first) && next.is_some() {
+            // Page numbers depend on the page size, so the large pages
+            // start over from the first repository.
+            next = Some(list_url(REPO_PAGE));
+        }
     }
     Ok(out)
 }

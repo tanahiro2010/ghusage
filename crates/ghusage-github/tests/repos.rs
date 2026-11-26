@@ -67,6 +67,91 @@ fn jan() -> ghusage_core::time::Period {
     period("2024-01-10T00:00:00Z", "2024-01-20T00:00:00Z")
 }
 
+/// `n` repositories `R_0`.. pushed one hour apart, the newest at `newest`.
+fn pushed_hourly(n: usize, newest: &str) -> Vec<Value> {
+    let newest = ts(newest);
+    (0..n)
+        .map(|i| {
+            let at = newest - jiff::SignedDuration::from_hours(i as i64);
+            listed(
+                &format!("R_{i}"),
+                "acme",
+                &format!("r{i}"),
+                false,
+                Some(&at.to_string()),
+            )
+        })
+        .collect()
+}
+
+/// Mounts `GET /user/repos` serving `all` (sorted newest push first) the
+/// way GitHub pages it: `per_page` and `page` select a slice, and a `next`
+/// link is present while items remain.
+async fn mount_repo_list(server: &MockServer, route: &str, all: &[Value]) {
+    use wiremock::{Request, Respond};
+    struct Pages {
+        uri: String,
+        route: String,
+        all: Vec<Value>,
+    }
+    impl Respond for Pages {
+        fn respond(&self, req: &Request) -> ResponseTemplate {
+            let q: std::collections::HashMap<String, String> =
+                req.url.query_pairs().into_owned().collect();
+            let per_page: usize = q.get("per_page").map_or(30, |v| v.parse().unwrap());
+            let page: usize = q.get("page").map_or(1, |v| v.parse().unwrap());
+            let from = (page - 1) * per_page;
+            let slice: Vec<Value> = self.all.iter().skip(from).take(per_page).cloned().collect();
+            let mut resp = ResponseTemplate::new(200).set_body_json(Value::Array(slice));
+            if from + per_page < self.all.len() {
+                resp = resp.insert_header(
+                    "link",
+                    format!(
+                        "<{}{}?per_page={per_page}&page={}>; rel=\"next\"",
+                        self.uri,
+                        self.route,
+                        page + 1
+                    )
+                    .as_str(),
+                );
+            }
+            resp
+        }
+    }
+    Mock::given(method("GET"))
+        .and(path(route))
+        .respond_with(Pages {
+            uri: server.uri(),
+            route: route.into(),
+            all: all.to_vec(),
+        })
+        .mount(server)
+        .await;
+}
+
+/// The `(per_page, page)` of every repository list request, in order.
+async fn list_requests(server: &MockServer, route: &str) -> Vec<(String, Option<String>)> {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == route)
+        .map(|r| {
+            let q: std::collections::HashMap<String, String> =
+                r.url.query_pairs().into_owned().collect();
+            (
+                q.get("per_page").cloned().unwrap_or_default(),
+                q.get("page").cloned(),
+            )
+        })
+        .collect()
+}
+
+fn ids(repos: &[ghusage_github::PushedRepository]) -> Vec<String> {
+    repos.iter().map(|r| r.repository.id.clone()).collect()
+}
+
 #[tokio::test]
 async fn viewer_repositories_are_paged_until_older_than_the_start() {
     let server = MockServer::start().await;
@@ -80,6 +165,29 @@ async fn viewer_repositories_are_paged_until_older_than_the_start() {
         listed("R_d", "acme", "d", false, Some("2024-01-09T23:59:59Z")),
         listed("R_e", "acme", "e", false, Some("2023-06-01T00:00:00Z")),
     ];
+    // A small first page without anything older than the start: the list
+    // continues with large pages from the beginning.
+    Mock::given(method("GET"))
+        .and(path("/user/repos"))
+        .and(query_param(
+            "affiliation",
+            "owner,collaborator,organization_member",
+        ))
+        .and(query_param("sort", "pushed"))
+        .and(query_param("direction", "desc"))
+        .and(query_param("per_page", "30"))
+        .and(query_param_is_missing("page"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!([page1[0].clone()]))
+                .insert_header(
+                    "link",
+                    next_link(&server, "/user/repos?per_page=30&page=2").as_str(),
+                ),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
     Mock::given(method("GET"))
         .and(path("/user/repos"))
         .and(query_param(
@@ -104,6 +212,7 @@ async fn viewer_repositories_are_paged_until_older_than_the_start() {
     Mock::given(method("GET"))
         .and(path("/user/repos"))
         .and(query_param("page", "2"))
+        .and(query_param("per_page", "100"))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_json(Value::Array(page2))
@@ -139,6 +248,141 @@ async fn viewer_repositories_are_paged_until_older_than_the_start() {
     assert_eq!(b.repository.visibility, Visibility::Private);
     assert_eq!(b.repository.viewer_permission.as_deref(), Some("WRITE"));
     assert_eq!(b.repository.owner_kind, ActorKind::Organization);
+}
+
+#[tokio::test]
+async fn a_short_list_takes_one_small_request() {
+    // A recent start is usually reached within the first few repositories:
+    // one small page answers it, and no large page is requested.
+    let server = MockServer::start().await;
+    let all = pushed_hourly(250, "2024-01-20T00:00:00Z");
+    mount_repo_list(&server, "/user/repos", &all).await;
+    // R_0..R_12 are pushed at or after the start.
+    let repos = client(&server)
+        .pushed_repositories(None, ts("2024-01-19T12:00:00Z"))
+        .await
+        .unwrap();
+    assert_eq!(ids(&repos), ids_of(0..13));
+    assert_eq!(
+        list_requests(&server, "/user/repos").await,
+        vec![("30".into(), None)]
+    );
+}
+
+fn ids_of(r: std::ops::Range<usize>) -> Vec<String> {
+    r.map(|i| format!("R_{i}")).collect()
+}
+
+#[tokio::test]
+async fn a_long_list_continues_with_large_pages_without_duplicates() {
+    // An early start reaches past the small first page: the list goes on
+    // with pages of 100 from the beginning, and every repository pushed at
+    // or after the start is returned once, in push order.
+    let server = MockServer::start().await;
+    let all = pushed_hourly(250, "2024-01-20T00:00:00Z");
+    mount_repo_list(&server, "/user/repos", &all).await;
+    // R_0..R_149 are pushed at or after the start (R_149 exactly at it).
+    let start = ts("2024-01-20T00:00:00Z") - jiff::SignedDuration::from_hours(149);
+    let repos = client(&server)
+        .pushed_repositories(None, start)
+        .await
+        .unwrap();
+    assert_eq!(ids(&repos), ids_of(0..150));
+    assert_eq!(
+        list_requests(&server, "/user/repos").await,
+        vec![
+            ("30".into(), None),
+            ("100".into(), None),
+            ("100".into(), Some("2".into())),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_repository_pushed_exactly_at_the_start_does_not_end_the_list() {
+    // The 30th repository of the small page is pushed exactly at the start,
+    // so it is kept and the list continues to the first older one.
+    let server = MockServer::start().await;
+    let all = pushed_hourly(40, "2024-01-20T00:00:00Z");
+    mount_repo_list(&server, "/user/repos", &all).await;
+    let start = ts("2024-01-20T00:00:00Z") - jiff::SignedDuration::from_hours(29);
+    let repos = client(&server)
+        .pushed_repositories(None, start)
+        .await
+        .unwrap();
+    assert_eq!(ids(&repos), ids_of(0..30));
+    assert_eq!(
+        list_requests(&server, "/user/repos").await,
+        vec![("30".into(), None), ("100".into(), None)]
+    );
+}
+
+#[tokio::test]
+async fn every_repository_is_returned_when_none_is_older_than_the_start() {
+    let server = MockServer::start().await;
+    let all = pushed_hourly(130, "2024-01-20T00:00:00Z");
+    mount_repo_list(&server, "/user/repos", &all).await;
+    let repos = client(&server)
+        .pushed_repositories(None, ts("2023-01-01T00:00:00Z"))
+        .await
+        .unwrap();
+    assert_eq!(ids(&repos), ids_of(0..130));
+    assert_eq!(
+        list_requests(&server, "/user/repos").await,
+        vec![
+            ("30".into(), None),
+            ("100".into(), None),
+            ("100".into(), Some("2".into())),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_list_shorter_than_the_small_page_takes_one_request() {
+    let server = MockServer::start().await;
+    let all = pushed_hourly(7, "2024-01-20T00:00:00Z");
+    mount_repo_list(&server, "/user/repos", &all).await;
+    let repos = client(&server)
+        .pushed_repositories(None, ts("2023-01-01T00:00:00Z"))
+        .await
+        .unwrap();
+    assert_eq!(ids(&repos), ids_of(0..7));
+    assert_eq!(
+        list_requests(&server, "/user/repos").await,
+        vec![("30".into(), None)]
+    );
+}
+
+#[tokio::test]
+async fn another_users_list_starts_small_as_well() {
+    let server = MockServer::start().await;
+    let all = pushed_hourly(250, "2024-01-20T00:00:00Z");
+    mount_repo_list(&server, "/users/bob/repos", &all).await;
+    let recent = client(&server)
+        .pushed_repositories(Some("bob"), ts("2024-01-19T12:00:00Z"))
+        .await
+        .unwrap();
+    assert_eq!(ids(&recent), ids_of(0..13));
+    assert_eq!(
+        list_requests(&server, "/users/bob/repos").await,
+        vec![("30".into(), None)]
+    );
+    server.reset().await;
+    mount_repo_list(&server, "/users/bob/repos", &all).await;
+    let start = ts("2024-01-20T00:00:00Z") - jiff::SignedDuration::from_hours(149);
+    let long = client(&server)
+        .pushed_repositories(Some("bob"), start)
+        .await
+        .unwrap();
+    assert_eq!(ids(&long), ids_of(0..150));
+    assert_eq!(
+        list_requests(&server, "/users/bob/repos").await,
+        vec![
+            ("30".into(), None),
+            ("100".into(), None),
+            ("100".into(), Some("2".into())),
+        ]
+    );
 }
 
 #[tokio::test]
