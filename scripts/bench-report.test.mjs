@@ -288,3 +288,84 @@ test("flags a large p95-only change without counting it", () => {
   assert.match(md, /\*\*0\*\* slower and \*\*0\*\* faster/);
   assert.match(md, /p95 alone moves by more than 50%.*p95 only/);
 });
+
+test("does not mark latency changes of a few timer steps", () => {
+  // The latency bench prints times in steps of 0.1 ms, so a scenario that
+  // takes well under a millisecond moves by tens of percent from one step.
+  const md = buildReport({
+    latencyBase: parseLatency(
+      latencyLines([
+        ["cached pull request detail load (PR_0)", 0.2, 0.2],
+        ["cached 7-day report aggregation (preloaded)", 1.0, 1.0],
+        ["cached 30-day report aggregation (preloaded)", 1.0, 1.0],
+      ]),
+    ),
+    latencyHead: parseLatency(
+      latencyLines([
+        ["cached pull request detail load (PR_0)", 0.2, 0.4],
+        ["cached 7-day report aggregation (preloaded)", 1.4, 1.4],
+        ["cached 30-day report aggregation (preloaded)", 0.6, 0.6],
+      ]),
+    ),
+    runner: "r",
+  });
+  assert.match(md, /\| cached pull request detail load \(PR\\_0\) \|.*\| \+100\.0% \| ≤ 1000 ms pass \| ≈ \|/);
+  assert.match(md, /\| cached 7-day report aggregation \(preloaded\) \|.*\| \+40\.0% \| ≤ 1000 ms pass \| ≈ \|/);
+  assert.match(md, /\| cached 30-day report aggregation \(preloaded\) \|.*\| -40\.0% \| ≤ 1000 ms pass \| ≈ \|/);
+  assert.match(md, /\*\*0\*\* slower and \*\*0\*\* faster/);
+  assert.match(md, /p95 changes smaller than 0\.5 ms are not marked/);
+});
+
+test("still marks small scenarios that move by more than a few timer steps", () => {
+  const md = buildReport({
+    latencyBase: parseLatency(
+      latencyLines([
+        ["cached pull request detail load (PR_0)", 0.2, 0.2],
+        ["cached 7-day report aggregation (preloaded)", 1.0, 1.0],
+        ["cached 30-day report aggregation (preloaded)", 1.2, 1.2],
+      ]),
+    ),
+    latencyHead: parseLatency(
+      latencyLines([
+        ["cached pull request detail load (PR_0)", 0.2, 0.7],
+        ["cached 7-day report aggregation (preloaded)", 1.6, 1.6],
+        ["cached 30-day report aggregation (preloaded)", 0.6, 0.6],
+      ]),
+    ),
+    runner: "r",
+  });
+  assert.match(md, /\| cached pull request detail load \(PR\\_0\) \|.*\| \+250\.0% \| ≤ 1000 ms pass \| :warning: p95 only \|/);
+  assert.match(md, /\| cached 7-day report aggregation \(preloaded\) \|.*\| \+60\.0% \| ≤ 1000 ms pass \| :red_circle: slower \|/);
+  assert.match(md, /\| cached 30-day report aggregation \(preloaded\) \|.*\| -50\.0% \| ≤ 1000 ms pass \| :green_circle: faster \|/);
+  assert.match(md, /\*\*1\*\* slower and \*\*1\*\* faster/);
+});
+
+test("treats a change of exactly the threshold the same whatever the values", () => {
+  // (1.8 - 1.2) / 1.2 is 50.000000000000014% in floating point, (3 - 2) / 2 is 50%.
+  assert.equal(latencyVerdict(change(1.2, 1.8), 0, undefined, 10), latencyVerdict(change(2.0, 3.0), 0, undefined, 10));
+  assert.equal(latencyVerdict(change(1.2, 1.8), 0, undefined, 10), "≈");
+  // (8.8 - 8) / 8 is 10.000000000000009%, (44 - 40) / 40 is 10%.
+  assert.equal(verdict(change(8.0, 8.8), 10), verdict(change(40.0, 44.0), 10));
+  assert.equal(verdict(change(8.0, 8.8), 10), "≈");
+  // (6.3 - 7) / 7 is -10.000000000000002%, (36 - 40) / 40 is -10%.
+  assert.equal(verdict(change(7.0, 6.3), 10), verdict(change(40.0, 36.0), 10));
+  assert.equal(verdict(change(7.0, 6.3), 10), "≈");
+  const md = buildReport({
+    latencyBase: parseLatency(
+      latencyLines([
+        ["cached 7-day report aggregation (preloaded)", 1.2, 1.2],
+        ["cached 30-day report aggregation (preloaded)", 8.0, 8.0],
+      ]),
+    ),
+    latencyHead: parseLatency(
+      latencyLines([
+        ["cached 7-day report aggregation (preloaded)", 1.2, 1.8],
+        ["cached 30-day report aggregation (preloaded)", 8.8, 8.8],
+      ]),
+    ),
+    runner: "r",
+  });
+  assert.match(md, /\| cached 7-day report aggregation \(preloaded\) \|.*\| \+50\.0% \| ≤ 1000 ms pass \| ≈ \|/);
+  assert.match(md, /\| cached 30-day report aggregation \(preloaded\) \|.*\| \+10\.0% \| ≤ 1000 ms pass \| ≈ \|/);
+  assert.match(md, /\*\*0\*\* slower and \*\*0\*\* faster/);
+});
