@@ -1,0 +1,197 @@
+name: Benchmarks on request
+
+# Performance pull requests (title `perf: ...`) get a comment with a checkbox.
+# When the repository owner checks it, the benchmarks of the pull request are
+# compared with its base on one runner and posted as a comment; anyone else's
+# check is undone at once. Pull requests into `release` are benchmarked on
+# every push by bench.yml instead.
+on:
+  pull_request_target:
+    types: [opened, reopened, edited]
+  issue_comment:
+    types: [edited]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CRITERION_ARGS: --warm-up-time 2 --measurement-time 5 --noplot
+  REGRESSION_THRESHOLD: "10"
+
+jobs:
+  # The privileged jobs below (offer, gate, report) only run the trusted script
+  # from the default branch; they never check out or execute pull request
+  # content.
+  offer:
+    name: offer benchmarks
+    if: github.event_name == 'pull_request_target' && startsWith(github.event.pull_request.title, 'perf')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout trusted script
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts/perf-bench.cjs
+          sparse-checkout-cone-mode: false
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const { offer } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/perf-bench.cjs`);
+            core.info(await offer({ github, context }));
+
+  gate:
+    name: check who asked
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      github.event.comment.user.login == 'github-actions[bot]' &&
+      startsWith(github.event.comment.body, '<!-- ghusage-perf-bench -->')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+      number: ${{ steps.gate.outputs.number }}
+      head_sha: ${{ steps.gate.outputs.head_sha }}
+      base_sha: ${{ steps.gate.outputs.base_sha }}
+      base_ref: ${{ steps.gate.outputs.base_ref }}
+    steps:
+      - name: Checkout trusted script
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts/perf-bench.cjs
+          sparse-checkout-cone-mode: false
+      - id: gate
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { gate } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/perf-bench.cjs`);
+            const run = await gate({ github, context });
+            core.setOutput("run", run ? "true" : "false");
+            if (run) for (const [key, value] of Object.entries(run)) core.setOutput(key, String(value));
+
+  bench:
+    name: compare with base
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Runs pull request code: read-only token, no secrets, and the Rust cache
+    # is restored but never saved, so the run cannot change what other
+    # workflows use.
+    permissions:
+      contents: read
+    concurrency:
+      group: perf-bench-${{ needs.gate.outputs.number }}
+      cancel-in-progress: true
+    steps:
+      - name: Check out the pull request
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.gate.outputs.head_sha }}
+          submodules: false
+          persist-credentials: false
+      - name: Check out the base
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.gate.outputs.base_sha }}
+          path: .bench-base
+          submodules: false
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: ./.bench-base/.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          save-if: false
+          workspaces: |
+            . -> target
+            .bench-base -> target
+      - name: Keep Criterion results out of the target directory
+        run: echo "CRITERION_HOME=$RUNNER_TEMP/criterion" >> "$GITHUB_ENV"
+      - name: Benchmark the base
+        working-directory: .bench-base
+        run: |
+          # shellcheck disable=SC2086
+          cargo bench --bench aggregation -- $CRITERION_ARGS --save-baseline base
+          cargo bench --bench latency > "$RUNNER_TEMP/latency-base.txt" \
+            || echo "::warning::latency targets missed on the base"
+          cat "$RUNNER_TEMP/latency-base.txt"
+      - name: Benchmark the pull request
+        run: |
+          # shellcheck disable=SC2086
+          cargo bench --bench aggregation -- $CRITERION_ARGS --save-baseline head
+          cargo bench --bench latency > "$RUNNER_TEMP/latency-head.txt" \
+            || echo "::warning::latency targets missed on the pull request"
+          cat "$RUNNER_TEMP/latency-head.txt"
+      # The report is built with the base's script, not the pull request's.
+      - name: Build the report
+        env:
+          BASE_SHA: ${{ needs.gate.outputs.base_sha }}
+          HEAD_SHA: ${{ needs.gate.outputs.head_sha }}
+          BASE_REF: ${{ needs.gate.outputs.base_ref }}
+        run: |
+          node .bench-base/scripts/bench-report.mjs \
+            --criterion "$CRITERION_HOME" \
+            --base-name base --head-name head \
+            --latency-base "$RUNNER_TEMP/latency-base.txt" \
+            --latency-head "$RUNNER_TEMP/latency-head.txt" \
+            --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" --base-ref "$BASE_REF" \
+            --threshold "$REGRESSION_THRESHOLD" \
+            --out "$RUNNER_TEMP/bench-report.md"
+          cat "$RUNNER_TEMP/bench-report.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: perf-bench-report
+          path: ${{ runner.temp }}/bench-report.md
+          retention-days: 30
+
+  report:
+    name: post the result
+    needs: [gate, bench]
+    if: always() && needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout trusted script
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts/perf-bench.cjs
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@v7
+        if: needs.bench.result == 'success'
+        with:
+          name: perf-bench-report
+          path: ${{ runner.temp }}/report
+      - uses: actions/github-script@v8
+        env:
+          NUMBER: ${{ needs.gate.outputs.number }}
+          HEAD_SHA: ${{ needs.gate.outputs.head_sha }}
+          SUCCEEDED: ${{ needs.bench.result == 'success' }}
+        with:
+          script: |
+            const fs = require("node:fs");
+            const { finish } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/perf-bench.cjs`);
+            const path = `${process.env.RUNNER_TEMP}/report/bench-report.md`;
+            const report = fs.existsSync(path) ? fs.readFileSync(path, "utf8") : null;
+            await finish({
+              github,
+              context,
+              number: Number(process.env.NUMBER),
+              headSha: process.env.HEAD_SHA,
+              report,
+              succeeded: process.env.SUCCEEDED === "true",
+            });
