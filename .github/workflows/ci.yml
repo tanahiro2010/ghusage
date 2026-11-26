@@ -22,8 +22,10 @@ jobs:
   # Content hashes of what each job verifies. A job whose inputs were
   # already verified successfully on the same OS skips its work and still
   # reports success, so required checks stay satisfied: documentation-only
-  # changes and a pull request into `release` that matches a commit already
-  # verified on `dev` finish in seconds.
+  # changes finish in seconds. A pull request into `release` skips the tests
+  # only where every test already passed with the same inputs: on FULL_OS
+  # after `dev`, and on the other runners only after a weekly run, because
+  # `dev` runs just the platform-dependent tests there.
   inputs:
     name: inputs
     runs-on: ubuntu-latest
