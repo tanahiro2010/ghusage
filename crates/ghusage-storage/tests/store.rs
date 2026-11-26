@@ -2143,3 +2143,169 @@ fn viewed_copy_of_a_pull_request_synced_by_another_account_follows_the_rule() {
         assert_eq!(shared_check_owners(&path), shared_checks_owned_by("PRz"));
     }
 }
+
+/// A resync of `pr_id` whose head is still `fff666`: its checks were fetched
+/// completely (when `complete`) and only `present` was seen.
+fn shared_head_resync(
+    pr_id: &str,
+    number: u64,
+    at: Timestamp,
+    complete: bool,
+    present: &[EventId],
+) -> WriteBatch {
+    let mut b = shared_head_batch(pr_id, number, "fff666", false);
+    b.events.retain(|e| present.contains(&e.event_id));
+    let colls: &[Collection] = if complete {
+        &[Collection::Checks]
+    } else {
+        &[Collection::Comments]
+    };
+    b.pr_snapshots = vec![snapshot(pr_id, at, colls, present)];
+    b
+}
+
+#[test]
+fn removed_check_of_a_shared_head_is_noticed_through_the_other_pull_request() {
+    let mut s = store_with_base();
+    let run = EventId::check_run("CR_SHARED");
+    let status = EventId::commit_status("ST_SHARED");
+    s.apply(&shared_head_batch("PR1", 1, "fff666", false))
+        .unwrap();
+    s.apply(&shared_head_batch("PR2", 2, "fff666", false))
+        .unwrap();
+    let ci = ci_counts(&s);
+    assert_eq!((ci.failed, ci.passed), (1, 1));
+
+    // PR1 keeps the checks but is not fetched again. PR2, with the same
+    // head, is: its complete checks no longer have the check run.
+    s.apply(&shared_head_resync(
+        "PR2",
+        2,
+        t(11, 0),
+        true,
+        std::slice::from_ref(&status),
+    ))
+    .unwrap();
+    let ds = alice_dataset(&s);
+    let gone = event_by_id(&ds, &run);
+    assert_eq!(gone.parent_pr_id.as_deref(), Some("PR1"));
+    assert_eq!(gone.meta.removed_observed_at, Some(t(11, 0)));
+    assert!(!event_by_id(&ds, &status).is_removed());
+    let ci = ci_counts(&s);
+    assert_eq!((ci.failed, ci.passed), (0, 1));
+
+    // The same observation again keeps the first removal time and counts.
+    s.apply(&shared_head_resync(
+        "PR2",
+        2,
+        t(12, 0),
+        true,
+        std::slice::from_ref(&status),
+    ))
+    .unwrap();
+    assert_eq!(
+        event_by_id(&alice_dataset(&s), &run)
+            .meta
+            .removed_observed_at,
+        Some(t(11, 0))
+    );
+    let ci = ci_counts(&s);
+    assert_eq!((ci.failed, ci.passed), (0, 1));
+
+    // Seen again through PR2: no longer removed.
+    s.apply(&shared_head_resync(
+        "PR2",
+        2,
+        t(13, 0),
+        true,
+        &[run.clone(), status],
+    ))
+    .unwrap();
+    assert!(!event_by_id(&alice_dataset(&s), &run).is_removed());
+    let ci = ci_counts(&s);
+    assert_eq!((ci.failed, ci.passed), (1, 1));
+}
+
+#[test]
+fn resync_without_the_shared_head_or_complete_checks_keeps_shared_checks() {
+    let mut s = store_with_base();
+    s.apply(&shared_head_batch("PR1", 1, "fff666", false))
+        .unwrap();
+    s.apply(&shared_head_batch("PR2", 2, "fff666", false))
+        .unwrap();
+
+    // Checks of PR2 fetched only partly: nothing is concluded.
+    s.apply(&shared_head_resync("PR2", 2, t(11, 0), false, &[]))
+        .unwrap();
+    // PR2 moved to another head: its complete checks say nothing about
+    // the checks of PR1's head.
+    let mut moved = pr("PR2", "R1", 2);
+    moved.head_sha = Some("ggg777".into());
+    s.apply(&WriteBatch {
+        account: "alice".into(),
+        pull_requests: vec![moved],
+        pr_snapshots: vec![snapshot("PR2", t(12, 0), &[Collection::Checks], &[])],
+        ..Default::default()
+    })
+    .unwrap();
+    // A pull request of another repository with a commit of the same SHA.
+    let mut other = pr("PR3", "R2", 3);
+    other.head_sha = Some("FFF666".into());
+    s.apply(&WriteBatch {
+        account: "alice".into(),
+        pull_requests: vec![other],
+        pr_snapshots: vec![snapshot("PR3", t(13, 0), &[Collection::Checks], &[])],
+        ..Default::default()
+    })
+    .unwrap();
+
+    let ds = alice_dataset(&s);
+    assert!(!event_by_id(&ds, &EventId::check_run("CR_SHARED")).is_removed());
+    assert!(!event_by_id(&ds, &EventId::commit_status("ST_SHARED")).is_removed());
+    let ci = ci_counts(&s);
+    assert_eq!((ci.failed, ci.passed), (1, 1));
+}
+
+#[test]
+fn removed_shared_check_is_noticed_after_its_owner_moved_to_another_head() {
+    let mut s = store_with_base();
+    let run = EventId::check_run("CR_SHARED");
+    let status = EventId::commit_status("ST_SHARED");
+    let mut first = shared_head_batch("PR1", 1, "fff666", false);
+    first.pr_commits = vec![PrCommitLink {
+        pr_id: "PR1".into(),
+        repository_id: "R1".into(),
+        sha: "fff666".into(),
+        is_current: true,
+    }];
+    s.apply(&first).unwrap();
+    s.apply(&shared_head_batch("PR2", 2, "fff666", false))
+        .unwrap();
+    // PR1 has a new head now; the checks of its old head stay its own.
+    let mut moved = pr("PR1", "R1", 1);
+    moved.head_sha = Some("hhh888".into());
+    s.apply(&WriteBatch {
+        account: "alice".into(),
+        pull_requests: vec![moved],
+        pr_snapshots: vec![snapshot("PR1", t(10, 0), &[Collection::Checks], &[])],
+        ..Default::default()
+    })
+    .unwrap();
+    let ci = ci_counts(&s);
+    assert_eq!((ci.failed, ci.passed), (1, 1));
+
+    // PR2 still has that commit as its head and no longer sees the run.
+    s.apply(&shared_head_resync(
+        "PR2",
+        2,
+        t(11, 0),
+        true,
+        std::slice::from_ref(&status),
+    ))
+    .unwrap();
+    let ds = alice_dataset(&s);
+    let gone = event_by_id(&ds, &run);
+    assert_eq!(gone.parent_pr_id.as_deref(), Some("PR1"));
+    assert_eq!(gone.meta.removed_observed_at, Some(t(11, 0)));
+    assert!(!event_by_id(&ds, &status).is_removed());
+}
