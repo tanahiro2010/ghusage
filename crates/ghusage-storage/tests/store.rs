@@ -2074,3 +2074,30 @@ fn viewing_a_pull_request_does_not_take_shared_checks_from_a_synced_one() {
         assert_eq!((ci.failed, ci.passed), (1, 1));
     }
 }
+
+#[test]
+fn checks_shared_by_two_viewed_pull_requests_belong_to_one_regardless_of_order() {
+    // Neither pull request is synced by an account: the lower number keeps
+    // the checks, also when its id sorts after the other one.
+    let low = shared_head_batch("PRz", 1, "fff666", true);
+    let high = shared_head_batch("PRa", 2, "fff666", true);
+    for order in [[&low, &high], [&high, &low]] {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, path) = file_store_with_base(&dir);
+        s.apply(order[0]).unwrap();
+        s.apply(order[1]).unwrap();
+        assert_eq!(shared_check_owners(&path), shared_checks_owned_by("PRz"));
+        s.apply(order[1]).unwrap();
+        s.apply(order[0]).unwrap();
+        assert_eq!(shared_check_owners(&path), shared_checks_owned_by("PRz"));
+        let shown = s
+            .load_pr_dataset(&subject("alice"), true, "PRz")
+            .unwrap()
+            .events
+            .iter()
+            .filter(|e| e.parent_pr_id.as_deref() == Some("PRz"))
+            .filter(|e| matches!(e.event_type, EventType::CheckRun | EventType::CommitStatus))
+            .count();
+        assert_eq!(shown, 2);
+    }
+}

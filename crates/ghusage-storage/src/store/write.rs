@@ -234,11 +234,12 @@ fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
             .as_deref()
             .is_some_and(|id| viewed_prs.contains(id))
             || viewed_commit_events.contains(e.event_id.as_str());
+        let owner = owning_pull_request(tx, e, viewed_detail)?;
         let reattributed;
-        let stored = match owning_pull_request(tx, e, viewed_detail)? {
+        let stored = match &owner {
             Some(owner) if e.parent_pr_id.as_deref() != Some(owner.as_str()) => {
                 reattributed = ActivityEvent {
-                    parent_pr_id: Some(owner),
+                    parent_pr_id: Some(owner.clone()),
                     ..e.clone()
                 };
                 &reattributed
@@ -248,6 +249,10 @@ fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
         let changed = upsert_event(tx, stored, viewed_detail)?;
         if changed || !viewed_detail {
             project_event(tx, stored)?;
+        } else if let Some(owner) = &owner {
+            // A viewed copy leaves the stored event as it is, except for
+            // its owner between pull requests that were only viewed.
+            set_owner(tx, e.event_id.as_str(), owner)?;
         }
         if !viewed_detail && e
             .parent_pr_id
@@ -555,7 +560,8 @@ fn upsert_thread(
 /// pull requests (the checks of a head commit they share) keeps one owner
 /// whatever the order they are fetched in: a pull request synced by an
 /// account before one only viewed, then the lowest number, then the lowest
-/// id. `None` keeps the event's own parent.
+/// id. A viewed copy never takes an event from a synced pull request.
+/// `None` keeps the stored owner (or the event's own parent when new).
 fn owning_pull_request(
     tx: &Transaction<'_>,
     e: &ActivityEvent,
@@ -564,9 +570,6 @@ fn owning_pull_request(
     let Some(incoming) = e.parent_pr_id.as_deref() else {
         return Ok(None);
     };
-    if viewed_detail {
-        return Ok(None);
-    }
     let existing: Option<String> = tx
         .query_row(
             "SELECT parent_pr_id FROM activity_events WHERE event_id = ?1",
@@ -578,7 +581,10 @@ fn owning_pull_request(
     let Some(existing) = existing.filter(|x| x != incoming) else {
         return Ok(None);
     };
-    Ok(tx
+    if viewed_detail && synced_by_an_account(tx, &existing)? {
+        return Ok(None);
+    }
+    let owner: Option<String> = tx
         .query_row(
             "SELECT id FROM pull_requests p WHERE id IN (?1, ?2) \
              ORDER BY NOT EXISTS (SELECT 1 FROM account_pull_requests ap \
@@ -586,7 +592,31 @@ fn owning_pull_request(
             params![existing, incoming],
             |r| r.get(0),
         )
-        .optional()?)
+        .optional()?;
+    Ok(owner.filter(|o| *o != existing || !viewed_detail))
+}
+
+fn synced_by_an_account(tx: &Transaction<'_>, pr_id: &str) -> Result<bool> {
+    row_exists(
+        tx,
+        "SELECT 1 FROM account_pull_requests WHERE pr_id = ?1 AND viewed = 0",
+        pr_id,
+    )
+}
+
+/// Moves a stored event, and its entity projection, to another pull request.
+fn set_owner(tx: &Transaction<'_>, event_id: &str, pr_id: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE activity_events SET parent_pr_id = ?2 WHERE event_id = ?1",
+        params![event_id, pr_id],
+    )?;
+    for table in ["pull_request_reviews", "pull_request_comments", "check_runs"] {
+        tx.execute(
+            &format!("UPDATE {table} SET pr_id = ?2 WHERE event_id = ?1"),
+            params![event_id, pr_id],
+        )?;
+    }
+    Ok(())
 }
 
 /// Upserts an event by id. A removal observation already stored is kept
