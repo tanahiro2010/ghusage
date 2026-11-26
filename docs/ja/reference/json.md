@@ -302,7 +302,7 @@ ghusage prs --format csv > prs.csv
 | `issues_found`, `issues_fetched`, `issues_unchanged` | 検索で見つかった / 取得した / 変更がないため取得を省いた Issue の数 |
 | `failures` | 取得に失敗した、または一部しか取得できなかったプルリクエストや Issue の説明 |
 | `coverage` | 書き込んだカバレッジの記録: `kind`、`start`、`end`、`status`、`scope`、`reason`、`recorded_at` |
-| `api` | `requests`、`retries`、`rate_limit_waits`、`total_api_time_ms`、`bytes_received`(行数のリクエストも含む) |
+| `api` | `requests`、`retries`、`rate_limit_waits`、`total_api_time_ms`、`bytes_received`、`graphql_points`(使った GraphQL のレート制限のポイント。GitHub が GraphQL のクエリごとに返すコストの合計)。どれも行数のリクエストを含む |
 | `diff_stats` | 行数を取得したとき(`--diff-stats`、アカウントの最初の同期、CI での同期)だけ入ります。`commits`(期間内の自分のマージでないコミットのうち、行数を合計に入れるもの)、`already_known`(キャッシュにすでにあり、取り直さなかったもの)、`fetched`(今回取得したもの)、`unavailable`(GitHub が返さず、不明のままのもの) |
 
 ### doctor
