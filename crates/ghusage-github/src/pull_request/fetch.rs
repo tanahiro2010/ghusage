@@ -80,37 +80,39 @@ async fn collect_pr_checks(
     }
 }
 
-async fn fetch_input(
-    t: &Transport,
+/// What the pull request query returned for one pull request.
+struct MainPart {
+    repository: ghusage_core::model::Repository,
+    pr: GqlPullRequest,
+    pr_id: String,
+    created_at: Timestamp,
+    pr_url: String,
+    tracker: Tracker,
+    head_sha: Option<String>,
+    head_commit: Option<HeadCommit>,
+    checks_from_graphql: Option<GraphqlChecks>,
+}
+
+/// Reads one pull request from the value of `repository` in the pull
+/// request query and the errors whose paths start there.
+fn read_main(
     owner: &str,
     name: &str,
     number: u64,
-) -> Result<FetchedPr, ApiError> {
+    repo_value: Option<&Value>,
+    errors: &[GraphqlError],
+) -> Result<MainPart, ApiError> {
     let what = format!("pull request {owner}/{name}#{number}");
-    let resp = t
-        .graphql(
-            &queries::pull_request(),
-            json!({ "owner": owner, "name": name, "number": number }),
-        )
-        .await?;
-    let repo_value = resp
-        .data
-        .as_ref()
-        .and_then(|d| d.get("repository"))
-        .filter(|v| !v.is_null());
-    let Some(repo_value) = repo_value else {
-        return Err(gql::failure(
-            &resp.errors,
-            &format!("repository {owner}/{name}"),
-        ));
+    let Some(repo_value) = repo_value.filter(|v| !v.is_null()) else {
+        return Err(gql::failure(errors, &format!("repository {owner}/{name}")));
     };
     let pr_value = repo_value.get("pullRequest").filter(|v| !v.is_null());
     let Some(pr_value) = pr_value else {
-        return Err(gql::failure(&resp.errors, &what));
+        return Err(gql::failure(errors, &what));
     };
     let repo: GqlRepository = gql::from_value(Some(repo_value));
     let repository = repo.to_repository()?;
-    let mut pr: GqlPullRequest = serde_json::from_value(pr_value.clone())
+    let pr: GqlPullRequest = serde_json::from_value(pr_value.clone())
         .map_err(|e| ApiError::InvalidResponse(format!("{what}: {e}")))?;
     let missing = |f: &str| ApiError::InvalidResponse(format!("{what} is missing `{f}`"));
     let pr_id = pr.id.clone().ok_or_else(|| missing("id"))?;
@@ -118,9 +120,8 @@ async fn fetch_input(
     let pr_url = pr.url.clone().ok_or_else(|| missing("url"))?;
 
     let mut tracker = Tracker::default();
-    mark_errors(&resp.errors, &mut tracker);
+    mark_errors(errors, &mut tracker);
 
-    let mut checks_tracker = Tracker::default();
     let head_sha = pr.head_ref_oid.clone();
     let head_commit = pr
         .head_commit
@@ -133,8 +134,57 @@ async fn fetch_input(
     let checks_from_graphql = head_commit
         .as_ref()
         .filter(|_| head_sha.is_some())
-        .and_then(|c| graphql_checks(c, &resp.errors));
+        .and_then(|c| graphql_checks(c, errors));
+    Ok(MainPart {
+        repository,
+        pr,
+        pr_id,
+        created_at,
+        pr_url,
+        tracker,
+        head_sha,
+        head_commit,
+        checks_from_graphql,
+    })
+}
 
+async fn fetch_input(
+    t: &Transport,
+    owner: &str,
+    name: &str,
+    number: u64,
+) -> Result<FetchedPr, ApiError> {
+    let resp = t
+        .graphql(
+            &queries::pull_request(),
+            json!({ "owner": owner, "name": name, "number": number }),
+        )
+        .await?;
+    let repo_value = resp.data.as_ref().and_then(|d| d.get("repository"));
+    let main = read_main(owner, name, number, repo_value, &resp.errors)?;
+    fetch_rest(t, owner, name, main).await
+}
+
+/// Fetches the later pages and the checks of a pull request read by
+/// [`read_main`].
+async fn fetch_rest(
+    t: &Transport,
+    owner: &str,
+    name: &str,
+    main: MainPart,
+) -> Result<FetchedPr, ApiError> {
+    let MainPart {
+        repository,
+        mut pr,
+        pr_id,
+        created_at,
+        pr_url,
+        mut tracker,
+        head_sha,
+        head_commit,
+        checks_from_graphql,
+    } = main;
+    let mut checks_tracker = Tracker::default();
     let graphql_pages = collect_graphql_pages(t, &pr_id, &mut pr, &mut tracker);
     let checks = collect_pr_checks(
         t,
@@ -177,6 +227,102 @@ pub(crate) async fn fetch(
     name: &str,
     number: u64,
 ) -> Result<PrBundle, ApiError> {
+    Ok(bundle(fetch_input(t, owner, name, number).await?, number))
+}
+
+/// Pull requests per batched query. Each is a full pull request query
+/// (about 15,000 of GitHub's 500,000 nodes per query); a small batch keeps
+/// one slow pull request from delaying many others.
+pub(crate) const BATCH: usize = 5;
+
+/// Fetches pull requests in queries of up to [`BATCH`], with results in the
+/// order of `prs`. Later pages and checks are fetched per pull request as
+/// in [`fetch`].
+pub(crate) async fn fetch_many(
+    t: &Transport,
+    prs: &[(&str, &str, u64)],
+) -> Vec<Result<PrBundle, ApiError>> {
+    let batches = prs.chunks(BATCH).map(|b| fetch_batch(t, b));
+    futures::future::join_all(batches)
+        .await
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+async fn fetch_batch(t: &Transport, prs: &[(&str, &str, u64)]) -> Vec<Result<PrBundle, ApiError>> {
+    if let [(owner, name, number)] = prs {
+        return vec![fetch(t, owner, name, *number).await];
+    }
+    let mut vars = serde_json::Map::new();
+    for (i, (owner, name, number)) in prs.iter().enumerate() {
+        vars.insert(format!("o{i}"), json!(owner));
+        vars.insert(format!("n{i}"), json!(name));
+        vars.insert(format!("k{i}"), json!(number));
+    }
+    let resp = match t
+        .graphql(&queries::pull_requests(prs.len()), Value::Object(vars))
+        .await
+    {
+        Ok(r) => r,
+        Err(e) if is_fatal(&e) => return prs.iter().map(|_| Err(e.clone())).collect(),
+        // Nothing is known about any of them: ask for each on its own.
+        Err(_) => return fetch_each(t, prs).await,
+    };
+    let Some(errors) = errors_by_alias(resp.errors, prs.len()) else {
+        // An error that may belong to any of them.
+        return fetch_each(t, prs).await;
+    };
+    let data = resp.data.as_ref();
+    let fetches = prs
+        .iter()
+        .zip(errors)
+        .enumerate()
+        .map(|(i, ((owner, name, number), errors))| {
+            let repo_value = data.and_then(|d| d.get(format!("r{i}")));
+            async move {
+                let returned = repo_value
+                    .and_then(|r| r.get("pullRequest"))
+                    .is_some_and(|p| !p.is_null());
+                if !returned && errors.is_empty() {
+                    // Left out without a reason: ask for it on its own.
+                    return fetch(t, owner, name, *number).await;
+                }
+                let main = read_main(owner, name, *number, repo_value, &errors)?;
+                Ok(bundle(fetch_rest(t, owner, name, main).await?, *number))
+            }
+        });
+    futures::future::join_all(fetches).await
+}
+
+async fn fetch_each(t: &Transport, prs: &[(&str, &str, u64)]) -> Vec<Result<PrBundle, ApiError>> {
+    futures::future::join_all(
+        prs.iter()
+            .map(|(owner, name, number)| fetch(t, owner, name, *number)),
+    )
+    .await
+}
+
+/// Splits the errors of a batched query by alias (`r<i>`), with each path
+/// rewritten to start at `repository` as in the single query. `None` when
+/// an error has no path or names no alias of the query.
+fn errors_by_alias(errors: Vec<GraphqlError>, count: usize) -> Option<Vec<Vec<GraphqlError>>> {
+    let mut out: Vec<Vec<GraphqlError>> = (0..count).map(|_| Vec::new()).collect();
+    for mut e in errors {
+        let i = e
+            .path
+            .first()
+            .and_then(Value::as_str)
+            .and_then(|p| p.strip_prefix('r'))
+            .and_then(|i| i.parse::<usize>().ok())
+            .filter(|i| *i < count)?;
+        e.path[0] = json!("repository");
+        out[i].push(e);
+    }
+    Some(out)
+}
+
+fn bundle(fetched: FetchedPr, number: u64) -> PrBundle {
     let FetchedPr {
         repository,
         pr,
@@ -192,7 +338,7 @@ pub(crate) async fn fetch(
         comments,
         timeline,
         checks,
-    } = fetch_input(t, owner, name, number).await?;
+    } = fetched;
 
     let now = Timestamp::now();
     let merged_at = time(&pr.merged_at);
@@ -255,7 +401,7 @@ pub(crate) async fn fetch(
         .and_then(|r| r.state)
         .map(|s| CheckOutcome::from_github(None, Some(&s)));
 
-    Ok(finalize_pr(
+    finalize_pr(
         repository,
         pr,
         pr_id,
@@ -270,7 +416,7 @@ pub(crate) async fn fetch(
         out_threads,
         current_commit_shas,
         commit_stats,
-    ))
+    )
 }
 
 

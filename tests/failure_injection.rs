@@ -626,7 +626,8 @@ async fn a_second_sync_is_refused_while_one_is_running() {
 async fn killed_sync_leaves_a_consistent_cache_and_a_rerun_completes() {
     let world = World::base();
     let server = serve(&world).await;
-    // The third pull request (fetched last with concurrency 1) hangs.
+    // The third pull request hangs. With two requests at a time the first
+    // two go in one query and the third is fetched on its own.
     pr_detail_mock(
         "acme",
         "widget",
@@ -647,14 +648,19 @@ async fn killed_sync_leaves_a_consistent_cache_and_a_rerun_completes() {
             "--until",
             UNTIL,
             "--concurrency",
-            "1",
+            "2",
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
+    // Killed while the third is in flight, after the first two are stored.
     let reached = wait_until(Duration::from_secs(15), || async {
-        pr_detail_requests(&requests(&server).await, 20) > 0
+        if pr_detail_requests(&requests(&server).await, 20) == 0 {
+            return false;
+        }
+        let st = env.run(&["cache", "status", "--format", "json"]).await;
+        serde_json::from_str::<Value>(&st.stdout).is_ok_and(|s| s["pull_requests"] == 2)
     })
     .await;
     child.kill().unwrap();

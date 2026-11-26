@@ -1192,6 +1192,25 @@ impl World {
                 .mount(server)
                 .await;
         }
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(body_string_contains("query PullRequestBatch"))
+            .respond_with(PrBatch {
+                prs: self
+                    .prs
+                    .iter()
+                    .map(|p| {
+                        let body = self.pr_body(p);
+                        (
+                            (p.owner.clone(), p.name.clone(), p.number),
+                            body["data"]["repository"].clone(),
+                        )
+                    })
+                    .collect(),
+            })
+            .with_priority(5)
+            .mount(server)
+            .await;
         for p in &self.prs {
             self.mount_pr(
                 server,
@@ -1267,6 +1286,57 @@ impl World {
             .mount(server)
             .await;
     }
+}
+
+/// Answers a `PullRequestBatch` query (alias `r<i>` for the pull request
+/// with variables `o<i>`, `n<i>`, `k<i>`) with the same repository and pull
+/// request values as the single query, and `NOT_FOUND` for unknown ones.
+struct PrBatch {
+    prs: Vec<((String, String, u64), Value)>,
+}
+
+impl wiremock::Respond for PrBatch {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+        let vars = &body["variables"];
+        let mut data = serde_json::Map::new();
+        let mut errors = Vec::new();
+        for i in 0.. {
+            let (Some(owner), Some(name), Some(number)) = (
+                vars[format!("o{i}")].as_str(),
+                vars[format!("n{i}")].as_str(),
+                vars[format!("k{i}")].as_u64(),
+            ) else {
+                break;
+            };
+            let found = self
+                .prs
+                .iter()
+                .find(|((o, n, k), _)| o == owner && n == name && *k == number);
+            if let Some((_, repo)) = found {
+                data.insert(format!("r{i}"), repo.clone());
+            } else {
+                data.insert(format!("r{i}"), Value::Null);
+                errors.push(json!({
+                    "type": "NOT_FOUND",
+                    "path": [format!("r{i}")],
+                    "message": format!("Could not resolve to a Repository with the name '{owner}/{name}'.")
+                }));
+            }
+        }
+        let mut out = json!({ "data": data });
+        if !errors.is_empty() {
+            out["errors"] = Value::Array(errors);
+        }
+        ResponseTemplate::new(200).set_body_json(out)
+    }
+}
+
+/// Number of `PullRequestBatch` queries.
+pub(crate) fn pr_batch_requests(reqs: &[Request]) -> usize {
+    reqs.iter()
+        .filter(|r| r.url.path() == "/graphql" && body_str(r).contains("query PullRequestBatch"))
+        .count()
 }
 
 /// A `PullRequestDetail` mock for one pull request at `priority` (1 is the

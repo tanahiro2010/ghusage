@@ -127,13 +127,25 @@ pub(crate) fn label(url: &Url, body: Option<&[u8]>) -> String {
     format!("{what}{page}")
 }
 
-/// `owner/name#number` from a GraphQL request's variables, or the
+/// `owner/name#number` from a GraphQL request's variables (the first one
+/// and how many more for several pull requests in one query), or the
 /// operation name.
 fn graphql_label(body: Option<&[u8]>) -> String {
     let Some(v) = body.and_then(|b| serde_json::from_slice::<Value>(b).ok()) else {
         return "GraphQL".to_string();
     };
     let vars = &v["variables"];
+    if let (Some(owner), Some(name), Some(n)) = (
+        vars["o0"].as_str(),
+        vars["n0"].as_str(),
+        vars["k0"].as_u64(),
+    ) {
+        let numbers = vars
+            .as_object()
+            .map_or(0, |m| m.keys().filter(|k| k.starts_with('k')).count());
+        let more = numbers.saturating_sub(1);
+        return format!("{owner}/{name}#{n} +{more}");
+    }
     if let (Some(owner), Some(name)) = (vars["owner"].as_str(), vars["name"].as_str()) {
         return vars["number"].as_u64().map_or_else(
             || format!("{owner}/{name}"),
@@ -186,6 +198,11 @@ mod tests {
         assert_eq!(
             label(&url("https://api.github.com/graphql"), Some(body)),
             "octo/app#7"
+        );
+        let body = br#"{"query":"query PullRequestBatch($o0: String!) { x }","variables":{"o0":"octo","n0":"app","k0":7,"o1":"octo","n1":"lib","k1":3,"o2":"me","n2":"x","k2":1}}"#;
+        assert_eq!(
+            label(&url("https://api.github.com/graphql"), Some(body)),
+            "octo/app#7 +2"
         );
         let body = br#"{"query":"query Viewer { viewer { login } }","variables":{}}"#;
         assert_eq!(

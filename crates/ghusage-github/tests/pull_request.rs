@@ -2236,3 +2236,413 @@ async fn commit_line_counts_are_fetched_in_one_query_per_batch() {
             .any(|(c, l)| c.name == "bad\"name" && l.is_none())
     );
 }
+
+// ---------------------------------------------------------------------------
+// Several pull requests in one query
+// ---------------------------------------------------------------------------
+
+/// [`rich_pr`] as pull request `number` of acme/widget.
+fn numbered_pr(number: u64) -> Value {
+    let mut pr = rich_pr();
+    pr["id"] = json!(format!("PR_{number}"));
+    pr["number"] = json!(number);
+    pr["url"] = json!(format!("https://github.com/acme/widget/pull/{number}"));
+    pr
+}
+
+/// The repository as one alias of the batched query returns it, with `pr`
+/// as its pull request.
+fn repo_with(pr: Value) -> Value {
+    let mut r = repo();
+    r["pullRequest"] = pr;
+    r
+}
+
+async fn mount_batch(server: &MockServer, resp: ResponseTemplate) {
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query PullRequestBatch"))
+        .respond_with(resp)
+        .mount(server)
+        .await;
+}
+
+/// Mounts the single pull request query for `number`.
+async fn mount_single(server: &MockServer, number: u64, pr: Value) {
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query PullRequestDetail"))
+        .and(body_partial_json(
+            json!({ "variables": { "number": number } }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(pr_response(pr)))
+        .mount(server)
+        .await;
+}
+
+/// Number of single pull request queries sent for `number`.
+async fn single_requests(server: &MockServer, number: u64) -> usize {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+        .filter(|b| {
+            b["query"]
+                .as_str()
+                .is_some_and(|q| q.contains("query PullRequestDetail"))
+                && b["variables"]["number"] == json!(number)
+        })
+        .count()
+}
+
+/// A bundle without the times of the fetch itself, for comparing two
+/// fetches of the same data.
+fn timeless(mut b: PrBundle) -> PrBundle {
+    let t = ts("2000-01-01T00:00:00Z");
+    for e in &mut b.events {
+        e.observed_at = t;
+    }
+    b.pull_request.synced_at = None;
+    if let Some(d) = &mut b.diff {
+        d.observed_at = t;
+    }
+    b
+}
+
+/// The bundle of `pr` fetched on its own with the single query.
+async fn fetched_alone(pr: Value) -> PrBundle {
+    let server = MockServer::start().await;
+    let number = pr["number"].as_u64().unwrap();
+    mount_main(&server, pr_response(pr)).await;
+    mount_checks(&server, &oid(3)).await;
+    timeless(
+        client(&server)
+            .fetch_pull_request("acme", "widget", number)
+            .await
+            .unwrap(),
+    )
+}
+
+fn keys(numbers: &[u64]) -> Vec<(&'static str, &'static str, u64)> {
+    numbers.iter().map(|n| ("acme", "widget", *n)).collect()
+}
+
+#[tokio::test]
+async fn batched_pull_requests_match_single_fetches() {
+    let server = MockServer::start().await;
+    mount_batch(
+        &server,
+        ResponseTemplate::new(200).set_body_json(gql_data(json!({
+            "r0": repo_with(numbered_pr(41)),
+            "r1": repo_with(numbered_pr(43)),
+        }))),
+    )
+    .await;
+    mount_checks(&server, &oid(3)).await;
+    let out = client(&server).fetch_pull_requests(&keys(&[41, 43])).await;
+    assert_eq!(out.len(), 2);
+    let mut out = out.into_iter();
+    let a = timeless(out.next().unwrap().unwrap());
+    let b = timeless(out.next().unwrap().unwrap());
+    assert_eq!(a, fetched_alone(numbered_pr(41)).await);
+    assert_eq!(b, fetched_alone(numbered_pr(43)).await);
+    // One query asked for both, by number.
+    let reqs = server.received_requests().await.unwrap();
+    let batches: Vec<Value> = reqs
+        .iter()
+        .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+        .filter(|b| {
+            b["query"]
+                .as_str()
+                .is_some_and(|q| q.contains("query PullRequestBatch"))
+        })
+        .collect();
+    assert_eq!(batches.len(), 1);
+    assert_eq!(
+        batches[0]["variables"],
+        json!({ "o0": "acme", "n0": "widget", "k0": 41, "o1": "acme", "n1": "widget", "k1": 43 })
+    );
+    assert_eq!(single_requests(&server, 41).await, 0);
+}
+
+#[tokio::test]
+async fn missing_pull_request_in_a_batch_is_not_found_alone() {
+    let server = MockServer::start().await;
+    mount_batch(
+        &server,
+        ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "r0": repo_with(numbered_pr(41)),
+                "r1": repo_with(Value::Null),
+                "r2": repo_with(numbered_pr(43)),
+            },
+            "errors": [{
+                "type": "NOT_FOUND",
+                "path": ["r1", "pullRequest"],
+                "locations": [{ "line": 5, "column": 5 }],
+                "message": "Could not resolve to a PullRequest with the number of 4242."
+            }]
+        })),
+    )
+    .await;
+    mount_checks(&server, &oid(3)).await;
+    let out = client(&server)
+        .fetch_pull_requests(&keys(&[41, 4242, 43]))
+        .await;
+    assert_eq!(out.len(), 3);
+    let mut out = out.into_iter();
+    let a = timeless(out.next().unwrap().unwrap());
+    let missing = out.next().unwrap().unwrap_err();
+    let c = timeless(out.next().unwrap().unwrap());
+    assert!(matches!(missing, ApiError::NotFound(_)), "{missing:?}");
+    assert_eq!(a.status, CoverageStatus::Complete, "{:?}", a.notes);
+    assert_eq!(a, fetched_alone(numbered_pr(41)).await);
+    assert_eq!(c, fetched_alone(numbered_pr(43)).await);
+    // The error belonged to one pull request: nothing was asked again.
+    for n in [41, 4242, 43] {
+        assert_eq!(single_requests(&server, n).await, 0);
+    }
+}
+
+#[tokio::test]
+async fn missing_repository_in_a_batch_is_not_found_alone() {
+    let server = MockServer::start().await;
+    mount_batch(
+        &server,
+        ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "r0": null, "r1": repo_with(numbered_pr(43)) },
+            "errors": [{
+                "type": "NOT_FOUND",
+                "path": ["r0"],
+                "locations": [{ "line": 2, "column": 3 }],
+                "message": "Could not resolve to a Repository with the name 'acme/secret'."
+            }]
+        })),
+    )
+    .await;
+    mount_checks(&server, &oid(3)).await;
+    let out = client(&server)
+        .fetch_pull_requests(&[("acme", "secret", 1), ("acme", "widget", 43)])
+        .await;
+    let mut out = out.into_iter();
+    let err = out.next().unwrap().unwrap_err();
+    assert!(matches!(err, ApiError::NotFound(_)), "{err:?}");
+    assert!(!err.is_auth());
+    let b = out.next().unwrap().unwrap();
+    assert_eq!(b.status, CoverageStatus::Complete, "{:?}", b.notes);
+}
+
+#[tokio::test]
+async fn errors_in_a_batch_make_only_their_pull_request_partial() {
+    let server = MockServer::start().await;
+    mount_batch(
+        &server,
+        ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "r0": repo_with(numbered_pr(41)),
+                "r1": repo_with(numbered_pr(43)),
+            },
+            "errors": [{
+                "type": "SOMETHING_WENT_WRONG",
+                "path": ["r0", "pullRequest", "reviews", "nodes", 1, "author"],
+                "locations": [{ "line": 9, "column": 7 }],
+                "message": "Something went wrong while executing your query."
+            }]
+        })),
+    )
+    .await;
+    mount_checks(&server, &oid(3)).await;
+    let out = client(&server).fetch_pull_requests(&keys(&[41, 43])).await;
+    let mut out = out.into_iter();
+    let a = out.next().unwrap().unwrap();
+    let b = out.next().unwrap().unwrap();
+    assert_eq!(a.status, CoverageStatus::Partial);
+    assert!(!a.complete_collections.contains(&Collection::Reviews));
+    assert!(a.complete_collections.contains(&Collection::Commits));
+    assert!(a.notes.iter().any(|n| n.contains("Something went wrong")));
+    assert_eq!(b.status, CoverageStatus::Complete, "{:?}", b.notes);
+    assert_eq!(b.complete_collections.len(), Collection::ALL.len());
+}
+
+/// Responses that cannot be attributed to single pull requests: every pull
+/// request of the batch is fetched again on its own.
+#[tokio::test]
+async fn unattributable_batch_results_are_fetched_again_one_by_one() {
+    let cases: Vec<(&str, ResponseTemplate)> = vec![
+        (
+            "error without a path",
+            ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "r0": repo_with(numbered_pr(41)),
+                    "r1": repo_with(numbered_pr(43)),
+                },
+                "errors": [{ "message": "Something went wrong while executing your query." }]
+            })),
+        ),
+        (
+            "error on an unknown alias",
+            ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "r0": repo_with(numbered_pr(41)),
+                    "r1": repo_with(numbered_pr(43)),
+                },
+                "errors": [{ "type": "SOMETHING_WENT_WRONG", "path": ["r7", "pullRequest"], "message": "?" }]
+            })),
+        ),
+        ("server error", ResponseTemplate::new(502)),
+        ("no data", ResponseTemplate::new(200).set_body_json(json!({}))),
+    ];
+    let alone = [
+        fetched_alone(numbered_pr(41)).await,
+        fetched_alone(numbered_pr(43)).await,
+    ];
+    for (what, resp) in cases {
+        let server = MockServer::start().await;
+        mount_batch(&server, resp).await;
+        mount_single(&server, 41, numbered_pr(41)).await;
+        mount_single(&server, 43, numbered_pr(43)).await;
+        mount_checks(&server, &oid(3)).await;
+        let out: Vec<PrBundle> = client(&server)
+            .fetch_pull_requests(&keys(&[41, 43]))
+            .await
+            .into_iter()
+            .map(|r| timeless(r.unwrap()))
+            .collect();
+        assert_eq!(out, alone, "{what}");
+        assert_eq!(single_requests(&server, 41).await, 1, "{what}");
+        assert_eq!(single_requests(&server, 43).await, 1, "{what}");
+    }
+}
+
+#[tokio::test]
+async fn pull_request_left_out_of_a_batch_is_fetched_again_alone() {
+    let server = MockServer::start().await;
+    mount_batch(
+        &server,
+        ResponseTemplate::new(200).set_body_json(gql_data(json!({
+            "r0": repo_with(numbered_pr(41)),
+        }))),
+    )
+    .await;
+    mount_single(&server, 43, numbered_pr(43)).await;
+    mount_checks(&server, &oid(3)).await;
+    let out: Vec<PrBundle> = client(&server)
+        .fetch_pull_requests(&keys(&[41, 43]))
+        .await
+        .into_iter()
+        .map(|r| timeless(r.unwrap()))
+        .collect();
+    assert_eq!(out[0], fetched_alone(numbered_pr(41)).await);
+    assert_eq!(out[1], fetched_alone(numbered_pr(43)).await);
+    assert_eq!(single_requests(&server, 41).await, 0);
+    assert_eq!(single_requests(&server, 43).await, 1);
+}
+
+#[tokio::test]
+async fn rejected_credentials_fail_the_whole_batch_without_retrying() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "message": "Bad credentials",
+            "documentation_url": "https://docs.github.com/graphql"
+        })))
+        .mount(&server)
+        .await;
+    let out = client(&server).fetch_pull_requests(&keys(&[41, 43])).await;
+    assert_eq!(out.len(), 2);
+    assert!(out.iter().all(|r| r.as_ref().unwrap_err().is_auth()));
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn later_pages_of_a_batched_pull_request_are_fetched() {
+    let server = MockServer::start().await;
+    mount_batch(
+        &server,
+        ResponseTemplate::new(200).set_body_json(gql_data(json!({
+            "r0": repo_with(numbered_pr(41)),
+            "r1": repo_with(paged_pr()),
+        }))),
+    )
+    .await;
+    mount_checks(&server, &oid(3)).await;
+    let tl2: Vec<Value> = (0..20)
+        .map(|i| {
+            tl(
+                "LabeledEvent",
+                &format!("LE_p2_{i}"),
+                "2024-03-01T13:00:00Z",
+                user("alice"),
+                json!({ "label": { "name": "x" } }),
+            )
+        })
+        .collect();
+    mount_page(
+        &server,
+        "PullRequestTimelinePage",
+        "tl-100",
+        gql_data(json!({ "node": { "timelineItems": connection(tl2, false, Some("tl-120")) } })),
+    )
+    .await;
+    let ic2: Vec<Value> = (0..50)
+        .map(|i| {
+            issue_comment(
+                &format!("IC_p2_{i}"),
+                user("bob"),
+                "2024-03-01T13:00:00Z",
+                None,
+            )
+        })
+        .collect();
+    mount_page(
+        &server,
+        "PullRequestCommentsPage",
+        "ic-100",
+        gql_data(json!({ "node": { "comments": connection(ic2, false, Some("ic-150")) } })),
+    )
+    .await;
+    let tc2: Vec<Value> = (0..10)
+        .map(|i| {
+            review_comment(
+                &format!("TC_p2_{i}"),
+                user("carol"),
+                "2024-03-02T13:00:00Z",
+                "PRR_2",
+                None,
+                None,
+            )
+        })
+        .collect();
+    mount_page(
+        &server,
+        "ReviewThreadCommentsPage",
+        "tc-50",
+        gql_data(json!({ "node": { "comments": { "totalCount": 60, "pageInfo": page_info(false, Some("tc-60")), "nodes": tc2 } } })),
+    )
+    .await;
+    let out = client(&server).fetch_pull_requests(&keys(&[41, 42])).await;
+    let mut out = out.into_iter();
+    let small = out.next().unwrap().unwrap();
+    let b = out.next().unwrap().unwrap();
+    assert_eq!(small.status, CoverageStatus::Complete, "{:?}", small.notes);
+    assert_eq!(b.status, CoverageStatus::Complete, "{:?}", b.notes);
+    assert_eq!(of_type(&b, EventType::Labeled).len(), 120);
+    assert_eq!(of_type(&b, EventType::ConversationComment).len(), 150);
+    assert_eq!(b.threads[0].comment_count, 60);
+    // The later pages were asked for by the paged pull request's node id.
+    let reqs = server.received_requests().await.unwrap();
+    let followups: Vec<Value> = reqs
+        .iter()
+        .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+        .filter(|b| b["variables"]["after"].is_string())
+        .collect();
+    assert_eq!(followups.len(), 3);
+    assert!(
+        followups
+            .iter()
+            .any(|b| b["variables"]["id"] == json!(PR_ID))
+    );
+}
