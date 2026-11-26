@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use jiff::{SignedDuration, Timestamp};
@@ -85,10 +85,14 @@ enum Decision {
     Fail(ApiError),
 }
 
-/// Why a request waits for a rate limit, for the debug log.
+/// Why a request waits for a rate limit.
 struct RateLimitWait {
-    /// `primary`, `secondary`, `retry-after` or `too-many-requests`.
+    /// `primary`, `secondary`, `retry-after` or `too-many-requests`, for
+    /// the debug log.
     kind: &'static str,
+    /// The response names the search rate limit (`x-ratelimit-resource:
+    /// search`).
+    search: bool,
     /// Only built when debug logging is enabled.
     detail: Option<RateLimitDetail>,
 }
@@ -142,6 +146,84 @@ pub(crate) fn graphql_operation(query: &str) -> Option<&str> {
         .then_some(name)
 }
 
+/// Holds search requests after one of them was rate limited.
+///
+/// Searches share one limit, so when one is limited, the others would be
+/// too. Every search, including the retries of the limited ones and the
+/// ones started later, waits until the end of the longest wait GitHub asked
+/// for. After that the searches are sent one at a time, one slot apart, for
+/// as long as `recover_until`: the limited requests and the ones that piled
+/// up during the wait would otherwise all go out at the same moment and be
+/// limited again. Requests that are not searches never pass through here,
+/// and while no search was limited the gate lets every search through at
+/// once.
+#[derive(Default)]
+struct SearchGate {
+    state: Mutex<GateState>,
+}
+
+#[derive(Default)]
+struct GateState {
+    /// No search is sent before this.
+    paused_until: Option<Instant>,
+    /// Searches are paced until this (never before `paused_until`).
+    recover_until: Option<Instant>,
+    /// The next free slot while searches are paced.
+    next_slot: Option<Instant>,
+    /// Changes whenever a wait starts, so the slots taken before it are
+    /// taken again after it.
+    epoch: u64,
+}
+
+impl SearchGate {
+    fn state(&self) -> std::sync::MutexGuard<'_, GateState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Holds every search for at least `delay` from now, then paces them
+    /// `spacing` apart for `pacing` after the wait. Returns how long the
+    /// searches are held from now.
+    fn pause(&self, delay: Duration, pacing: Duration) -> Duration {
+        let now = Instant::now();
+        let mut s = self.state();
+        let until = s.paused_until.map_or(now + delay, |p| p.max(now + delay));
+        s.paused_until = Some(until);
+        s.recover_until = Some(until + pacing);
+        s.next_slot = Some(until);
+        s.epoch = s.epoch.wrapping_add(1);
+        drop(s);
+        until - now
+    }
+
+    /// Waits until a search may be sent. Returns how long it waited.
+    async fn wait(&self, spacing: Duration) -> Duration {
+        let start = Instant::now();
+        loop {
+            let (slot, epoch) = {
+                let mut s = self.state();
+                let now = Instant::now();
+                if s.recover_until.is_none_or(|t| t <= now) {
+                    return start.elapsed();
+                }
+                let slot = [s.paused_until, s.next_slot]
+                    .into_iter()
+                    .flatten()
+                    .fold(now, Instant::max);
+                s.next_slot = Some(slot + spacing);
+                if slot <= now {
+                    return start.elapsed();
+                }
+                (slot, s.epoch)
+            };
+            tokio::time::sleep_until(slot.into()).await;
+            // A wait that started meanwhile invalidates the slot.
+            if self.state().epoch == epoch {
+                return start.elapsed();
+            }
+        }
+    }
+}
+
 pub(crate) struct Transport {
     http: reqwest::Client,
     token: Option<Secret>,
@@ -152,6 +234,7 @@ pub(crate) struct Transport {
     api_base: Url,
     graphql_url: Url,
     jitter_state: AtomicU64,
+    search_gate: SearchGate,
 }
 
 impl Transport {
@@ -186,6 +269,7 @@ impl Transport {
             api_base,
             graphql_url,
             jitter_state: AtomicU64::new(seed),
+            search_gate: SearchGate::default(),
         })
     }
 
@@ -342,9 +426,29 @@ impl Transport {
             .map_err(|e| ApiError::InvalidResponse(format!("GraphQL response: {e}")))
     }
 
+    /// Whether `url` is a REST search (`/search/...` under the API base).
+    fn is_search(&self, url: &Url) -> bool {
+        url.origin() == self.api_base.origin()
+            && url
+                .path()
+                .strip_prefix(self.api_base.path().trim_end_matches('/'))
+                .is_some_and(|rest| rest.starts_with("/search/"))
+    }
+
+    /// The minute GitHub asks clients to wait after a secondary rate limit,
+    /// scaled by the backoff base like the other waits.
+    fn minute(&self) -> Duration {
+        self.config.backoff_base.saturating_mul(60).min(MAX_BACKOFF)
+    }
+
     /// Sends a request with retries. Returns only 2xx responses.
     /// `operation` is set for GraphQL requests: the operation name, shown
     /// in the debug log.
+    ///
+    /// Searches pass through the [`SearchGate`]: a rate limit on one holds
+    /// all of them. Searches are paced two backoff bases apart (two seconds
+    /// by default, the search limit's 30 requests a minute) for a minute
+    /// after the wait.
     async fn send(
         &self,
         method: Method,
@@ -354,10 +458,17 @@ impl Transport {
     ) -> Result<RawResponse, ApiError> {
         let graphql = operation.is_some();
         let max_attempts = self.config.max_attempts.max(1);
+        let mut search = self.is_search(url);
+        let spacing = self.config.backoff_base.saturating_mul(2);
         let mut attempt: u32 = 0;
         loop {
             attempt += 1;
-            let decision = match self.attempt(&method, url, body, operation).await {
+            let held = if search {
+                self.search_gate.wait(spacing).await
+            } else {
+                Duration::ZERO
+            };
+            let decision = match self.attempt(&method, url, body, operation, held).await {
                 Ok(resp) => self.decide(resp, url, &method, attempt, graphql),
                 Err(AttemptError::Timeout) => Decision::Retry {
                     delay: self.backoff(attempt),
@@ -381,16 +492,22 @@ impl Transport {
                     error,
                     rate_limit,
                 } => {
+                    search |= rate_limit.as_ref().is_some_and(|w| w.search);
+                    // A rate-limited search holds the other searches too,
+                    // even when this one gives up.
+                    let search_pause = (search && rate_limit.is_some())
+                        .then(|| self.search_gate.pause(delay, self.minute()));
                     if attempt >= max_attempts {
                         return Err(error);
                     }
                     let detail = rate_limit.as_ref().and_then(|w| w.detail.as_ref());
                     tracing::debug!(
                         attempt,
-                        delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                        delay_ms = millis(delay),
                         path = url.path(),
                         operation,
                         wait = rate_limit.as_ref().map(|w| w.kind),
+                        search_pause_ms = search_pause.map(millis),
                         ratelimit_resource = detail.and_then(|d| d.resource.as_deref()),
                         ratelimit_remaining = detail.and_then(|d| d.remaining.as_deref()),
                         ratelimit_used = detail.and_then(|d| d.used.as_deref()),
@@ -404,18 +521,25 @@ impl Transport {
                             s.rate_limit_waits += 1;
                         }
                     });
-                    tokio::time::sleep(delay).await;
+                    // A search waits at the gate, which holds it at least
+                    // as long.
+                    if search_pause.is_none() {
+                        tokio::time::sleep(delay).await;
+                    }
                 }
             }
         }
     }
 
+    /// One attempt. `held` is how long the search gate held it, for the
+    /// debug log.
     async fn attempt(
         &self,
         method: &Method,
         url: &Url,
         body: Option<&[u8]>,
         operation: Option<&str>,
+        held: Duration,
     ) -> Result<Attempted, AttemptError> {
         let _permit = self
             .semaphore
@@ -488,6 +612,7 @@ impl Transport {
                 %method,
                 path = url.path(),
                 operation,
+                search_gate_ms = (!held.is_zero()).then(|| millis(held)),
                 status = result.as_ref().map_or(0, |r| r.status),
                 elapsed_ms = elapsed,
                 bytes,
@@ -556,6 +681,7 @@ impl Transport {
                         },
                         rate_limit: Some(RateLimitWait {
                             kind: "retry-after",
+                            search: search_resource(&headers),
                             detail,
                         }),
                     };
@@ -568,8 +694,7 @@ impl Transport {
                     // Without Retry-After GitHub asks clients to wait at least a
                     // minute; scale that by the backoff base.
                     let delay = if secondary {
-                        let minute = self.config.backoff_base.saturating_mul(60);
-                        minute.max(self.backoff(attempt)).min(MAX_BACKOFF)
+                        self.minute().max(self.backoff(attempt)).min(MAX_BACKOFF)
                     } else {
                         self.backoff(attempt)
                     };
@@ -585,6 +710,7 @@ impl Transport {
                             } else {
                                 "too-many-requests"
                             },
+                            search: search_resource(&headers),
                             detail,
                         }),
                     };
@@ -635,6 +761,7 @@ impl Transport {
             error: ApiError::RateLimited { reset_at },
             rate_limit: Some(RateLimitWait {
                 kind: "primary",
+                search: search_resource(headers),
                 detail,
             }),
         }
@@ -674,6 +801,16 @@ fn map_reqwest_error(e: reqwest::Error) -> AttemptError {
 fn parse_json(body: &[u8], url: &Url) -> Result<Value, ApiError> {
     serde_json::from_slice(body)
         .map_err(|_| ApiError::InvalidResponse(format!("invalid JSON from {}", url.path())))
+}
+
+/// Whether a response names the search rate limit.
+fn search_resource(headers: &HeaderMap) -> bool {
+    header_str(headers, "x-ratelimit-resource").is_some_and(|r| r.trim() == "search")
+}
+
+/// Whole milliseconds of `d`, for the debug log.
+fn millis(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
