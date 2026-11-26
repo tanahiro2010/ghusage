@@ -20,7 +20,7 @@ cache it fails unless `--user` is given.
 
 The global options `--since`, `--until`, `--timezone`, `--repo`, `--owner`,
 `--visibility`, `--ownership`, `--user`, `--public-only`, `--commit-date`,
-`--data-dir` and `--concurrency` apply. Unlike JSON and CSV output, the UI
+`--data-dir` and `--jobs` apply. Unlike JSON and CSV output, the UI
 shows private repository names, like table output.
 
 ## Screens

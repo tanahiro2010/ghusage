@@ -65,9 +65,15 @@ fn invalid_arguments_exit_with_code_2() {
         .args(["--timezone", "Mars/Olympus", "--offline"])
         .assert()
         .code(2);
-    // Concurrency is limited to 1..=16.
-    ghusage(&d).args(["--concurrency", "0"]).assert().code(2);
+    // Concurrent requests are limited to 1..=16, however they are given.
+    ghusage(&d).args(["--jobs", "0"]).assert().code(2);
+    ghusage(&d).args(["-j", "17"]).assert().code(2);
     ghusage(&d).args(["--concurrency", "17"]).assert().code(2);
+    ghusage(&d)
+        .env("GHUSAGE_JOBS", "0")
+        .args(["cache", "status"])
+        .assert()
+        .code(2);
     ghusage(&d)
         .args(["pr", "https://example.com/o/r/pull/1"])
         .assert()
@@ -660,4 +666,39 @@ async fn timezone_option_overrides_tz_environment() {
     assert_eq!(utc["timezone"], "UTC");
     assert_eq!(utc["period"]["start"], "2024-03-04T00:00:00+00:00");
     assert_eq!(commits_by_day(&utc), days([2, 2, 1, 1, 0, 0, 0]));
+}
+
+#[test]
+fn concurrent_requests_come_from_flag_alias_or_environment() {
+    let d = tempfile::tempdir().unwrap();
+    for args in [
+        &["-j", "4"][..],
+        &["--jobs", "4"],
+        &["--jobs=16"],
+        // The former name keeps working.
+        &["--concurrency", "4"],
+    ] {
+        ghusage(&d)
+            .args(args)
+            .args(["cache", "status"])
+            .assert()
+            .success();
+    }
+    ghusage(&d)
+        .env("GHUSAGE_JOBS", "4")
+        .args(["cache", "status"])
+        .assert()
+        .success();
+    ghusage(&d)
+        .env("GHUSAGE_JOBS", "2")
+        .args(["-j", "4", "cache", "status"])
+        .assert()
+        .success();
+    // An invalid environment value is reported even next to the flag.
+    ghusage(&d)
+        .env("GHUSAGE_JOBS", "99")
+        .args(["-j", "4", "cache", "status"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--jobs"));
 }

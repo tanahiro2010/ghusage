@@ -11,7 +11,7 @@ ghusage tui --owner my-org  # start with a repository filter
 
 キャッシュが空の状態で初めて実行したときは、UI を開く前に一度だけ GitHub に接続し、自分のアカウントを確認します。キャッシュが空で `--offline` を指定した場合は、`--user` を指定しない限り失敗します。
 
-グローバルオプションのうち、`--since`、`--until`、`--timezone`、`--repo`、`--owner`、`--visibility`、`--ownership`、`--user`、`--public-only`、`--commit-date`、`--data-dir`、`--concurrency` が使えます。JSON や CSV の出力と違い、UI では表形式の出力と同じようにプライベートリポジトリの名前を表示します。
+グローバルオプションのうち、`--since`、`--until`、`--timezone`、`--repo`、`--owner`、`--visibility`、`--ownership`、`--user`、`--public-only`、`--commit-date`、`--data-dir`、`--jobs` が使えます。JSON や CSV の出力と違い、UI では表形式の出力と同じようにプライベートリポジトリの名前を表示します。
 
 ## 画面 {#screens}
 

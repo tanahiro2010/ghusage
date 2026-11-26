@@ -86,9 +86,11 @@ pub(crate) struct GlobalArgs {
     /// the data as of that sync, e.g. 30s, 5m, 1h; 0 always syncs.
     #[arg(long, global = true, env = "GHUSAGE_MAX_AGE", default_value = "5m", value_parser = parse_max_age)]
     pub max_age: std::time::Duration,
-    /// Maximum concurrent GitHub requests (1-16).
-    #[arg(long, global = true, default_value_t = 8, value_parser = clap::value_parser!(u8).range(1..=16))]
-    pub concurrency: u8,
+    /// Maximum concurrent GitHub requests (1-16). Higher values make a
+    /// first sync faster but use more memory and hit GitHub's secondary
+    /// rate limits sooner.
+    #[arg(short = 'j', long = "jobs", alias = "concurrency", global = true, env = "GHUSAGE_JOBS", default_value_t = 8, value_parser = clap::value_parser!(u8).range(1..=16))]
+    pub jobs: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
