@@ -347,13 +347,20 @@ synced pull request is left out of the line totals (`excluded`) unless at
 least one of its appearances is still part of the pull request and that
 pull request is
 
-- open, or closed without being merged, or
-- merged with a merge commit (a merge commit with two parents).
+- open, or closed without being merged,
+- merged with a merge commit (a merge commit with two parents), or
+- opened by someone else.
 
-In other words, commits that exist only in pull requests merged by squash or
-rebase, or whose merge method is not known, and commits that a force push
-removed from the pull request, are left out. Commits that never appear in a
-synced pull request always count.
+In other words, commits that exist only in your own pull requests merged by
+squash or rebase, or whose merge method is not known, and commits that a
+force push removed from the pull request, are left out. Commits that never
+appear in a synced pull request always count.
+
+A squash commit is authored by the author of the pull request. When you push
+commits to someone else's pull request and it is merged by squash, the squash
+commit is theirs (you are at most a co-author, and co-authored commits are
+not counted as yours), so your commits in the pull request are the only place
+your changes count, and they are kept.
 
 The merge method is taken from the number of parents of the pull request's
 merge commit, which a sync records together with the pull request. Pull
@@ -361,9 +368,8 @@ requests that were synced before `ghusage` recorded the merge method have an
 unknown merge method, so their commits are left out. Run
 `ghusage sync --full` for the period to record it.
 
-This rule is provisional and may be refined in a future version. See
-[Known limitations](./limitations.md#line-counts) for the cases it gets
-wrong.
+See [Known limitations](./limitations.md#line-counts) for the cases this
+rule gets wrong.
 
 ### Pull request changes
 

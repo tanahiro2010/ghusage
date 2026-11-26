@@ -67,8 +67,8 @@ before relying on the numbers.
 
 See [Lines changed](./metrics.md#lines-changed) for the definitions.
 
-- **The rule for commits counted through other commits is provisional.** It
-  decides from the synced pull requests only, and can be wrong:
+- **The rule for commits counted through other commits** decides from the
+  synced pull requests only, and can be wrong:
   - a commit pushed directly to the default branch that is also part of a
     pull request merged by squash or rebase is left out, although it reached
     the default branch itself;
@@ -77,9 +77,11 @@ See [Lines changed](./metrics.md#lines-changed) for the definitions.
     ever reached the default branch;
   - pull requests synced before `ghusage` recorded the merge method have an
     unknown merge method, so their commits are left out. Run
-    `ghusage sync --full` for the period to record it.
-
-  The rule may be refined in a future version.
+    `ghusage sync --full` for the period to record it;
+  - when someone else's pull request that contains your commits is merged by
+    rebase, the rebased copies of your commits are still yours, so your
+    changes are counted twice: once for your commits in the pull request and
+    once for the copies.
 - **GitHub's numbers are used as they are.** The line counts of a commit are
   what GitHub reports. For a merge commit, they are against its first
   parent, which is why merge commits are left out of the totals. Binary
