@@ -33,7 +33,8 @@ it has indexed. `ghusage` therefore also lists commits directly:
 
 1. It lists your repositories that were pushed to since the start of the
    missing range (`GET /user/repos`, newest push first, stopping at the first older
-   repository). With `--user`, only the other user's own repositories are
+   repository). The first request asks for 30 repositories; only when the
+   range reaches further is the list read in pages of 100. With `--user`, only the other user's own repositories are
    visible (`GET /users/{login}/repos`).
 2. It adds repositories of the pull requests found by the sync, and
    repositories in which commit search found your commits if you are
