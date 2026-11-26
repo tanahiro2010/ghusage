@@ -2646,3 +2646,47 @@ async fn later_pages_of_a_batched_pull_request_are_fetched() {
             .any(|b| b["variables"]["id"] == json!(PR_ID))
     );
 }
+
+/// The GraphQL points each response reports are added up in the client's
+/// statistics; a response without them adds nothing.
+#[tokio::test]
+async fn graphql_points_are_summed_in_the_statistics() {
+    let server = MockServer::start().await;
+    let mut body = pr_response(rich_pr());
+    body["data"]["rateLimit"] = json!({ "cost": 3 });
+    mount_main(&server, body).await;
+    mount_checks(&server, &oid(3)).await;
+    let mut r = gql_repo(
+        "R_secret",
+        gql_actor("User", "alice", "U_alice"),
+        "secret",
+        "PRIVATE",
+        false,
+    );
+    r["viewerPermission"] = json!("ADMIN");
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query RepositoryDetail"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "data": { "rateLimit": { "cost": 1 }, "repository": r } })),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query IssueDetail"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(gql_data(json!({ "repository": null }))),
+        )
+        .mount(&server)
+        .await;
+    let c = client(&server);
+    c.fetch_pull_request("acme", "widget", 42).await.unwrap();
+    c.repository("alice", "secret").await.unwrap();
+    assert!(c.fetch_issue("acme", "widget", 8).await.is_err());
+    let s = c.stats();
+    assert_eq!(s.graphql_points, 4);
+    // Three GraphQL queries and the commit statuses over REST.
+    assert_eq!(s.requests, 4);
+}

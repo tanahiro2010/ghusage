@@ -40,7 +40,7 @@ fn is_sha(s: &str) -> bool {
 /// The query for `commits` (all valid names and full SHAs), grouped by
 /// repository: `r<i>` per repository, `c<j>` per commit.
 fn query(groups: &[(&str, &str, Vec<&str>)]) -> String {
-    let mut q = String::from("query CommitLineCounts {\n");
+    let mut q = format!("query CommitLineCounts {{\n  {}\n", crate::queries::COST);
     for (i, (owner, name, shas)) in groups.iter().enumerate() {
         let _ = writeln!(
             q,
@@ -135,7 +135,7 @@ mod tests {
         let a = "a".repeat(40);
         let b = "b".repeat(40);
         let q = query(&[("octo", "app", vec![&a, &b])]);
-        assert!(q.starts_with("query CommitLineCounts {"));
+        assert!(q.starts_with("query CommitLineCounts {\n  rateLimit { cost }\n"));
         assert!(q.contains("r0: repository(owner: \"octo\", name: \"app\")"));
         assert!(q.contains(&format!("c1: object(oid: \"{b}\")")));
     }

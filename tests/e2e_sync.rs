@@ -1711,6 +1711,11 @@ async fn two_hundred_fifty_commits_over_three_search_pages_are_all_counted() {
 /// additions = 10 and deletions = 1, except SHAs in `missing`, which GitHub
 /// does not return.
 fn line_count_answer(req: &wiremock::Request, missing: &[String]) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!({ "data": line_count_data(req, missing) }))
+}
+
+/// The `data` of [`line_count_answer`].
+fn line_count_data(req: &wiremock::Request, missing: &[String]) -> Value {
     let body: Value = serde_json::from_slice(&req.body).unwrap();
     let q = body["query"].as_str().unwrap();
     let mut data = serde_json::Map::new();
@@ -1729,7 +1734,7 @@ fn line_count_answer(req: &wiremock::Request, missing: &[String]) -> ResponseTem
             data[&repo][alias] = v;
         }
     }
-    ResponseTemplate::new(200).set_body_json(json!({ "data": data }))
+    Value::Object(data)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1787,6 +1792,36 @@ async fn diff_stats_are_fetched_once_and_unknown_ones_stay_unknown() {
     let s = env.sync(&["--diff-stats"]).await.json();
     assert_eq!(s["diff_stats"]["already_known"], commits - 1);
     assert_eq!(asked(&requests(&server).await), before + 1);
+}
+
+/// The `api` statistics of a sync cover the line count queries too.
+#[tokio::test(flavor = "multi_thread")]
+async fn sync_statistics_include_the_line_count_queries() {
+    let world = World::base();
+    let server = serve(&world).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query CommitLineCounts"))
+        .respond_with(|req: &wiremock::Request| {
+            let mut data = line_count_data(req, &[]);
+            data["rateLimit"] = json!({ "cost": 7 });
+            ResponseTemplate::new(200).set_body_json(json!({ "data": data }))
+        })
+        .mount(&server)
+        .await;
+    let env = Env::new(&server);
+    let r = env.sync(&["--diff-stats"]).await;
+    r.expect_code(0).assert_clean();
+    let s = r.json();
+    let reqs = requests(&server).await;
+    let asked = reqs
+        .iter()
+        .filter(|r| String::from_utf8_lossy(&r.body).contains("query CommitLineCounts"))
+        .count() as u64;
+    assert!(asked > 0);
+    // Only the line count answers report a cost in this test.
+    assert_eq!(s["api"]["graphql_points"], 7 * asked, "{s}");
+    assert_eq!(s["api"]["requests"], reqs.len() as u64, "{s}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -9,6 +9,9 @@ pub(crate) const PAGE_SIZE: u32 = 100;
 pub(crate) const THREAD_PAGE_SIZE: u32 = 50;
 /// Page size of comments inside a review thread.
 pub(crate) const THREAD_COMMENT_PAGE_SIZE: u32 = 50;
+/// Asks GitHub for the rate-limit points the query used; summed in
+/// [`crate::ApiStats::graphql_points`]. Reading it costs nothing.
+pub(crate) const COST: &str = "rateLimit { cost }";
 
 const ACTOR: &str = "fragment ActorFields on Actor { __typename login ... on Node { id } }";
 
@@ -102,6 +105,7 @@ pub(crate) fn pull_request() -> String {
     doc(
         format!(
             "query PullRequestDetail($owner: String!, $name: String!, $number: Int!) {{
+  {COST}
   repository(owner: $owner, name: $name) {{
     ...RepositoryFields
     pullRequest(number: $number) {{
@@ -122,7 +126,10 @@ pub(crate) fn pull_requests(count: usize) -> String {
     let params: Vec<String> = (0..count)
         .map(|i| format!("$o{i}: String!, $n{i}: String!, $k{i}: Int!"))
         .collect();
-    let mut body = format!("query PullRequestBatch({}) {{\n", params.join(", "));
+    let mut body = format!(
+        "query PullRequestBatch({}) {{\n  {COST}\n",
+        params.join(", ")
+    );
     for i in 0..count {
         let _ = writeln!(
             body,
@@ -196,6 +203,7 @@ impl PrConnection {
         doc(
             format!(
                 "query {name}($id: ID!, $after: String) {{
+  {COST}
   node(id: $id) {{
     ... on PullRequest {{
       {field}({args}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ {nodes} }} }}
@@ -212,6 +220,7 @@ pub(crate) fn thread_comments_page() -> String {
     doc(
         format!(
             "query ReviewThreadCommentsPage($id: ID!, $after: String) {{
+  {COST}
   node(id: $id) {{
     ... on PullRequestReviewThread {{
       comments(first: {THREAD_COMMENT_PAGE_SIZE}, after: $after) {{ totalCount pageInfo {{ hasNextPage endCursor }} nodes {{ ...ReviewCommentFields }} }}
@@ -234,6 +243,7 @@ pub(crate) fn issue() -> String {
     doc(
         format!(
             "query IssueDetail($owner: String!, $name: String!, $number: Int!) {{
+  {COST}
   repository(owner: $owner, name: $name) {{
     ...RepositoryFields
     issueOrPullRequest(number: $number) {{
@@ -255,6 +265,7 @@ pub(crate) fn issue_timeline_page() -> String {
     doc(
         format!(
             "query IssueTimelinePage($id: ID!, $after: String) {{
+  {COST}
   node(id: $id) {{
     ... on Issue {{
       timelineItems(first: {PAGE_SIZE}, after: $after, itemTypes: [CLOSED_EVENT, REOPENED_EVENT]) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ ...IssueTimelineFields }} }}
@@ -268,10 +279,12 @@ pub(crate) fn issue_timeline_page() -> String {
 
 pub(crate) fn repository() -> String {
     doc(
-        "query RepositoryDetail($owner: String!, $name: String!) {
-  repository(owner: $owner, name: $name) { ...RepositoryFields }
-}"
-        .to_string(),
+        format!(
+            "query RepositoryDetail($owner: String!, $name: String!) {{
+  {COST}
+  repository(owner: $owner, name: $name) {{ ...RepositoryFields }}
+}}"
+        ),
         &[REPOSITORY],
     )
 }
@@ -312,6 +325,18 @@ mod tests {
 
     #[test]
     fn documents_only_contain_used_fragments() {
+        for d in all_documents() {
+            for def in d.split("fragment ").skip(1) {
+                let name = def.split_whitespace().next().unwrap();
+                assert!(
+                    d.contains(&format!("...{name}")),
+                    "unused fragment {name} in {d}"
+                );
+            }
+        }
+    }
+
+    fn all_documents() -> Vec<String> {
         let mut docs = vec![
             pull_request(),
             pull_requests(1),
@@ -330,14 +355,18 @@ mod tests {
         ] {
             docs.push(c.page_query());
         }
-        for d in docs {
-            for def in d.split("fragment ").skip(1) {
-                let name = def.split_whitespace().next().unwrap();
-                assert!(
-                    d.contains(&format!("...{name}")),
-                    "unused fragment {name} in {d}"
-                );
-            }
+        docs
+    }
+
+    #[test]
+    fn every_document_reports_its_rate_limit_cost() {
+        for d in all_documents() {
+            let top = d.split("\nfragment ").next().unwrap();
+            let first = top.find('{').unwrap();
+            assert!(
+                top[first..].starts_with("{\n  rateLimit { cost }\n"),
+                "no top-level rateLimit {{ cost }} in {d}"
+            );
         }
     }
 
