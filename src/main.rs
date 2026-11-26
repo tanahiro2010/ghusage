@@ -84,7 +84,7 @@ fn session_config(g: &GlobalArgs) -> SessionConfig {
         user: g.user.clone(),
         token_file: g.token_file.clone(),
         public_only: g.public_only,
-        client: ghusage_app::session::client_config(g.concurrency as usize),
+        client: ghusage_app::session::client_config(g.jobs as usize),
     }
 }
 
@@ -377,7 +377,7 @@ async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<
         }
         let progress = progress::Progress::start(s.api_activity());
         let synced = s
-            .sync(period, false, g.concurrency as usize, &|p| {
+            .sync(period, false, g.jobs as usize, &|p| {
                 progress.update(p);
             })
             .await;
@@ -554,7 +554,7 @@ async fn sync_cmd(
     }
     let progress = progress::Progress::start(s.api_activity());
     let synced = s
-        .sync(period, full, g.concurrency as usize, &|p| {
+        .sync(period, full, g.jobs as usize, &|p| {
             progress.update(p);
         })
         .await;
@@ -657,7 +657,7 @@ async fn tui_cmd(g: &GlobalArgs, cmd: &Command, zone: Zone) -> Result<i32> {
         filter: filter(g),
         session: cfg,
         background_sync: online,
-        concurrency: g.concurrency as usize,
+        concurrency: g.jobs as usize,
         commit_basis: commit_basis(g),
     };
     drop(s);
