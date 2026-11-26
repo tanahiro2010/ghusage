@@ -281,14 +281,25 @@ async fn sync_commits(
         tokio::try_join!(searches, pushed_listings)?;
     let mut searches = searches.into_iter();
     let mut listings = listings.into_iter();
-    // A failed pull request search fails the whole sync elsewhere; here it
-    // just means no pull request repositories.
-    let pr_repos = pr_repos.await.unwrap_or_default();
+    // A pull request or issue search that failed sends nothing. Its phase
+    // records the failure; here the repositories it would have found are
+    // unknown, so the commits are not complete: some repositories may not be
+    // listed, or not be known to be related.
+    let mut unknown_relations = Vec::new();
+    let pr_repos = pr_repos.await.unwrap_or_else(|_| {
+        unknown_relations.push(
+            "repositories of pull requests unknown (pull request search failed)".to_owned(),
+        );
+        Vec::new()
+    });
     // Repositories of pull requests found by this sync.
     let (pr_repo_ids, unresolved) =
         resolve_pr_repositories(client, known_repos, &pushed, &pr_repos).await?;
-    // A failed issue search fails the whole sync elsewhere too.
-    let issue_repos = issue_repos.await.unwrap_or_default();
+    let issue_repos = issue_repos.await.unwrap_or_else(|_| {
+        unknown_relations
+            .push("repositories of issues unknown (issue search failed)".to_owned());
+        Vec::new()
+    });
     let related = Related {
         login: &subject.login,
         ids: pushed
@@ -320,6 +331,7 @@ async fn sync_commits(
             cached_prs,
             listing_failure.as_ref(),
             &unresolved,
+            &unknown_relations,
             &related,
             known_repos,
         )
@@ -338,6 +350,7 @@ async fn sync_commit_range(
     cached_prs: &[CachedPr],
     listing_failure: Option<&String>,
     unresolved: &[String],
+    unknown_relations: &[String],
     related: &Related<'_>,
     known_repos: &mut HashMap<String, Repository>,
 ) -> Result<()> {
@@ -355,6 +368,10 @@ async fn sync_commit_range(
         if let Some(f) = listing_failure {
             statuses.push(CoverageStatus::Partial);
             reasons.push(f.clone());
+        }
+        for unknown in unknown_relations {
+            statuses.push(CoverageStatus::Partial);
+            reasons.push(unknown.clone());
         }
         if !unresolved.is_empty() {
             statuses.push(CoverageStatus::Partial);

@@ -115,6 +115,11 @@ pub struct SyncReport {
     pub issues_unchanged: u64,
     /// Errors encountered while fetching individual resources.
     pub failures: Vec<String>,
+    /// Phases (pull requests, commits or issues) that failed as a whole,
+    /// with the error. Each is in `failures` too; the other phases still
+    /// ran to the end.
+    #[serde(skip)]
+    pub failed_phases: Vec<String>,
     /// Coverage records written by the run.
     pub coverage: Vec<CoverageRecord>,
     /// API request statistics for the run.

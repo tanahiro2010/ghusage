@@ -203,39 +203,68 @@ async fn run_inner(
     let (pr_repos_tx, pr_repos_rx) = tokio::sync::oneshot::channel();
     let (issue_repos_tx, issue_repos_rx) = tokio::sync::oneshot::channel();
     // Pull requests are fetched while the remaining searches run.
+    //
+    // A phase that fails (a search GitHub keeps refusing, or a rate limit
+    // too far away to wait for) is recorded as incomplete and the other
+    // phases go on; only errors that make every request fail, such as a
+    // rejected token, stop the whole sync.
     let prs = async {
         let (queue, queued_prs) = futures::channel::mpsc::unbounded();
         let queued = Cell::new(0);
-        let (search_status, (failures, partial)) = tokio::try_join!(
-            search_prs(
-                &shared,
-                &pr_ranges,
-                &pr_states,
-                stale_open,
-                pr_repos_tx,
-                queue,
-                &queued
-            ),
-            fetch_prs(&shared, queued_prs, &queued),
-        )?;
-        record_pr_coverage(&shared, search_status, failures, partial).await
+        // Pull requests queued before the search failed are still fetched.
+        let search = async {
+            phase_result(
+                search_prs(
+                    &shared,
+                    &pr_ranges,
+                    &pr_states,
+                    stale_open,
+                    pr_repos_tx,
+                    queue,
+                    &queued,
+                )
+                .await,
+            )
+        };
+        let (search_status, (failures, partial)) =
+            tokio::try_join!(search, fetch_prs(&shared, queued_prs, &queued))?;
+        match search_status {
+            Ok(status) => record_pr_coverage(&shared, status, failures, partial).await,
+            Err(e) => {
+                {
+                    let mut report = shared.report.borrow_mut();
+                    report.failures.extend(failures);
+                    report.failures.extend(partial);
+                }
+                phase_failed(&shared, &existing, DataKind::PullRequests, &e).await
+            }
+        }
     };
     // Commits: commit search plus the default branches of repositories the
     // subject pushed to or took part in through pull requests.
-    let commits = sync_commits(
-        &shared,
-        &commit_ranges,
-        &cached_prs,
-        &cached_issue_repos,
-        pr_repos_rx,
-        issue_repos_rx,
-        known_repos,
-    );
-    tokio::try_join!(
-        prs,
-        commits,
-        sync_issues(&shared, &issue_ranges, issue_repos_tx)
-    )?;
+    let commits = async {
+        let synced = sync_commits(
+            &shared,
+            &commit_ranges,
+            &cached_prs,
+            &cached_issue_repos,
+            pr_repos_rx,
+            issue_repos_rx,
+            known_repos,
+        )
+        .await;
+        match phase_result(synced)? {
+            Ok(()) => Ok(()),
+            Err(e) => phase_failed(&shared, &existing, DataKind::Commits, &e).await,
+        }
+    };
+    let issues = async {
+        match phase_result(sync_issues(&shared, &issue_ranges, issue_repos_tx).await)? {
+            Ok(()) => Ok(()),
+            Err(e) => phase_failed(&shared, &existing, DataKind::Issues, &e).await,
+        }
+    };
+    tokio::try_join!(prs, commits, issues)?;
 
     let mut report = report.into_inner();
     report.api = client.stats();
@@ -245,6 +274,71 @@ async fn run_inner(
         "partial".into()
     };
     Ok(report)
+}
+
+/// Separates the failure of one phase from errors that end the sync.
+///
+/// An API error other than a rejected token only fails the phase it
+/// happened in (`Ok(Err(_))`); every other error, such as a rejected token
+/// or a cache that cannot be written, is returned as `Err` and ends the
+/// sync.
+fn phase_result<T>(result: Result<T>) -> Result<std::result::Result<T, ApiError>> {
+    match result {
+        Ok(v) => Ok(Ok(v)),
+        Err(AppError::Api(e)) => Ok(Err(e)),
+        Err(e) => Err(e),
+    }
+}
+
+/// What a phase of `kind` searches for, as used in failure messages.
+const fn phase_name(kind: DataKind) -> &'static str {
+    match kind {
+        DataKind::Commits => "commit",
+        DataKind::PullRequests => "pull request",
+        DataKind::Issues => "issue",
+    }
+}
+
+/// Records that the phase of `kind` failed with `error`: a failure in the
+/// report, and partial coverage with the error as reason for the part of
+/// the period not already covered completely by an earlier sync (that data
+/// is still in the cache, so it stays complete).
+async fn phase_failed(
+    sh: &Shared<'_, '_, '_>,
+    existing: &[CoverageRecord],
+    kind: DataKind,
+    error: &ApiError,
+) -> Result<()> {
+    let (subject, opts) = (sh.subject, sh.opts);
+    let message = format!("{} search failed: {error}", phase_name(kind));
+    let summary = coverage::summarize(existing, kind, opts.period.start, opts.period.end);
+    let records: Vec<CoverageRecord> = summary
+        .gaps()
+        .filter_map(|g| Period::new(g.start, g.end).ok())
+        .map(|p| {
+            record(
+                kind,
+                p,
+                CoverageStatus::Partial,
+                Some(message.clone()),
+                subject,
+                opts,
+            )
+        })
+        .collect();
+    if !records.is_empty() {
+        sh.writable().await?;
+        sh.store.borrow_mut().apply(&WriteBatch {
+            account: subject.login.clone(),
+            coverage: records.clone(),
+            ..Default::default()
+        })?;
+    }
+    let mut report = sh.report.borrow_mut();
+    report.coverage.extend(records);
+    report.failures.push(message.clone());
+    report.failed_phases.push(message);
+    Ok(())
 }
 
 /// Sync cursor holding the update time of an issue's last complete fetch.

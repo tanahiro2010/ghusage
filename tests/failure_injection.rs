@@ -212,7 +212,9 @@ async fn search_failing_mid_pagination_keeps_the_existing_cache() {
     .await
     .expect_code(6);
 
-    // A report command that needs the missing range warns and shows the cache.
+    // A report command that needs the missing range warns that the pull
+    // request search failed and shows the cache plus what the other phases
+    // fetched, without calling it complete.
     let online = env
         .run(&[
             "overview",
@@ -226,11 +228,14 @@ async fn search_failing_mid_pagination_keeps_the_existing_cache() {
         .await;
     online.expect_code(0).assert_clean();
     assert!(
-        online.stderr.contains("showing cached data"),
+        online
+            .stderr
+            .contains("warning: pull request search failed"),
         "{}",
         online.stderr
     );
     assert_eq!(online.json()["metrics"], before["metrics"]);
+    assert_ne!(coverage_status(&online.json(), "pull_requests"), "complete");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1021,4 +1026,165 @@ async fn request_timeout_makes_sync_partial_and_a_rerun_completes_it() {
     ])
     .await
     .expect_code(0);
+}
+
+/// The issue search, answered with `response` (at a higher priority than the
+/// fixture's).
+async fn mount_issue_search(server: &wiremock::MockServer, response: ResponseTemplate) {
+    Mock::given(method("GET"))
+        .and(path("/search/issues"))
+        .and(query_param_contains("q", format!("involves:{ME} is:issue")))
+        .respond_with(response)
+        .with_priority(1)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failing_issue_search_keeps_pull_requests_and_commits() {
+    let world = World::base();
+    // What a sync without failures stores.
+    let clean_server = serve(&world).await;
+    let clean = Env::new(&clean_server);
+    clean.sync(&[]).await.expect_code(0);
+    let expected = clean.offline_json(&["overview"]).await.json();
+
+    let server = serve(&world).await;
+    mount_issue_search(&server, server_error()).await;
+    let env = Env::new(&server);
+    let r = env.sync(&[]).await;
+    r.expect_code(4).assert_clean();
+    assert!(r.stderr.contains("issue search failed"), "{}", r.stderr);
+    let s = r.json();
+    assert_eq!(s["status"], "partial");
+    // The pull request and commit phases went on to the end.
+    assert_eq!(s["pull_requests_fetched"], 3, "{s}");
+    assert_eq!(
+        s["commits_found"],
+        expected_commits_found(&clean).await,
+        "{s}"
+    );
+    assert_eq!(s["issues_fetched"], 0, "{s}");
+    assert!(
+        s["failures"].to_string().contains("issue search failed"),
+        "{s}"
+    );
+    assert_eq!(cached_prs(&env).await, vec![3, 10, 20]);
+
+    let o = env.offline_json(&["overview"]).await;
+    o.expect_code(0).assert_clean();
+    let o = o.json();
+    assert_eq!(coverage_status(&o, "pull_requests"), "complete");
+    assert_eq!(coverage_status(&o, "issues"), "partial");
+    let reasons = coverage_reasons(&o, "issues").join(" ");
+    assert!(reasons.contains("issue search failed"), "{reasons}");
+    // Commits were all stored, but which repositories the subject is
+    // related to through issues is unknown, so they are not complete.
+    assert_eq!(o["metrics"]["commits"], expected["metrics"]["commits"]);
+    assert_eq!(coverage_status(&o, "commits"), "partial");
+    let reasons = coverage_reasons(&o, "commits").join(" ");
+    assert!(reasons.contains("issue"), "{reasons}");
+    env.run(&[
+        "overview",
+        "--since",
+        SINCE,
+        "--until",
+        UNTIL,
+        "--offline",
+        "--require-complete",
+    ])
+    .await
+    .expect_code(6);
+
+    // GitHub recovers: the rerun fetches what is missing and nothing else.
+    reserve(&server, &world).await;
+    let r = env.sync(&[]).await;
+    r.expect_code(0).assert_clean();
+    let s = r.json();
+    assert_eq!(s["status"], "complete", "{s}");
+    assert_eq!(s["pull_requests_fetched"], 0, "{s}");
+    assert_eq!(s["issues_fetched"], 2, "{s}");
+    assert_eq!(all_pr_detail_requests(&requests(&server).await), 0);
+    let o = env.offline_json(&["overview"]).await.json();
+    for kind in ["commits", "pull_requests", "issues"] {
+        assert_eq!(coverage_status(&o, kind), "complete", "{kind}");
+    }
+    assert_eq!(o["metrics"], expected["metrics"]);
+    // Syncing again changes no number.
+    env.sync(&["--full"]).await.expect_code(0);
+    let again = env.offline_json(&["overview"]).await.json();
+    assert_eq!(again["metrics"], expected["metrics"]);
+}
+
+/// Commits found by a sync without failures.
+async fn expected_commits_found(env: &Env) -> Value {
+    env.sync(&["--full"]).await.json()["commits_found"].clone()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn issue_search_waiting_too_long_for_the_rate_limit_keeps_the_other_phases() {
+    let reset = (chrono::Utc::now() + chrono::Duration::hours(1)).timestamp();
+    let world = World::base();
+    let server = serve(&world).await;
+    mount_issue_search(
+        &server,
+        ResponseTemplate::new(403)
+            .insert_header("x-ratelimit-remaining", "0")
+            .insert_header("x-ratelimit-limit", "30")
+            .insert_header("x-ratelimit-reset", reset.to_string().as_str())
+            .set_body_json(json!({ "message": "API rate limit exceeded" })),
+    )
+    .await;
+    let env = Env::new(&server);
+    let start = Instant::now();
+    let r = env.sync(&[]).await;
+    assert!(start.elapsed() < Duration::from_secs(20), "sync waited");
+    r.expect_code(4).assert_clean();
+    assert!(r.stderr.contains("rate limit"), "{}", r.stderr);
+    let s = r.json();
+    assert_eq!(s["status"], "partial");
+    assert_eq!(s["pull_requests_fetched"], 3, "{s}");
+    assert_eq!(cached_prs(&env).await, vec![3, 10, 20]);
+    let o = env.offline_json(&["overview"]).await.json();
+    assert_eq!(coverage_status(&o, "pull_requests"), "complete");
+    assert_eq!(coverage_status(&o, "issues"), "partial");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rejected_token_in_the_issue_search_still_stops_the_sync() {
+    let world = World::base();
+    let server = serve(&world).await;
+    mount_issue_search(
+        &server,
+        ResponseTemplate::new(401).set_body_json(json!({
+            "message": "Bad credentials", "documentation_url": "https://docs.github.com/rest"
+        })),
+    )
+    .await;
+    let env = Env::new(&server);
+    let r = env.run(&["sync", "--since", SINCE, "--until", UNTIL]).await;
+    r.expect_code(3).assert_clean();
+    assert!(
+        r.stderr.to_lowercase().contains("authentication"),
+        "{}",
+        r.stderr
+    );
+    // No coverage is recorded for the issues that were never fetched.
+    let db = rusqlite::Connection::open(env.db_path()).unwrap();
+    let issues: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM coverage_intervals WHERE data_kind = 'issues'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(issues, 0);
+    let status: String = db
+        .query_row(
+            "SELECT status FROM sync_runs ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "failed");
 }
