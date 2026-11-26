@@ -234,9 +234,20 @@ fn apply_batch(tx: &Transaction<'_>, b: &WriteBatch) -> Result<()> {
             .as_deref()
             .is_some_and(|id| viewed_prs.contains(id))
             || viewed_commit_events.contains(e.event_id.as_str());
-        let changed = upsert_event(tx, e, viewed_detail)?;
+        let reattributed;
+        let stored = match owning_pull_request(tx, e, viewed_detail)? {
+            Some(owner) if e.parent_pr_id.as_deref() != Some(owner.as_str()) => {
+                reattributed = ActivityEvent {
+                    parent_pr_id: Some(owner),
+                    ..e.clone()
+                };
+                &reattributed
+            }
+            _ => e,
+        };
+        let changed = upsert_event(tx, stored, viewed_detail)?;
         if changed || !viewed_detail {
-            project_event(tx, e)?;
+            project_event(tx, stored)?;
         }
         if !viewed_detail && e
             .parent_pr_id
@@ -538,6 +549,44 @@ fn upsert_thread(
         ],
     )?;
     Ok(())
+}
+
+/// The pull request an event is stored under. An event seen through two
+/// pull requests (the checks of a head commit they share) keeps one owner
+/// whatever the order they are fetched in: a pull request synced by an
+/// account before one only viewed, then the lowest number, then the lowest
+/// id. `None` keeps the event's own parent.
+fn owning_pull_request(
+    tx: &Transaction<'_>,
+    e: &ActivityEvent,
+    viewed_detail: bool,
+) -> Result<Option<String>> {
+    let Some(incoming) = e.parent_pr_id.as_deref() else {
+        return Ok(None);
+    };
+    if viewed_detail {
+        return Ok(None);
+    }
+    let existing: Option<String> = tx
+        .query_row(
+            "SELECT parent_pr_id FROM activity_events WHERE event_id = ?1",
+            params![e.event_id.as_str()],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    let Some(existing) = existing.filter(|x| x != incoming) else {
+        return Ok(None);
+    };
+    Ok(tx
+        .query_row(
+            "SELECT id FROM pull_requests p WHERE id IN (?1, ?2) \
+             ORDER BY NOT EXISTS (SELECT 1 FROM account_pull_requests ap \
+                 WHERE ap.pr_id = p.id AND ap.viewed = 0), number, id LIMIT 1",
+            params![existing, incoming],
+            |r| r.get(0),
+        )
+        .optional()?)
 }
 
 /// Upserts an event by id. A removal observation already stored is kept
