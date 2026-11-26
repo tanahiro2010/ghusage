@@ -2323,6 +2323,75 @@ fn sync_result(r: &Run) -> Value {
     v
 }
 
+/// Serves `world` anew, with the first search to `endpoint` for `query`
+/// over the secondary rate limit, and runs a first sync in a new cache.
+async fn sync_with_one_search_limited(
+    server: &wiremock::MockServer,
+    world: &World,
+    endpoint: &str,
+    query: &str,
+) -> (Env, Run) {
+    reserve(server, world).await;
+    Mock::given(method("GET"))
+        .and(path(endpoint))
+        .and(query_param_contains("q", query))
+        .respond_with(secondary_limit())
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(server)
+        .await;
+    let env = Env::new(server);
+    // The wait is 60 times the backoff base: 1.5 s here.
+    let mut c = env.command(&[
+        "sync", "--since", SINCE, "--until", UNTIL, "--format", "json",
+    ]);
+    c.env("GHUSAGE_BACKOFF_MS", "25");
+    let r = env.run_command(c).await;
+    r.expect_code(0).assert_clean();
+    assert_eq!(r.json()["api"]["rate_limit_waits"], 1, "{query}");
+    (env, r)
+}
+
+/// Pull requests found by one search are fetched while the next search
+/// waits out the secondary rate limit, and the result is the same as
+/// without the wait.
+#[tokio::test(flavor = "multi_thread")]
+async fn pull_requests_found_are_fetched_while_another_search_waits() {
+    let world = World::base();
+    let server = serve(&world).await;
+    let unlimited = Env::new(&server);
+    let expected = unlimited.sync(&[]).await;
+    expected.expect_code(0).assert_clean();
+
+    let query = format!("reviewed-by:{ME} is:pr");
+    let (env, r) = sync_with_one_search_limited(&server, &world, "/search/issues", &query).await;
+    let reqs = requests(&server).await;
+    let retried = nth_search(&reqs, "/search/issues", &query, 1);
+    let first_detail = reqs
+        .iter()
+        .position(|r| {
+            r.url.path() == "/graphql" && {
+                let body = body_str(r);
+                body.contains("query PullRequestDetail") || body.contains("query PullRequestBatch")
+            }
+        })
+        .expect("pull requests fetched");
+    assert!(
+        first_detail < retried,
+        "fetching pull requests waited for the retried search"
+    );
+    assert_eq!(r.json()["pull_requests_fetched"], 3);
+
+    assert_eq!(sync_result(&r), sync_result(&expected));
+    for cmd in REPORTS {
+        let a = unlimited.offline_json(&[cmd]).await;
+        let b = env.offline_json(&[cmd]).await;
+        a.expect_code(0);
+        b.expect_code(0);
+        assert_eq!(without_times(a.json()), without_times(b.json()), "{cmd}");
+    }
+}
+
 /// While one search waits out the secondary rate limit, the default
 /// branches of the repositories pushed to are already listed, and the
 /// result is the same as without the wait.
@@ -2339,25 +2408,7 @@ async fn a_search_waiting_for_the_rate_limit_does_not_hold_up_listing_commits() 
         ("/search/issues", format!("involves:{ME} is:pr")),
         ("/search/commits", format!("author:{ME}")),
     ] {
-        reserve(&server, &world).await;
-        Mock::given(method("GET"))
-            .and(path(endpoint))
-            .and(query_param_contains("q", query.as_str()))
-            .respond_with(secondary_limit())
-            .up_to_n_times(1)
-            .with_priority(1)
-            .mount(&server)
-            .await;
-        let env = Env::new(&server);
-        // The wait is 60 times the backoff base: 1.5 s here.
-        let mut c = env.command(&[
-            "sync", "--since", SINCE, "--until", UNTIL, "--format", "json",
-        ]);
-        c.env("GHUSAGE_BACKOFF_MS", "25");
-        let r = env.run_command(c).await;
-        r.expect_code(0).assert_clean();
-        assert_eq!(r.json()["api"]["rate_limit_waits"], 1, "{query}");
-
+        let (env, r) = sync_with_one_search_limited(&server, &world, endpoint, &query).await;
         let reqs = requests(&server).await;
         let retried = nth_search(&reqs, endpoint, &query, 1);
         let first_listing = reqs

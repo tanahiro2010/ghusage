@@ -202,18 +202,23 @@ async fn run_inner(
     // waits for the repositories that pull request and issue search found.
     let (pr_repos_tx, pr_repos_rx) = tokio::sync::oneshot::channel();
     let (issue_repos_tx, issue_repos_rx) = tokio::sync::oneshot::channel();
+    // Pull requests are fetched while the remaining searches run.
     let prs = async {
-        let (refs, search_status) = search_prs(&shared, &pr_ranges).await?;
-        let mut pr_repos: Vec<RepositoryRef> = Vec::new();
-        let mut seen_names = HashSet::new();
-        for r in refs.values() {
-            let repo = RepositoryRef::new(r.owner.clone(), r.name.clone());
-            if seen_names.insert(repo.clone()) {
-                pr_repos.push(repo);
-            }
-        }
-        drop(pr_repos_tx.send(pr_repos));
-        fetch_prs(&shared, &refs, search_status, &pr_states, stale_open).await
+        let (queue, queued_prs) = futures::channel::mpsc::unbounded();
+        let queued = Cell::new(0);
+        let (search_status, (failures, partial)) = tokio::try_join!(
+            search_prs(
+                &shared,
+                &pr_ranges,
+                &pr_states,
+                stale_open,
+                pr_repos_tx,
+                queue,
+                &queued
+            ),
+            fetch_prs(&shared, queued_prs, &queued),
+        )?;
+        record_pr_coverage(&shared, search_status, failures, partial).await
     };
     // Commits: commit search plus the default branches of repositories the
     // subject pushed to or took part in through pull requests.
