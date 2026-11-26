@@ -24,11 +24,14 @@ const SEARCH_CAP: u64 = 1000;
 /// Results per search page (the most GitHub allows).
 const PER_PAGE: u64 = 100;
 
-/// Whole seconds `[lo, hi)` searched as `lo..hi-1` (bounds are inclusive).
+/// Whole seconds `[lo, hi)` searched as `lo..hi-1` (bounds are inclusive),
+/// or, when `open`, every second from `lo` on searched as `>=lo`; `hi` then
+/// only says where to split the range.
 #[derive(Debug, Clone, Copy)]
 struct Range {
     lo: i64,
     hi: i64,
+    open: bool,
 }
 
 impl Range {
@@ -42,11 +45,46 @@ impl Range {
         Self {
             lo,
             hi: hi.max(lo + 1),
+            open: false,
         }
     }
 
+    /// Every second from `since` on, split at the current time first.
+    ///
+    /// The split point comes from the system clock, not from the time a
+    /// caller treats as "now" (such as the start of a sync): it only decides
+    /// where a range with too many results is cut, and the range stays
+    /// open either way, so nothing is missed. When `since` is later than the
+    /// system clock, the range is one second wide and cannot be split.
+    fn since(since: Timestamp) -> Self {
+        let lo = since.as_second();
+        Self {
+            lo,
+            hi: (Timestamp::now().as_second() + 1).max(lo + 1),
+            open: true,
+        }
+    }
+
+    /// The earlier and the later half. Only the later half of an open
+    /// range stays open.
+    const fn halves(self) -> (Self, Self) {
+        let mid = self.lo + (self.hi - self.lo) / 2;
+        (
+            Self {
+                lo: self.lo,
+                hi: mid,
+                open: false,
+            },
+            Self { lo: mid, ..self },
+        )
+    }
+
     fn qualifier(self) -> String {
-        format!("{}..{}", iso(self.lo), iso(self.hi - 1))
+        if self.open {
+            format!(">={}", iso(self.lo))
+        } else {
+            format!("{}..{}", iso(self.lo), iso(self.hi - 1))
+        }
     }
 }
 
@@ -81,19 +119,21 @@ async fn get_page(t: &Transport, url: &reqwest::Url) -> Result<(Value, HeaderMap
     Ok(page)
 }
 
-/// Runs a search over `period`, splitting ranges whose total exceeds the cap.
+/// Runs a search over `range`, splitting ranges whose total exceeds the
+/// cap. The earlier half is searched first, so an item updated again while
+/// an open range is searched moves to a part that is still to come.
 async fn search(
     t: &Transport,
     endpoint: &str,
     sort: &str,
-    period: Period,
+    range: Range,
     build_query: impl Fn(&str) -> String,
 ) -> Result<SearchOutcome, ApiError> {
     let mut out = SearchOutcome {
         items: Vec::new(),
         reasons: Vec::new(),
     };
-    let mut stack = vec![Range::of(period)];
+    let mut stack = vec![range];
     while let Some(range) = stack.pop() {
         let q = build_query(&range.qualifier());
         let first = t.rest_url(
@@ -113,16 +153,10 @@ async fn search(
                 ApiError::InvalidResponse("search response without total_count".into())
             })?;
         if total > SEARCH_CAP && range.hi - range.lo > 1 {
-            let mid = range.lo + (range.hi - range.lo) / 2;
+            let (earlier, later) = range.halves();
             // Later half pushed first so the earlier half is processed first.
-            stack.push(Range {
-                lo: mid,
-                hi: range.hi,
-            });
-            stack.push(Range {
-                lo: range.lo,
-                hi: mid,
-            });
+            stack.push(later);
+            stack.push(earlier);
             continue;
         }
         if total > SEARCH_CAP {
@@ -244,7 +278,7 @@ pub(crate) async fn commits(
     public_only: bool,
 ) -> Result<Fetched<Vec<CommitRecord>>, ApiError> {
     let visibility = if public_only { " is:public" } else { "" };
-    let outcome = search(t, "commits", "committer-date", period, |range| {
+    let outcome = search(t, "commits", "committer-date", Range::of(period), |range| {
         format!("author:{author_login} committer-date:{range}{visibility}")
     })
     .await?;
@@ -356,7 +390,7 @@ pub(crate) async fn issues(
     t: &Transport,
     qualifiers: &str,
     kind: IssueKind,
-    period: Period,
+    since: Timestamp,
     public_only: bool,
 ) -> Result<Fetched<Vec<IssueRef>>, ApiError> {
     let kind_q = match kind {
@@ -365,7 +399,7 @@ pub(crate) async fn issues(
     };
     let visibility = if public_only { " is:public" } else { "" };
     let qualifiers = qualifiers.trim();
-    let outcome = search(t, "issues", "created", period, |range| {
+    let outcome = search(t, "issues", "created", Range::since(since), |range| {
         format!("{qualifiers} {kind_q} updated:{range}{visibility}")
             .trim()
             .to_string()
@@ -442,6 +476,31 @@ mod tests {
             Range::of(p).qualifier(),
             "2024-01-01T00:00:00+00:00..2024-01-01T23:59:59+00:00"
         );
+    }
+
+    #[test]
+    fn open_ranges_have_no_upper_bound_and_split_into_a_closed_and_an_open_half() {
+        let r = Range {
+            lo: ts("2024-01-01T00:00:00Z"),
+            hi: ts("2024-01-03T00:00:00Z"),
+            open: true,
+        };
+        assert_eq!(r.qualifier(), ">=2024-01-01T00:00:00+00:00");
+        let (earlier, later) = r.halves();
+        assert_eq!(
+            earlier.qualifier(),
+            "2024-01-01T00:00:00+00:00..2024-01-01T23:59:59+00:00"
+        );
+        assert_eq!(later.qualifier(), ">=2024-01-02T00:00:00+00:00");
+        let (_, closed) = Range { open: false, ..r }.halves();
+        assert_eq!(
+            closed.qualifier(),
+            "2024-01-02T00:00:00+00:00..2024-01-02T23:59:59+00:00"
+        );
+    }
+
+    fn ts(s: &str) -> i64 {
+        s.parse::<Timestamp>().unwrap().as_second()
     }
 
     #[test]

@@ -7,7 +7,7 @@ use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::model::{ActorKind, EventId, EventType, Source, Visibility};
 use ghusage_github::{ApiError, IssueKind};
 use serde_json::{Value, json};
-use wiremock::matchers::{method, path, query_param, query_param_is_missing};
+use wiremock::matchers::{method, path, query_param, query_param_contains, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const LOGIN: &str = "alice";
@@ -677,7 +677,7 @@ async fn pagination_link_to_another_host_is_refused() {
 }
 
 fn issue_q(kind: &str) -> String {
-    format!("involves:{LOGIN} {kind} updated:{JAN1}..{JAN1_END}")
+    format!("involves:{LOGIN} {kind} updated:>={JAN1}")
 }
 
 #[tokio::test]
@@ -700,7 +700,7 @@ async fn issue_search_never_returns_pull_requests() {
         .search_issues(
             &format!("involves:{LOGIN}"),
             IssueKind::Issue,
-            jan1(),
+            jan1().start,
             false,
         )
         .await
@@ -735,7 +735,7 @@ async fn pull_request_search_returns_pull_requests() {
         .search_issues(
             &format!("involves:{LOGIN}"),
             IssueKind::PullRequest,
-            jan1(),
+            jan1().start,
             true,
         )
         .await
@@ -749,48 +749,78 @@ async fn pull_request_search_returns_pull_requests() {
 #[tokio::test]
 async fn issue_search_over_1000_splits_and_deduplicates() {
     let server = MockServer::start().await;
-    let p = period("2024-01-01T00:00:00Z", "2024-01-03T00:00:00Z");
-    first_page(
-        &server,
-        "issues",
-        &format!("involves:{LOGIN} is:pr updated:{JAN1}..2024-01-02T23:59:59+00:00"),
-        search_page(1001, false, vec![]),
-        None,
-    )
-    .await;
+    // Everything updated since January 1 is more than one query returns.
+    Mock::given(method("GET"))
+        .and(path("/search/issues"))
+        .and(query_param("q", issue_q("is:pr")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(search_page(1001, false, vec![])))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    // The earlier half ends where the later one starts; only the later half
+    // stays without an upper bound.
     let a = search_issue("acme", "widget", 1, "PR_1", true, "2024-01-01T05:00:00Z");
-    first_page(
-        &server,
-        "issues",
-        &issue_q("is:pr"),
-        search_page(1, false, vec![a.clone()]),
-        None,
-    )
-    .await;
+    Mock::given(method("GET"))
+        .and(path("/search/issues"))
+        .and(query_param_contains(
+            "q",
+            format!("involves:{LOGIN} is:pr updated:{JAN1}.."),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(search_page(
+            1,
+            false,
+            vec![a.clone()],
+        )))
+        .with_priority(2)
+        .mount(&server)
+        .await;
     // The same PR shows up in the later half too (it was updated again).
     let mut a2 = a.clone();
     a2["updated_at"] = json!("2024-01-02T05:00:00Z");
-    first_page(
-        &server,
-        "issues",
-        &format!(
-            "involves:{LOGIN} is:pr updated:2024-01-02T00:00:00+00:00..2024-01-02T23:59:59+00:00"
-        ),
-        search_page(1, false, vec![a2]),
-        None,
-    )
-    .await;
+    Mock::given(method("GET"))
+        .and(path("/search/issues"))
+        .and(query_param_contains(
+            "q",
+            format!("involves:{LOGIN} is:pr updated:>="),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(search_page(1, false, vec![a2])))
+        .with_priority(3)
+        .mount(&server)
+        .await;
     let r = client(&server)
         .search_issues(
             &format!("involves:{LOGIN}"),
             IssueKind::PullRequest,
-            p,
+            jan1().start,
             false,
         )
         .await
         .unwrap();
     assert_eq!(r.items.len(), 1);
     assert_eq!(r.status, CoverageStatus::Complete);
+    let queries: Vec<String> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter_map(|r| {
+            r.url
+                .query_pairs()
+                .find(|(k, _)| k == "q")
+                .map(|(_, v)| v.into_owned())
+        })
+        .collect();
+    assert_eq!(queries.len(), 3, "{queries:?}");
+    assert_eq!(queries[0], issue_q("is:pr"));
+    let earlier_end = queries[1]
+        .strip_prefix(&format!("involves:{LOGIN} is:pr updated:{JAN1}.."))
+        .unwrap_or_else(|| panic!("{queries:?}"));
+    let later_start = queries[2]
+        .strip_prefix(&format!("involves:{LOGIN} is:pr updated:>="))
+        .unwrap_or_else(|| panic!("{queries:?}"));
+    let earlier_end: jiff::Timestamp = earlier_end.parse().unwrap();
+    let later_start: jiff::Timestamp = later_start.parse().unwrap();
+    assert_eq!(later_start.as_second(), earlier_end.as_second() + 1);
 }
 
 #[tokio::test]

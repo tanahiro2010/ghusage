@@ -99,9 +99,11 @@ See [Lines changed](./metrics.md#lines-changed) for the definitions.
 - **`updated:` matches the current update time.** GitHub's issue and pull
   request search filters on the time an item was *last* updated. A pull
   request that was active in March and updated again in May does not match a
-  search for March. `ghusage` compensates by searching from the start of the
-  missing range up to now, so the pull request is found and its March events
-  are counted in March. The cost is larger searches for old periods.
+  search for March. `ghusage` compensates by searching for items updated at
+  or after the start of the missing range, with no upper bound, so the pull
+  request is found and its March events are counted in March. An item updated
+  while the sync runs is found the same way. The cost is larger searches for
+  old periods.
 - **1000-result cap.** GitHub returns at most 1000 results per search query.
   `ghusage` splits the time range until each part has at most 1000 results.
   If a one-second range still has more, only 1000 are available and coverage
