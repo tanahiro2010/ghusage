@@ -232,6 +232,7 @@ jobs:
           test -f "$spaced/ghusage.db"
       - name: Terminal UI in a pseudo terminal
         if: steps.verified.outputs.cache-hit != 'true' && runner.os != 'Windows'
+        timeout-minutes: 5
         run: python3 scripts/tui-pty-smoke.py target/release/ghusage "$RUNNER_TEMP/tui-data"
       # Reached only when every step above passed.
       - name: Remember that these inputs passed
