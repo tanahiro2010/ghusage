@@ -27,4 +27,5 @@ tracing = "0.1.44"
 proptest = "1.11.0"
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "test-util", "net", "io-util"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt"] }
 wiremock = "0.6.5"
