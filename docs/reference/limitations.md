@@ -239,7 +239,10 @@ the API does not keep cannot be recovered later:
 
 ## Cache files
 
-- New data directories are created readable only by you (`0700`) and the
-  database as `0600`. An existing directory keeps its permissions; on a
-  shared machine, check them with `ls -ld` and tighten them with
-  `chmod 700` if needed.
+- On macOS and Linux, the default data directory is kept readable only by
+  you (`0700`): `ghusage` creates it that way and tightens an existing one
+  when it opens the cache. The database is kept as `0600`.
+- A directory you choose with `--data-dir` or `GHUSAGE_DATA_DIR`, or a
+  symbolic link in place of the default directory, keeps its permissions.
+  When other users can access it, `ghusage` prints a warning; tighten it
+  with `chmod 700` if needed. Directories are not changed on Windows.
