@@ -86,15 +86,34 @@ export function change(base, head) {
   return ((head - base) / base) * 100;
 }
 
+/**
+ * Whether `value` is beyond `limit`. Percentages computed from values printed
+ * in fixed steps land a rounding error off the limit (1.2 -> 1.8 ms is
+ * 50.000000000000014%, 2.0 -> 3.0 ms is exactly 50%), so the margin keeps
+ * changes of exactly the limit on the same side.
+ */
+function beyond(value, limit) {
+  return value > limit + 1e-9;
+}
+
 export function verdict(pct, threshold) {
   if (pct === null) return "";
-  if (pct > threshold) return ":red_circle: slower";
-  if (pct < -threshold) return ":green_circle: faster";
+  if (beyond(pct, threshold)) return ":red_circle: slower";
+  if (beyond(-pct, threshold)) return ":green_circle: faster";
   return "≈";
 }
 
 /** p95 changes beyond this (in %) are shown even when p50 and the median stay put. */
 export const P95_ONLY_THRESHOLD = 50;
+
+/**
+ * The latency bench prints times in steps of 0.1 ms, so scenarios that take
+ * about a millisecond or less move by tens of percent from a step or two.
+ * Between runs of unchanged code on shared runners, p95 of the scenarios
+ * under 3 ms moved by at most 0.4 ms; p95 changes smaller than this (in ms)
+ * are not marked.
+ */
+export const MIN_LATENCY_CHANGE_MS = 0.5;
 
 /** The Criterion benchmark that measures the same work as a latency scenario, if any. */
 export function criterionTwin(scenario) {
@@ -114,14 +133,18 @@ export function criterionTwin(scenario) {
  * between runs of unchanged code; p50 and Criterion's median are steadier.
  * A scenario without a Criterion counterpart is confirmed by p50 alone.
  * An unconfirmed p95 change beyond `P95_ONLY_THRESHOLD` is still shown, but
- * not counted as slower or faster.
+ * not counted as slower or faster. A p95 change smaller than
+ * `MIN_LATENCY_CHANGE_MS` (`p95Ms`, the change in ms, when known) is not
+ * marked at all.
  */
-export function latencyVerdict(p95, p50, median, threshold) {
+export function latencyVerdict(p95, p50, median, threshold, p95Ms) {
   const mark = verdict(p95, threshold);
   if (mark === "" || mark === "≈") return mark;
+  // 0.7 - 0.2 is 0.49999999999999994, so the same margin applies here.
+  if (Number.isFinite(p95Ms) && Math.abs(p95Ms) < MIN_LATENCY_CHANGE_MS - 1e-9) return "≈";
   const agrees = (pct) => verdict(pct, threshold) === mark;
   if (agrees(p50) && (median == null || agrees(median))) return mark;
-  return Math.abs(p95) > P95_ONLY_THRESHOLD ? ":warning: p95 only" : "≈";
+  return beyond(Math.abs(p95), P95_ONLY_THRESHOLD) ? ":warning: p95 only" : "≈";
 }
 
 function formatPct(pct) {
@@ -190,7 +213,7 @@ export function buildReport(opts) {
       const p95 = change(b?.p95, h?.p95);
       const twin = criterionTwin(name);
       const median = twin && base.has(twin) && head.has(twin) ? change(base.get(twin).ns, head.get(twin).ns) : undefined;
-      let mark = latencyVerdict(p95, p50, median, threshold);
+      let mark = latencyVerdict(p95, p50, median, threshold, h?.p95 - b?.p95);
       if (!b) mark = "new";
       if (!h) mark = "removed";
       if (mark.includes("slower")) regressions++;
@@ -213,7 +236,8 @@ export function buildReport(opts) {
     `>`,
     `> A latency p95 change is marked only when p50 and the scenario's Criterion median (if it has one) also moved by more than ${threshold}% in the same direction. ` +
       `On its own, p95 can move by up to about 30% between runs of unchanged code. ` +
-      `When p95 alone moves by more than ${P95_ONLY_THRESHOLD}%, the row says "p95 only" and is not counted above; check it before relying on the result.`,
+      `When p95 alone moves by more than ${P95_ONLY_THRESHOLD}%, the row says "p95 only" and is not counted above; check it before relying on the result. ` +
+      `Times are measured in steps of 0.1 ms, so p95 changes smaller than ${MIN_LATENCY_CHANGE_MS} ms are not marked.`,
     "",
   );
   return lines.join("\n");
