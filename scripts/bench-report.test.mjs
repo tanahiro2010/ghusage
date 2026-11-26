@@ -263,3 +263,10 @@ test("pairs latency scenarios with the Criterion benchmark of the same work", ()
   assert.equal(latencyVerdict(5, 30, 30, 10), "≈");
   assert.equal(latencyVerdict(null, null, undefined, 10), "");
 });
+
+test("does not mark a p95 change when p50 or the median moved the other way", () => {
+  assert.equal(latencyVerdict(15, -12, undefined, 10), "≈");
+  assert.equal(latencyVerdict(-15, 12, undefined, 10), "≈");
+  assert.equal(latencyVerdict(15, 12, -12, 10), "≈");
+  assert.equal(latencyVerdict(-15, -12, 12, 10), "≈");
+});
