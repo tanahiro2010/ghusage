@@ -226,9 +226,11 @@ fetched and how completely. This is the coverage of the cache.
 GitHub's `updated:` search qualifier matches a pull request's or issue's
 *current* update time. A pull request that was active last month and updated
 again today would not be found by a search for last month. To compensate,
-`ghusage` searches pull requests and issues from the start of the missing
-range up to now, and then counts each event by the time it actually
-happened.
+`ghusage` searches pull requests and issues updated at or after the start
+of the missing range, with no upper bound, and then counts each event by the
+time it actually happened. Without an upper bound, an item updated while the
+sync runs (for example while a search waits for a rate limit) is still
+found.
 
 GitHub returns at most 1000 results per search query. When a query has more,
 `ghusage` splits the time range in halves until each part fits. If even a
