@@ -104,7 +104,11 @@ async function gate({ github, context }) {
 }
 
 // After the benchmark job: post the report and say how the run ended.
-async function finish({ github, context, number, headSha, report, succeeded }) {
+// `outcome` is the benchmark job's result. A cancelled run was replaced by a
+// newer request, which owns the comments now, so it leaves them alone.
+async function finish({ github, context, number, headSha, report, outcome }) {
+  if (outcome === "cancelled") return "superseded";
+  const succeeded = outcome === "success";
   const { owner, repo } = context.repo;
   const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
   const short = headSha.slice(0, 7);
@@ -129,6 +133,7 @@ async function finish({ github, context, number, headSha, report, succeeded }) {
       body: renderOffer(owner, status),
     });
   }
+  return succeeded ? "finished" : "failed";
 }
 
 module.exports = { CHECKBOX, MARKER, REPORT_MARKER, finish, gate, isChecked, isPerfTitle, offer, renderOffer };

@@ -89,6 +89,7 @@ jobs:
     # workflows use.
     permissions:
       contents: read
+    # A new request for the same pull request replaces a running one.
     concurrency:
       group: perf-bench-${{ needs.gate.outputs.number }}
       cancel-in-progress: true
@@ -180,18 +181,19 @@ jobs:
         env:
           NUMBER: ${{ needs.gate.outputs.number }}
           HEAD_SHA: ${{ needs.gate.outputs.head_sha }}
-          SUCCEEDED: ${{ needs.bench.result == 'success' }}
+          OUTCOME: ${{ needs.bench.result }}
         with:
           script: |
             const fs = require("node:fs");
             const { finish } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/perf-bench.cjs`);
             const path = `${process.env.RUNNER_TEMP}/report/bench-report.md`;
             const report = fs.existsSync(path) ? fs.readFileSync(path, "utf8") : null;
-            await finish({
+            const result = await finish({
               github,
               context,
               number: Number(process.env.NUMBER),
               headSha: process.env.HEAD_SHA,
               report,
-              succeeded: process.env.SUCCEEDED === "true",
+              outcome: process.env.OUTCOME,
             });
+            core.info(result);

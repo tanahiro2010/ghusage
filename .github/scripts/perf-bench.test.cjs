@@ -158,7 +158,7 @@ test("a closed pull request is not benchmarked", async () => {
 test("finish posts the report once and reports the outcome", async () => {
   const offerComment = { id: 1, user: { login: "github-actions[bot]" }, body: renderOffer(OWNER) };
   const { calls, github } = mockApi({ comments: [offerComment] });
-  await finish({ github, context: context({}), number: 7, headSha: "c".repeat(40), report: "| table |", succeeded: true });
+  await finish({ github, context: context({}), number: 7, headSha: "c".repeat(40), report: "| table |", outcome: "success" });
   assert.equal(calls.create.length, 1);
   assert.ok(calls.create[0].body.startsWith(REPORT_MARKER));
   assert.match(calls.update[0].body, /Finished for `ccccccc`/);
@@ -166,8 +166,24 @@ test("finish posts the report once and reports the outcome", async () => {
 
   const report = { id: 2, user: { login: "github-actions[bot]" }, body: `${REPORT_MARKER}\nold` };
   const again = mockApi({ comments: [offerComment, report] });
-  await finish({ github: again.github, context: context({}), number: 7, headSha: "c".repeat(40), report: "new", succeeded: false });
+  await finish({ github: again.github, context: context({}), number: 7, headSha: "c".repeat(40), report: "new", outcome: "failure" });
   assert.equal(again.calls.create.length, 0);
   assert.equal(again.calls.update[0].comment_id, 2);
   assert.match(again.calls.update[1].body, /failed/);
+});
+
+test("a run replaced by a newer request leaves the comments alone", async () => {
+  const offerComment = { id: 1, user: { login: "github-actions[bot]" }, body: renderOffer(OWNER, "Running for `ddddddd`") };
+  const { calls, github } = mockApi({ comments: [offerComment] });
+  const result = await finish({
+    github,
+    context: context({}),
+    number: 7,
+    headSha: "c".repeat(40),
+    report: null,
+    outcome: "cancelled",
+  });
+  assert.equal(result, "superseded");
+  assert.equal(calls.create.length, 0);
+  assert.equal(calls.update.length, 0);
 });
