@@ -61,16 +61,46 @@ fn coverage_description(kind: DataKind, subject: &Subject, opts: &SyncOptions) -
     }
 }
 
+/// `GET /user` for a sync that started with the viewer remembered from the
+/// cache instead of waiting for it (see `Session::open_deferred`).
+pub type ViewerCheck<'a> =
+    futures::future::Shared<futures::future::LocalBoxFuture<'a, std::result::Result<Viewer, ApiError>>>;
+
+/// Whether `viewer` is the same account as `subject`, by id and login.
+pub fn is_viewer(subject: &Subject, viewer: &Viewer) -> bool {
+    subject.id.as_deref() == Some(viewer.id.as_str()) && subject.login == viewer.login
+}
+
+/// Whether `check` (if any) confirms `subject` as the authenticated user.
+async fn confirmed(check: Option<&ViewerCheck<'_>>, subject: &Subject) -> bool {
+    match check {
+        None => true,
+        Some(check) => check.clone().await.is_ok_and(|v| is_viewer(subject, &v)),
+    }
+}
+
 /// Runs a sync for `subject`. The caller holds the sync lock.
+///
+/// With `check`, `subject` is not confirmed yet: requests start at once,
+/// but nothing is written (not even the sync record) before `check`
+/// confirms it, and nothing at all when it does not.
 pub async fn run(
     client: &GitHubClient,
     store: &mut Store,
     subject: &Subject,
     opts: &SyncOptions,
     progress: &dyn Fn(SyncProgress),
+    check: Option<ViewerCheck<'_>>,
 ) -> Result<SyncReport> {
-    let run_id = store.begin_sync_run(&subject.login, Some(opts.period), opts.now)?;
-    let result = run_inner(client, store, subject, opts, progress).await;
+    let run_id = Cell::new(None);
+    let result = run_inner(client, store, subject, opts, progress, check.clone(), &run_id).await;
+    if !confirmed(check.as_ref(), subject).await {
+        return result.and(Err(AppError::Other(UNCONFIRMED.into())));
+    }
+    let run_id = match run_id.get() {
+        Some(id) => id,
+        None => store.begin_sync_run(&subject.login, Some(opts.period), opts.now)?,
+    };
     let finished = Timestamp::now();
     match &result {
         Ok(report) => {
@@ -104,12 +134,18 @@ pub async fn run(
     result
 }
 
+/// Error of a sync whose subject turned out not to be the authenticated
+/// user; the session runs it again for the right account.
+const UNCONFIRMED: &str = "the authenticated account is not the cached one";
+
 async fn run_inner(
     client: &GitHubClient,
     store: &mut Store,
     subject: &Subject,
     opts: &SyncOptions,
     progress: &dyn Fn(SyncProgress),
+    check: Option<ViewerCheck<'_>>,
+    run_id: &Cell<Option<i64>>,
 ) -> Result<SyncReport> {
     let existing = applicable_coverage(store.coverage(&subject.login)?, opts.public_only);
     let probe = Period::new(opts.now, opts.now + SignedDuration::from_secs(1))?;
@@ -156,6 +192,8 @@ async fn run_inner(
         subject,
         opts,
         progress,
+        check,
+        run_id,
     };
     // Commit search does not depend on the pull request search, so it starts
     // right away; only listing the default branches of pull request

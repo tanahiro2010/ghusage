@@ -1770,3 +1770,178 @@ async fn a_failing_line_count_query_keeps_the_sync_and_leaves_counts_unknown() {
     let d = env.offline_json(&["overview"]).await.json()["metrics"]["diff_stats"].clone();
     assert_eq!(d["coverage"], "complete", "{d}");
 }
+
+/// Records when each request arrives, then answers with `response`.
+struct Arrivals {
+    at: std::sync::Arc<std::sync::Mutex<Vec<std::time::Instant>>>,
+    response: ResponseTemplate,
+}
+
+impl wiremock::Respond for Arrivals {
+    fn respond(&self, _: &wiremock::Request) -> ResponseTemplate {
+        self.at.lock().unwrap().push(std::time::Instant::now());
+        self.response.clone()
+    }
+}
+
+/// Mounts `response` for `GET {endpoint}` above the fixture and returns the
+/// arrival times of its requests.
+async fn record_arrivals(
+    server: &wiremock::MockServer,
+    endpoint: &str,
+    response: ResponseTemplate,
+) -> std::sync::Arc<std::sync::Mutex<Vec<std::time::Instant>>> {
+    let at = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    Mock::given(method("GET"))
+        .and(path(endpoint))
+        .respond_with(Arrivals {
+            at: std::sync::Arc::clone(&at),
+            response,
+        })
+        .with_priority(1)
+        .mount(server)
+        .await;
+    at
+}
+
+/// Rows the cache holds for `login`: sync records, coverage records and
+/// linked events.
+fn account_rows(env: &Env, login: &str) -> (i64, i64, i64) {
+    let db = rusqlite::Connection::open_with_flags(
+        env.db_path(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let count = |table: &str| -> i64 {
+        db.query_row(
+            &format!(
+                "SELECT count(*) FROM {table} t JOIN accounts a ON a.id = t.account_id \
+                 WHERE a.login = ?1"
+            ),
+            [login],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    (
+        count("sync_runs"),
+        count("coverage_intervals"),
+        count("account_events"),
+    )
+}
+
+fn remembered_viewer(env: &Env) -> String {
+    let db = rusqlite::Connection::open_with_flags(
+        env.db_path(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    db.query_row(
+        "SELECT value FROM cache_metadata WHERE key = 'viewer_login'",
+        [],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_remembered_account_starts_syncing_without_waiting_for_the_identity_check() {
+    let server = serve(&World::base()).await;
+    let env = Env::new(&server);
+    env.sync(&[]).await.expect_code(0);
+    // The identity check now takes 2 s; commit search must not wait for it.
+    let delay = std::time::Duration::from_secs(2);
+    let user = record_arrivals(
+        &server,
+        "/user",
+        ResponseTemplate::new(200)
+            .set_body_json(json!({
+                "login": ME, "id": 1, "node_id": ME_ID, "type": "User", "name": "Me"
+            }))
+            .set_delay(delay),
+    )
+    .await;
+    let search = record_arrivals(
+        &server,
+        "/search/commits",
+        ResponseTemplate::new(200).set_body_json(search_page(vec![])),
+    )
+    .await;
+    env.sync(&["--full"]).await.expect_code(0).assert_clean();
+    let user_at = user.lock().unwrap()[0];
+    let first_search = *search.lock().unwrap().first().expect("commit search ran");
+    assert!(
+        first_search < user_at + delay,
+        "commit search waited for the identity check"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_token_of_another_account_writes_nothing_for_the_remembered_one() {
+    let server = serve(&World::base()).await;
+    let env = Env::new(&server);
+    env.sync(&[]).await.expect_code(0);
+    let before = account_rows(&env, ME);
+    assert!(before.0 > 0 && before.1 > 0 && before.2 > 0, "{before:?}");
+    Mock::given(method("GET"))
+        .and(path("/user"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "login": "other", "id": 2, "node_id": "U_other", "type": "User", "name": "Other"
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    // Search finds nothing for the other account.
+    for endpoint in ["/search/issues", "/search/commits"] {
+        Mock::given(method("GET"))
+            .and(path(endpoint))
+            .and(query_param_contains("q", "other"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(search_page(vec![])))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+    }
+    let r = env.sync(&[]).await;
+    // Partial: the fixture only lists commits of the remembered account,
+    // so listing the other account's commits fails.
+    r.expect_code(4).assert_clean();
+    let report = r.json();
+    assert_eq!(report["status"], "partial");
+    // Nothing more for the remembered account; the sync ran for the token's.
+    assert_eq!(account_rows(&env, ME), before);
+    assert!(account_rows(&env, "other").0 > 0);
+    assert_eq!(remembered_viewer(&env), "other");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejected_token_writes_nothing_for_the_remembered_account() {
+    let server = serve(&World::base()).await;
+    let env = Env::new(&server);
+    env.sync(&[]).await.expect_code(0);
+    let before = account_rows(&env, ME);
+    Mock::given(method("GET"))
+        .and(path("/user"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "message": "Bad credentials", "documentation_url": "https://docs.github.com/rest"
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    env.run(&["sync", "--since", SINCE, "--until", UNTIL, "--full"])
+        .await
+        .expect_code(3)
+        .assert_clean();
+    assert_eq!(account_rows(&env, ME), before);
+    // Report commands still do not hide the failure behind the cache.
+    env.run(&[
+        "overview",
+        "--since",
+        SINCE,
+        "--until",
+        UNTIL,
+        "--max-age",
+        "1h",
+    ])
+    .await
+    .expect_code(3);
+}

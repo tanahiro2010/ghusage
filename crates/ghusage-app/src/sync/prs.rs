@@ -1,18 +1,41 @@
 /// What every sync phase works with.
-struct Shared<'a, 's> {
+struct Shared<'a, 's, 'c> {
     client: &'a GitHubClient,
     store: &'a RefCell<&'s mut Store>,
     report: &'a RefCell<SyncReport>,
     subject: &'a Subject,
     opts: &'a SyncOptions,
     progress: &'a dyn Fn(SyncProgress),
+    /// Pending confirmation of `subject` (see [`run`]).
+    check: Option<ViewerCheck<'c>>,
+    /// The sync record, created by the first write.
+    run_id: &'a Cell<Option<i64>>,
+}
+
+impl Shared<'_, '_, '_> {
+    /// Waits until the sync may write to the store: `subject` is
+    /// confirmed and the sync record exists. Every write goes through here.
+    async fn writable(&self) -> Result<()> {
+        if !confirmed(self.check.as_ref(), self.subject).await {
+            return Err(AppError::Other(UNCONFIRMED.into()));
+        }
+        if self.run_id.get().is_none() {
+            let id = self.store.borrow_mut().begin_sync_run(
+                &self.subject.login,
+                Some(self.opts.period),
+                self.opts.now,
+            )?;
+            self.run_id.set(Some(id));
+        }
+        Ok(())
+    }
 }
 
 type SearchStatus = Vec<(Period, CoverageStatus, Option<String>)>;
 
 /// Finds pull requests updated in `ranges`.
 async fn search_prs(
-    sh: &Shared<'_, '_>,
+    sh: &Shared<'_, '_, '_>,
     ranges: &[Period],
 ) -> Result<(BTreeMap<String, IssueRef>, SearchStatus)> {
     let (client, subject, opts) = (sh.client, sh.subject, sh.opts);
@@ -54,7 +77,7 @@ async fn search_prs(
 /// Fetches changed and stale pull requests and records pull request
 /// coverage for the searched ranges.
 async fn fetch_prs(
-    sh: &Shared<'_, '_>,
+    sh: &Shared<'_, '_, '_>,
     refs: &BTreeMap<String, IssueRef>,
     search_status: SearchStatus,
     states: &HashMap<String, (Option<Timestamp>, CoverageStatus)>,
@@ -110,6 +133,7 @@ async fn fetch_prs(
                     pr_partial.push(format!("{o}/{n}#{num}: {}", bundle.notes.join(", ")));
                 }
                 let batch = pr_batch(subject, bundle);
+                sh.writable().await?;
                 sh.store.borrow_mut().apply(&batch)?;
                 sh.report.borrow_mut().pull_requests_fetched += 1;
             }
@@ -117,6 +141,7 @@ async fn fetch_prs(
             Err(e) => {
                 if matches!(e, ApiError::NotFound(_) | ApiError::Forbidden(_)) {
                     // Keep earlier data but show that access was lost.
+                    sh.writable().await?;
                     sh.store
                         .borrow_mut()
                         .set_repository_accessible(&o, &n, false)?;
@@ -151,6 +176,7 @@ async fn fetch_prs(
             subject,
             opts,
         );
+        sh.writable().await?;
         sh.store.borrow_mut().apply(&WriteBatch {
             account: subject.login.clone(),
             coverage: vec![rec.clone()],

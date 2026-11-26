@@ -19,7 +19,7 @@ fn name_repos(names: &[String]) -> String {
     s
 }
 async fn persist_commit_range(
-    sh: &Shared<'_, '_>,
+    sh: &Shared<'_, '_, '_>,
     range: Period,
     mut found: BTreeMap<EventId, CommitRecord>,
     unconfirmed: Vec<CommitRecord>,
@@ -66,6 +66,7 @@ async fn persist_commit_range(
         .collect();
     if !inaccessible.is_empty() {
         for repo in &inaccessible {
+            sh.writable().await?;
             sh.store
                 .borrow_mut()
                 .set_repository_accessible(&repo.owner, &repo.name, false)?;
@@ -117,10 +118,12 @@ async fn persist_commit_range(
     let rec = record(DataKind::Commits, range, status, reason, subject, opts);
     batch.coverage.push(rec.clone());
     if !stale_copies.is_empty() {
+        sh.writable().await?;
         sh.store
             .borrow_mut()
             .remove_listed_commits(&subject.login, &stale_copies)?;
     }
+    sh.writable().await?;
     sh.store.borrow_mut().apply(&batch)?;
     sh.report.borrow_mut().coverage.push(rec);
     Ok(())
@@ -221,7 +224,7 @@ fn commit_sha(c: &CommitRecord) -> Option<&str> {
 /// stored once. In repositories that are not [`Related`], search results
 /// are used as they are, without listing, and copies are left out.
 async fn sync_commits(
-    sh: &Shared<'_, '_>,
+    sh: &Shared<'_, '_, '_>,
     ranges: &[Period],
     cached_prs: &[CachedPr],
     cached_issue_repos: &HashSet<String>,
@@ -302,7 +305,7 @@ async fn sync_commits(
 }
 
 async fn sync_commit_range(
-    sh: &Shared<'_, '_>,
+    sh: &Shared<'_, '_, '_>,
     range: Period,
     fetched: ghusage_github::Fetched<Vec<CommitRecord>>,
     pushed: &[PushedRepository],
