@@ -15,7 +15,7 @@ const {
 const OWNER = "octo";
 
 function mockApi({ comments = [], pr = {} } = {}) {
-  const calls = { create: [], update: [], get: [] };
+  const calls = { create: [], update: [], get: [], react: [] };
   const github = {
     rest: {
       pulls: {
@@ -31,6 +31,9 @@ function mockApi({ comments = [], pr = {} } = {}) {
             },
           };
         },
+      },
+      reactions: {
+        createForIssueComment: async (args) => calls.react.push(args),
       },
       issues: {
         listComments: Symbol("list comments"),
@@ -105,6 +108,12 @@ test("the owner's check starts a run and clears the box", async () => {
   assert.equal(calls.update.length, 1);
   assert.ok(!isChecked(calls.update[0].body));
   assert.match(calls.update[0].body, /Running for `aaaaaaa`/);
+  // Acknowledged at once with a reaction and a comment.
+  assert.deepEqual(calls.react, [{ owner: OWNER, repo: "ghusage", comment_id: 1, content: "eyes" }]);
+  assert.equal(calls.create.length, 1);
+  assert.equal(calls.create[0].issue_number, 7);
+  assert.match(calls.create[0].body, /^Starting the benchmarks for `aaaaaaa` against `dev` `bbbbbbb`, as requested by @octo/);
+  assert.match(calls.create[0].body, /actions\/runs\/99/);
 });
 
 test("anyone else's check is undone and starts nothing", async () => {
@@ -118,6 +127,8 @@ test("anyone else's check is undone and starts nothing", async () => {
   assert.ok(!isChecked(calls.update[0].body));
   assert.match(calls.update[0].body, /@mallory checked the box/);
   assert.equal(calls.get.length, 0);
+  assert.equal(calls.react.length, 0);
+  assert.equal(calls.create.length, 0);
 });
 
 test("unchecking, other comments and issues start nothing", async () => {

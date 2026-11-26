@@ -79,12 +79,22 @@ async function gate({ github, context }) {
     return null;
   }
   const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
-  await update(
-    renderOffer(
-      owner,
-      `Running for \`${pr.head.sha.slice(0, 7)}\` against \`${pr.base.ref}\` \`${pr.base.sha.slice(0, 7)}\`: [workflow run](${runUrl})`,
-    ),
-  );
+  const what = `\`${pr.head.sha.slice(0, 7)}\` against \`${pr.base.ref}\` \`${pr.base.sha.slice(0, 7)}\``;
+  // Acknowledge at once: a reaction on the checkbox comment and a comment
+  // saying the run started, before the benchmarks take their minutes.
+  await github.rest.reactions.createForIssueComment({
+    owner,
+    repo,
+    comment_id: comment.id,
+    content: "eyes",
+  });
+  await github.rest.issues.createComment({
+    owner,
+    repo,
+    issue_number: pr.number,
+    body: `Starting the benchmarks for ${what}, as requested by @${owner}. The comparison is posted here when they finish (usually 10–20 minutes): [workflow run](${runUrl})`,
+  });
+  await update(renderOffer(owner, `Running for ${what}: [workflow run](${runUrl})`));
   return {
     number: pr.number,
     head_sha: pr.head.sha,
