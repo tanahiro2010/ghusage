@@ -348,6 +348,32 @@ pub fn create_private_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Like [`create_private_dir`], but also makes an existing `dir` readable
+/// only by the user. Only for a directory that ghusage owns, never for one
+/// the user chose.
+pub fn create_or_restrict_private_dir(dir: &Path) -> Result<()> {
+    create_private_dir(dir)?;
+    restrict_to_user(dir, 0o700);
+    Ok(())
+}
+
+/// On Unix, returns the permission bits of `dir` when other users (its
+/// group or everyone) can access it. `None` elsewhere or when it is private.
+#[must_use]
+pub fn shared_dir_mode(dir: &Path) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir).ok()?.permissions().mode() & 0o777;
+        (mode & 0o077 != 0).then_some(mode)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        None
+    }
+}
+
 /// Best effort: on Unix, sets `path`'s permission bits to `mode`. Fails
 /// silently, e.g. for a read-only file the user does not own.
 fn restrict_to_user(path: &Path, mode: u32) {

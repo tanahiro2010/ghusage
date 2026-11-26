@@ -702,3 +702,117 @@ fn concurrent_requests_come_from_flag_alias_or_environment() {
         .code(2)
         .stderr(predicate::str::contains("--jobs"));
 }
+
+/// The data directory ghusage uses when none is chosen, under `home`.
+#[cfg(unix)]
+fn default_data_dir(home: &std::path::Path) -> std::path::PathBuf {
+    if cfg!(target_os = "macos") {
+        home.join("Library/Application Support/dev.ghusage.ghusage")
+    } else {
+        home.join(".local/share/ghusage")
+    }
+}
+
+#[cfg(unix)]
+fn unix_mode(p: &std::path::Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+}
+
+#[cfg(unix)]
+fn make_dir_with_mode(dir: &std::path::Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn an_existing_default_data_directory_is_made_private() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let dir = default_data_dir(&home);
+    make_dir_with_mode(&dir, 0o755);
+    let mut c = Command::cargo_bin("ghusage").unwrap();
+    c.env_clear();
+    keep_system_env(&mut c);
+    c.env("PATH", d.path().join("no-bin"))
+        .env("HOME", &home)
+        .env("TZ", "UTC")
+        .args(["cache", "status"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("other users can access").not());
+    assert_eq!(unix_mode(&dir), 0o700);
+    assert_eq!(unix_mode(&dir.join("ghusage.db")), 0o600);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_chosen_data_directory_keeps_its_permissions_with_a_warning() {
+    let d = tempfile::tempdir().unwrap();
+    let by_env = d.path().join("by-env");
+    let by_flag = d.path().join("by-flag");
+    make_dir_with_mode(&by_env, 0o755);
+    make_dir_with_mode(&by_flag, 0o750);
+    ghusage(&d)
+        .env("GHUSAGE_DATA_DIR", &by_env)
+        .args(["cache", "status"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "other users can access the data directory",
+        ))
+        .stderr(predicate::str::contains("755"));
+    ghusage(&d)
+        .arg("--data-dir")
+        .arg(&by_flag)
+        .args(["cache", "status"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "other users can access the data directory",
+        ))
+        .stderr(predicate::str::contains("750"));
+    assert_eq!(unix_mode(&by_env), 0o755);
+    assert_eq!(unix_mode(&by_flag), 0o750);
+    assert_eq!(unix_mode(&by_env.join("ghusage.db")), 0o600);
+    assert_eq!(unix_mode(&by_flag.join("ghusage.db")), 0o600);
+
+    // A private chosen directory gives no warning.
+    let private = d.path().join("private");
+    make_dir_with_mode(&private, 0o700);
+    ghusage(&d)
+        .env("GHUSAGE_DATA_DIR", &private)
+        .args(["cache", "status"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("other users can access").not());
+    assert_eq!(unix_mode(&private), 0o700);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_linked_default_data_directory_is_not_changed() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let dir = default_data_dir(&home);
+    let target = d.path().join("elsewhere");
+    make_dir_with_mode(&target, 0o755);
+    std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&target, &dir).unwrap();
+    let mut c = Command::cargo_bin("ghusage").unwrap();
+    c.env_clear();
+    keep_system_env(&mut c);
+    c.env("PATH", d.path().join("no-bin"))
+        .env("HOME", &home)
+        .env("TZ", "UTC")
+        .args(["cache", "status"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "other users can access the data directory",
+        ));
+    assert_eq!(unix_mode(&target), 0o755);
+    assert_eq!(unix_mode(&target.join("ghusage.db")), 0o600);
+}
