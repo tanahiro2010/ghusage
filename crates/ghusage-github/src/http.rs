@@ -506,7 +506,8 @@ impl Transport {
         let path = url.path().to_string();
         if (200..300).contains(&status) {
             if graphql && graphql_rate_limited(&body) {
-                let detail = RateLimitDetail::new(&headers, graphql_message(&body).as_deref());
+                let detail =
+                    RateLimitDetail::new(&headers, graphql_rate_limit_message(&body).as_deref());
                 return self.primary_limit(&headers, attempt, detail);
             }
             return Decision::Done(RawResponse { headers, body });
@@ -669,12 +670,14 @@ fn body_message(body: &[u8]) -> Option<String> {
         .map(|m| truncate(m, 300))
 }
 
-/// The first error message of a GraphQL response, if any.
-fn graphql_message(body: &[u8]) -> Option<String> {
+/// The message of the `RATE_LIMITED` error in a GraphQL response. Other
+/// errors are skipped: their messages can name private repositories.
+fn graphql_rate_limit_message(body: &[u8]) -> Option<String> {
     let v: Value = serde_json::from_slice(body).ok()?;
     v.get("errors")?
         .as_array()?
         .iter()
+        .filter(|e| e.get("type").and_then(|t| t.as_str()) == Some("RATE_LIMITED"))
         .find_map(|e| e.get("message").and_then(|m| m.as_str()))
         .map(|m| truncate(m, 300))
 }

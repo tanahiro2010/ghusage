@@ -195,3 +195,40 @@ async fn retry_after_and_primary_limits_name_their_wait() {
         "{log}"
     );
 }
+
+#[tokio::test]
+async fn graphql_rate_limit_logs_only_the_rate_limit_message() {
+    let server = MockServer::start().await;
+    let limited = ResponseTemplate::new(200).set_body_json(json!({
+        "data": { "repository": null },
+        "errors": [
+            {
+                "type": "NOT_FOUND",
+                "path": ["repository"],
+                "message": "Could not resolve to a Repository with the name 'someowner/hidden-repo-name'."
+            },
+            { "type": "RATE_LIMITED", "message": "API rate limit exceeded for user ID 1." }
+        ]
+    }));
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(sequence(vec![
+            limited,
+            ResponseTemplate::new(200).set_body_json(json!({ "data": { "repository": null } })),
+        ]))
+        .mount(&server)
+        .await;
+    let (log, guard) = capture();
+    client(&server)
+        .repository("someowner", "hidden-repo-name")
+        .await
+        .unwrap_err();
+    drop(guard);
+    let log = log.text();
+    let retries = lines_with(&log, "retrying GitHub request");
+    assert_eq!(retries.len(), 1, "{log}");
+    assert!(retries[0].contains("wait=\"primary\""), "{log}");
+    assert!(retries[0].contains("API rate limit exceeded"), "{log}");
+    assert!(!log.contains("hidden-repo-name"), "{log}");
+    assert!(!log.contains("someowner"), "{log}");
+}
