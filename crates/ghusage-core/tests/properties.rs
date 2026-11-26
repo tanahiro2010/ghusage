@@ -411,7 +411,10 @@ fn additive(s: &Summary) -> Vec<(&'static str, u64)> {
     ]
 }
 
-fn sum_additive<'a>(parts: impl Iterator<Item = &'a Summary>) -> Vec<(&'static str, u64)> {
+fn sum_additive<'a, I>(parts: I) -> Vec<(&'static str, u64)>
+where
+    I: Iterator<Item = &'a Summary>,
+{
     let mut acc = additive(&Summary::default());
     for s in parts {
         for (a, b) in acc.iter_mut().zip(additive(s)) {

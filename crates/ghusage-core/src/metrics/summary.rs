@@ -236,12 +236,10 @@ impl DiffTotals {
 }
 
 /// Computes a summary over `events` (already filtered to one scope).
-fn summarize_events<'a>(
-    ds: &Dataset,
-    events: impl Iterator<Item = &'a ActivityEvent>,
-    zone: Zone,
-    basis: CommitDateBasis,
-) -> Summary {
+fn summarize_events<'a, I>(ds: &Dataset, events: I, zone: Zone, basis: CommitDateBasis) -> Summary
+where
+    I: Iterator<Item = &'a ActivityEvent>,
+{
     let mut acc = SummaryAccumulator::default();
     for event in events {
         acc.observe(ds, event, &zone, basis);
