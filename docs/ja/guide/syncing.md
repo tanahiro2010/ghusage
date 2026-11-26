@@ -223,4 +223,4 @@ error: another ghusage sync is already running (lock: /path/to/sync.lock)
 - 並行して実行するリクエストは最大 `--jobs` 件です(既定は 8、最大は 16)。
 - 各リクエストは 30 秒でタイムアウトします。タイムアウト、ネットワークのエラー、HTTP 500/502/503/504 の場合は、指数バックオフで合計 5 回まで試行します。
 - プライマリのレート制限を使い切った場合、リセットまで 15 分以内なら `ghusage` はリセットを待ちます。それより長ければ、レート制限のエラーで止まります。セカンダリのレート制限と `Retry-After` にも従います。
-- `GHUSAGE_LOG=debug`(または `ghusage_github=debug` のような任意の `tracing` のフィルター)を設定すると、診断用のログを stderr に出力します。
+- `GHUSAGE_LOG=debug`(または `ghusage_github=debug` のような任意の `tracing` のフィルター)を設定すると、診断用のログを stderr に出力します。debug では GitHub へのリクエストごとに、メソッド、パス、GraphQL の操作名、ステータス、所要時間、サイズを出力します。403 または 429 の応答では、`x-ratelimit-*` と `Retry-After` のヘッダーと、短くしたエラーメッセージも出力します。権限不足のような、レート制限ではない 403 も対象です。レート制限による再試行では、同じ情報と、どの制限を待つか(`primary`、`secondary`、`retry-after`、`too-many-requests`)を出力します。トークンと GraphQL の変数は出力しませんが、パスにはリポジトリ名が含まれるので、ログを共有する前に確認してください。

@@ -79,9 +79,67 @@ enum Decision {
     Retry {
         delay: Duration,
         error: ApiError,
-        rate_limit: bool,
+        /// Set when the wait is for a rate limit.
+        rate_limit: Option<RateLimitWait>,
     },
     Fail(ApiError),
+}
+
+/// Why a request waits for a rate limit, for the debug log.
+struct RateLimitWait {
+    /// `primary`, `secondary`, `retry-after` or `too-many-requests`.
+    kind: &'static str,
+    /// Only built when debug logging is enabled.
+    detail: Option<RateLimitDetail>,
+}
+
+/// Rate-limit headers and the error message of a limited response, made
+/// safe to print: control characters removed and lengths bounded. Never
+/// holds request headers.
+#[derive(Default)]
+struct RateLimitDetail {
+    remaining: Option<String>,
+    resource: Option<String>,
+    used: Option<String>,
+    retry_after: Option<String>,
+    message: Option<String>,
+}
+
+impl RateLimitDetail {
+    fn new(headers: &HeaderMap, message: Option<&str>) -> Self {
+        let header = |name: &str| header_str(headers, name).map(|v| log_safe(v, 40));
+        Self {
+            remaining: header("x-ratelimit-remaining"),
+            resource: header("x-ratelimit-resource"),
+            used: header("x-ratelimit-used"),
+            retry_after: header("retry-after"),
+            message: message.map(|m| log_safe(m, 160)),
+        }
+    }
+
+    /// The details for the retry log line, or `None` without building them
+    /// when debug logging is off.
+    fn for_log(headers: &HeaderMap, message: impl FnOnce() -> Option<String>) -> Option<Self> {
+        tracing::enabled!(tracing::Level::DEBUG).then(|| Self::new(headers, message().as_deref()))
+    }
+}
+
+/// Untrusted text for a log line: one line without control characters,
+/// at most `max` characters.
+fn log_safe(s: &str, max: usize) -> String {
+    truncate(&ghusage_core::sanitize::sanitize_line(s), max)
+}
+
+/// The operation name of a GraphQL document (`PullRequestDetail` in
+/// `query PullRequestDetail($owner: String!) {...}`), if it has one.
+pub(crate) fn graphql_operation(query: &str) -> Option<&str> {
+    let name = query
+        .split_whitespace()
+        .skip_while(|w| *w != "query" && *w != "mutation")
+        .nth(1)?;
+    let name = name.split(['(', '{']).next().unwrap_or(name);
+    (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+        .then_some(name)
 }
 
 pub(crate) struct Transport {
@@ -159,7 +217,7 @@ impl Transport {
 
     /// `GET` returning parsed JSON and the response headers.
     pub(crate) async fn get_json(&self, url: &Url) -> Result<(Value, HeaderMap), ApiError> {
-        let resp = self.send(Method::GET, url, None, false).await?;
+        let resp = self.send(Method::GET, url, None, None).await?;
         let value = parse_json(&resp.body, url)?;
         Ok((value, resp.headers))
     }
@@ -267,7 +325,10 @@ impl Transport {
         }))
         .map_err(|_| ApiError::InvalidResponse("failed to encode GraphQL request".into()))?;
         let url = self.graphql_url.clone();
-        let resp = self.send(Method::POST, &url, Some(&body), true).await?;
+        let operation = Some(graphql_operation(query).unwrap_or("anonymous"));
+        let resp = self
+            .send(Method::POST, &url, Some(&body), operation)
+            .await?;
         let value = parse_json(&resp.body, &url)?;
         if !value.is_object() {
             return Err(ApiError::InvalidResponse(
@@ -279,28 +340,31 @@ impl Transport {
     }
 
     /// Sends a request with retries. Returns only 2xx responses.
+    /// `operation` is set for GraphQL requests: the operation name, shown
+    /// in the debug log.
     async fn send(
         &self,
         method: Method,
         url: &Url,
         body: Option<&[u8]>,
-        graphql: bool,
+        operation: Option<&str>,
     ) -> Result<RawResponse, ApiError> {
+        let graphql = operation.is_some();
         let max_attempts = self.config.max_attempts.max(1);
         let mut attempt: u32 = 0;
         loop {
             attempt += 1;
-            let decision = match self.attempt(&method, url, body).await {
+            let decision = match self.attempt(&method, url, body, operation).await {
                 Ok(resp) => self.decide(resp, url, &method, attempt, graphql),
                 Err(AttemptError::Timeout) => Decision::Retry {
                     delay: self.backoff(attempt),
                     error: ApiError::Timeout { attempts: attempt },
-                    rate_limit: false,
+                    rate_limit: None,
                 },
                 Err(AttemptError::Network(msg)) => Decision::Retry {
                     delay: self.backoff(attempt),
                     error: ApiError::Network(msg),
-                    rate_limit: false,
+                    rate_limit: None,
                 },
                 Err(AttemptError::TooLarge) => Decision::Fail(ApiError::TooLarge {
                     limit: self.config.max_response_bytes,
@@ -317,15 +381,23 @@ impl Transport {
                     if attempt >= max_attempts {
                         return Err(error);
                     }
+                    let detail = rate_limit.as_ref().and_then(|w| w.detail.as_ref());
                     tracing::debug!(
                         attempt,
                         delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
                         path = url.path(),
+                        operation,
+                        wait = rate_limit.as_ref().map(|w| w.kind),
+                        ratelimit_resource = detail.and_then(|d| d.resource.as_deref()),
+                        ratelimit_remaining = detail.and_then(|d| d.remaining.as_deref()),
+                        ratelimit_used = detail.and_then(|d| d.used.as_deref()),
+                        retry_after = detail.and_then(|d| d.retry_after.as_deref()),
+                        error_message = detail.and_then(|d| d.message.as_deref()),
                         "retrying GitHub request"
                     );
                     self.with_stats(|s| {
                         s.retries += 1;
-                        if rate_limit {
+                        if rate_limit.is_some() {
                             s.rate_limit_waits += 1;
                         }
                     });
@@ -340,6 +412,7 @@ impl Transport {
         method: &Method,
         url: &Url,
         body: Option<&[u8]>,
+        operation: Option<&str>,
     ) -> Result<Attempted, AttemptError> {
         let _permit = self
             .semaphore
@@ -393,14 +466,29 @@ impl Transport {
             .unwrap_or_else(|_| Err(AttemptError::Timeout));
         let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let bytes = result.as_ref().map_or(0, |r| r.body.len() as u64);
-        tracing::debug!(
-            %method,
-            path = url.path(),
-            status = result.as_ref().map_or(0, |r| r.status),
-            elapsed_ms = elapsed,
-            bytes,
-            "GitHub request"
-        );
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            // Rate-limit details of a limited response.
+            let detail = result
+                .as_ref()
+                .ok()
+                .filter(|r| matches!(r.status, 403 | 429))
+                .map(|r| RateLimitDetail::new(&r.headers, body_message(&r.body).as_deref()));
+            let detail = detail.as_ref();
+            tracing::debug!(
+                %method,
+                path = url.path(),
+                operation,
+                status = result.as_ref().map_or(0, |r| r.status),
+                elapsed_ms = elapsed,
+                bytes,
+                ratelimit_resource = detail.and_then(|d| d.resource.as_deref()),
+                ratelimit_remaining = detail.and_then(|d| d.remaining.as_deref()),
+                ratelimit_used = detail.and_then(|d| d.used.as_deref()),
+                retry_after = detail.and_then(|d| d.retry_after.as_deref()),
+                error_message = detail.and_then(|d| d.message.as_deref()),
+                "GitHub request"
+            );
+        }
         self.with_stats(|s| {
             s.requests += 1;
             s.total_api_time_ms += elapsed;
@@ -425,17 +513,20 @@ impl Transport {
         let path = url.path().to_string();
         if (200..300).contains(&status) {
             if graphql && graphql_rate_limited(&body) {
-                return self.primary_limit(&headers, attempt);
+                let detail =
+                    RateLimitDetail::for_log(&headers, || graphql_rate_limit_message(&body));
+                return self.primary_limit(&headers, attempt, detail);
             }
             return Decision::Done(RawResponse { headers, body });
         }
         match status {
             401 => Decision::Fail(ApiError::Unauthorized),
             403 | 429 => {
-                if header_str(&headers, "x-ratelimit-remaining") == Some("0") {
-                    return self.primary_limit(&headers, attempt);
-                }
                 let message = body_message(&body);
+                let detail = RateLimitDetail::for_log(&headers, || message.clone());
+                if header_str(&headers, "x-ratelimit-remaining") == Some("0") {
+                    return self.primary_limit(&headers, attempt, detail);
+                }
                 if let Some(secs) =
                     header_str(&headers, "retry-after").and_then(|v| v.trim().parse::<u64>().ok())
                 {
@@ -452,7 +543,10 @@ impl Transport {
                         error: ApiError::RateLimited {
                             reset_at: Some(reset_at),
                         },
-                        rate_limit: true,
+                        rate_limit: Some(RateLimitWait {
+                            kind: "retry-after",
+                            detail,
+                        }),
                     };
                 }
                 let secondary = message.as_deref().is_some_and(|m| {
@@ -474,7 +568,14 @@ impl Transport {
                     return Decision::Retry {
                         delay,
                         error: ApiError::RateLimited { reset_at: None },
-                        rate_limit: true,
+                        rate_limit: Some(RateLimitWait {
+                            kind: if secondary {
+                                "secondary"
+                            } else {
+                                "too-many-requests"
+                            },
+                            detail,
+                        }),
                     };
                 }
                 let detail = message.unwrap_or_else(|| "forbidden".into());
@@ -487,7 +588,7 @@ impl Transport {
                     status,
                     attempts: attempt,
                 },
-                rate_limit: false,
+                rate_limit: None,
             },
             _ => Decision::Fail(ApiError::Http {
                 status,
@@ -498,7 +599,12 @@ impl Transport {
 
     /// Primary rate limit exhausted: wait for `x-ratelimit-reset` when it is
     /// within the allowed wait, otherwise give up.
-    fn primary_limit(&self, headers: &HeaderMap, attempt: u32) -> Decision {
+    fn primary_limit(
+        &self,
+        headers: &HeaderMap,
+        attempt: u32,
+        detail: Option<RateLimitDetail>,
+    ) -> Decision {
         let reset_at = header_str(headers, "x-ratelimit-reset")
             .and_then(|v| v.trim().parse::<i64>().ok())
             .and_then(|secs| Timestamp::from_second(secs).ok());
@@ -516,7 +622,10 @@ impl Transport {
         Decision::Retry {
             delay,
             error: ApiError::RateLimited { reset_at },
-            rate_limit: true,
+            rate_limit: Some(RateLimitWait {
+                kind: "primary",
+                detail,
+            }),
         }
     }
 
@@ -565,6 +674,18 @@ fn body_message(body: &[u8]) -> Option<String> {
     let v: Value = serde_json::from_slice(body).ok()?;
     v.get("message")
         .and_then(|m| m.as_str())
+        .map(|m| truncate(m, 300))
+}
+
+/// The message of the `RATE_LIMITED` error in a GraphQL response. Other
+/// errors are skipped: their messages can name private repositories.
+fn graphql_rate_limit_message(body: &[u8]) -> Option<String> {
+    let v: Value = serde_json::from_slice(body).ok()?;
+    v.get("errors")?
+        .as_array()?
+        .iter()
+        .filter(|e| e.get("type").and_then(|t| t.as_str()) == Some("RATE_LIMITED"))
+        .find_map(|e| e.get("message").and_then(|m| m.as_str()))
         .map(|m| truncate(m, 300))
 }
 
@@ -695,6 +816,46 @@ mod tests {
             assert!(d <= Duration::from_secs(60), "attempt {attempt}: {d:?}");
             assert!(d >= Duration::from_secs(30), "attempt {attempt}: {d:?}");
         }
+    }
+
+    #[test]
+    fn graphql_operation_names_are_read_from_the_document() {
+        assert_eq!(
+            graphql_operation("query PullRequestDetail($owner: String!) { x }"),
+            Some("PullRequestDetail")
+        );
+        assert_eq!(
+            graphql_operation("fragment F on User { login }\nquery Viewer { viewer { ...F } }"),
+            Some("Viewer")
+        );
+        assert_eq!(
+            graphql_operation("query Viewer{ viewer { login } }"),
+            Some("Viewer")
+        );
+        assert_eq!(
+            graphql_operation("mutation AddStar($id: ID!) { x }"),
+            Some("AddStar")
+        );
+        assert_eq!(graphql_operation("query { viewer { login } }"), None);
+        assert_eq!(graphql_operation("{ viewer { login } }"), None);
+    }
+
+    #[test]
+    fn rate_limit_details_are_safe_to_print() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-ratelimit-resource", HeaderValue::from_static("graphql"));
+        headers.insert("x-ratelimit-remaining", HeaderValue::from_static("12"));
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer secret"));
+        let long = format!("limited\u{1b}[2J{}", "x".repeat(500));
+        let d = RateLimitDetail::new(&headers, Some(&long));
+        assert_eq!(d.resource.as_deref(), Some("graphql"));
+        assert_eq!(d.remaining.as_deref(), Some("12"));
+        assert_eq!(d.used, None);
+        assert_eq!(d.retry_after, None);
+        let message = d.message.unwrap();
+        assert!(message.starts_with("limited"));
+        assert!(!message.contains('\u{1b}'));
+        assert!(message.chars().count() <= 161);
     }
 
     #[test]

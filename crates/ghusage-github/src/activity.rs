@@ -152,15 +152,10 @@ fn graphql_label(body: Option<&[u8]>) -> String {
             |n| format!("{owner}/{name}#{n}"),
         );
     }
-    let op = v["query"]
+    v["query"]
         .as_str()
-        .and_then(|q| {
-            q.split_whitespace()
-                .skip_while(|w| *w != "query" && *w != "mutation")
-                .nth(1)
-        })
-        .map(|name| name.split('(').next().unwrap_or(name).to_string());
-    op.map_or_else(|| "GraphQL".to_string(), |o| format!("GraphQL {o}"))
+        .and_then(crate::http::graphql_operation)
+        .map_or_else(|| "GraphQL".to_string(), |o| format!("GraphQL {o}"))
 }
 
 #[cfg(test)]
