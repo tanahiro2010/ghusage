@@ -262,7 +262,7 @@ async fn search_started_during_a_wait(
             .search_issues(
                 &format!("involves:{LOGIN}"),
                 IssueKind::PullRequest,
-                jan1(),
+                jan1().start,
                 false,
             )
             .await;
@@ -387,7 +387,7 @@ async fn searches_dropped_while_waiting_do_not_hold_later_ones() {
             c.search_issues(
                 &format!("involves:{LOGIN}"),
                 IssueKind::PullRequest,
-                jan1(),
+                jan1().start,
                 false,
             )
             .await
@@ -409,7 +409,7 @@ async fn searches_dropped_while_waiting_do_not_hold_later_ones() {
         .search_issues(
             &format!("involves:{LOGIN}"),
             IssueKind::PullRequest,
-            jan1(),
+            jan1().start,
             false,
         )
         .await
