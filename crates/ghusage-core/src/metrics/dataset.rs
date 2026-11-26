@@ -117,15 +117,18 @@ impl Dataset {
     /// Sets which commits' line counts stay out of the totals: commits that
     /// appear in pull requests of the dataset (by anyone), where none of those
     /// appearances is current in a pull request that is open, closed
-    /// without merging, or merged with a merge commit
-    /// (`merged_by_merge_commit`, pull request ids). Such commits only
-    /// exist in pull requests merged by squash or rebase (or by an unknown
-    /// method), or were removed from a pull request by a force push: their
-    /// changes reach the default branch as other commits, so counting them
-    /// would count the same change twice. Commits that never appear in a
-    /// pull request count. The rule depends only on pull requests, not on
-    /// how a commit was found, so fetching the same data again never
-    /// changes it.
+    /// without merging, merged with a merge commit
+    /// (`merged_by_merge_commit`, pull request ids), or authored by someone
+    /// other than the subject. Such commits only exist in the subject's
+    /// pull requests merged by squash or rebase (or by an unknown method),
+    /// or were removed from a pull request by a force push: their changes
+    /// reach the default branch as other commits of the subject, so
+    /// counting them would count the same change twice. A squash commit is
+    /// authored by the pull request's author, so in someone else's pull
+    /// request the branch commits are the only place the subject's changes
+    /// count. Commits that never appear in a pull request count. The rule
+    /// depends only on pull requests, not on how a commit was found, so
+    /// fetching the same data again never changes it.
     #[must_use]
     pub fn with_line_count_rule(mut self, merged_by_merge_commit: &HashSet<String>) -> Self {
         // Commit event id -> whether any appearance keeps it counted.
@@ -142,7 +145,10 @@ impl Dataset {
                 .pull_requests
                 .get(pr_id)
                 .is_some_and(|pr| pr.state == PrState::Merged);
-            let keeps = !e.is_removed() && (!merged || merged_by_merge_commit.contains(pr_id));
+            let keeps = !e.is_removed()
+                && (!merged
+                    || merged_by_merge_commit.contains(pr_id)
+                    || !self.pr_author_is_subject(Some(pr_id)));
             *appearances
                 .entry(crate::model::EventId::commit(&e.repository_id, sha).0)
                 .or_insert(false) |= keeps;

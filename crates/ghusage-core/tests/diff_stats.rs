@@ -284,3 +284,50 @@ fn changes_reaching_the_default_branch_as_other_commits_are_not_counted_twice() 
     assert_eq!((d.additions, d.deletions), (30, 3));
     assert_eq!(d.coverage, DiffCoverage::Complete);
 }
+
+#[test]
+fn my_commits_in_squash_merged_pull_requests_of_others_count() {
+    use std::collections::HashSet;
+    let mut events = Vec::new();
+    // Someone else's pull request, merged by squash: the squash commit is
+    // theirs, so my branch commit is the only place my change counts.
+    events.extend(in_pr("PR_theirs", "t1", false));
+    // The same, merged by an unknown method.
+    events.extend(in_pr("PR_theirs_unknown", "t2", false));
+    // Removed from their pull request by a force push: still left out.
+    events.extend(in_pr("PR_theirs", "t3", true));
+    // My own squash-merged pull request: the squash commit is mine.
+    events.extend(in_pr("PR_mine", "s1", false));
+    events.push(commit("R1", "sq1", "2026-11-01T12:00:00Z", me(), false));
+    let mut theirs = pr("PR_theirs", PrState::Merged);
+    theirs.author = other();
+    let mut theirs_unknown = pr("PR_theirs_unknown", PrState::Merged);
+    theirs_unknown.author = other();
+    let ds = Dataset::new(
+        Subject {
+            id: Some("U_me".into()),
+            login: "me".into(),
+        },
+        true,
+        vec![repo("R1", "one")],
+        vec![theirs, theirs_unknown, pr("PR_mine", PrState::Merged)],
+        vec![],
+        vec![],
+        events,
+        vec![],
+    )
+    .with_diff_stats(
+        ["t1", "t2", "t3", "s1", "sq1"]
+            .iter()
+            .map(|s| (EventId::commit("R1", s).0, lines(10, 1)))
+            .collect(),
+        BTreeMap::new(),
+    )
+    .with_line_count_rule(&HashSet::new());
+    let d = metrics::summary(&ds, &opts()).diff_stats;
+    assert_eq!(d.commits, 5);
+    // t3 (force push) and s1 (counted through sq1) are left out.
+    assert_eq!(d.excluded, 2);
+    assert_eq!(d.commits_with_stats, 3);
+    assert_eq!((d.additions, d.deletions), (30, 3));
+}
