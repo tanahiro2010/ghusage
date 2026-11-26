@@ -2157,3 +2157,70 @@ async fn line_counts_fetched_by_default_do_not_fail_the_sync() {
     let o = env.offline_json(&["overview"]).await.json();
     assert_eq!(o["metrics"]["diff_stats"]["coverage"], "unavailable");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejected_token_while_fetching_line_counts_by_default_fails() {
+    let server = serve(&World::base()).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query CommitLineCounts"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "message": "Bad credentials", "documentation_url": "https://docs.github.com/rest"
+        })))
+        .mount(&server)
+        .await;
+    let env = Env::new(&server);
+    // The first sync, and the first report on a second empty cache.
+    sync_in(&env, None, &[]).await.expect_code(3).assert_clean();
+    let other = Env::new(&server);
+    other
+        .run(&["overview", "--since", SINCE, "--until", UNTIL])
+        .await
+        .expect_code(3)
+        .assert_clean();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_first_sync_leaves_the_next_one_first_and_a_partial_one_does_not() {
+    let server = serve(&World::base()).await;
+    mount_line_counts(&server).await;
+    let env = Env::new(&server);
+    // The first sync fails: pull request search answers 500 while `failing`.
+    let failing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let on = std::sync::Arc::clone(&failing);
+    Mock::given(method("GET"))
+        .and(path("/search/issues"))
+        .and(move |_: &wiremock::Request| on.load(std::sync::atomic::Ordering::SeqCst))
+        .respond_with(ResponseTemplate::new(500))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let failed = sync_in(&env, None, &["--no-diff-stats"]).await;
+    assert_ne!(failed.code, Some(0), "{}", failed.stderr);
+    failing.store(false, std::sync::atomic::Ordering::SeqCst);
+    // So the next sync is still the first finished one and fetches them.
+    let r = sync_in(&env, None, &[]).await;
+    r.expect_code(0).assert_clean();
+    assert!(r.json()["diff_stats"].is_object(), "{}", r.stdout);
+
+    // A partial first sync counts as finished: the next one is not first.
+    let server = serve(&World::base()).await;
+    mount_line_counts(&server).await;
+    let env = Env::new(&server);
+    let partial = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let on = std::sync::Arc::clone(&partial);
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widget/commits"))
+        .and(move |_: &wiremock::Request| on.load(std::sync::atomic::Ordering::SeqCst))
+        .respond_with(ResponseTemplate::new(404))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    sync_in(&env, None, &["--no-diff-stats"])
+        .await
+        .expect_code(4);
+    partial.store(false, std::sync::atomic::Ordering::SeqCst);
+    let r = sync_in(&env, None, &["--full"]).await;
+    r.expect_code(0).assert_clean();
+    assert!(r.json()["diff_stats"].is_null(), "{}", r.stdout);
+}
