@@ -117,9 +117,9 @@ ghusage sync [--full] [--diff-stats]
 | オプション | 説明 |
 |---|---|
 | `--full` | まだ取得していない範囲だけでなく、期間全体を取得し直します |
-| `--diff-stats` | 期間内の自分のコミットのうち、まだ行数が分からないものについて、追加・削除した行数も取得します(100 コミットごとに GraphQL のリクエスト 1 回)。[行数の取得](../guide/syncing.md#line-counts)を参照してください |
+| `--diff-stats` | 期間内の自分のコミットのうち、まだ行数が分からないものについて、追加・削除した行数も取得します(100 コミットごとに GraphQL のリクエスト 1 回)。アカウントの最初の同期と CI(`CI` が設定されているとき)では、付けなくても取得します(`--no-diff-stats` を参照)。[行数の取得](../guide/syncing.md#line-counts)を参照してください |
 
-`--diff-stats` を付けると、出力に `line counts: N commits (already known K, fetched F, unavailable U)` の行が加わり、JSON の出力には `diff_stats` オブジェクトが入ります([JSON の出力](./json.md#sync)を参照)。
+行数を取得したときは、出力に `line counts: N commits (already known K, fetched F, unavailable U)` の行が加わり、JSON の出力には `diff_stats` オブジェクトが入ります([JSON の出力](./json.md#sync)を参照)。
 
 フィルター(`--repo`、`--owner`、`--visibility`、`--ownership`)を指定しても、`sync` が取得する範囲は絞られません。
 
@@ -176,6 +176,7 @@ Cache: /Users/me/Library/Application Support/dev.ghusage.ghusage/ghusage.db
 | `--commit-date <committer\|author>` | コミットがどの日に入るか、期間内かどうかを、どちらのコミット日付で決めるか(既定は `committer`)。ターミナル UI でも使います |
 | `--token-file <PATH>` | GitHub のトークンをこのファイルから読みます(ほかのユーザーが読めない権限にしておく必要があります) |
 | `--data-dir <PATH>` | キャッシュのデータベースを置くディレクトリ(既定: OS のユーザーデータディレクトリ、または `GHUSAGE_DATA_DIR`) |
+| `--no-diff-stats` | アカウントの最初の同期と CI で、行数を既定で取得しないようにします(レポートが自動で行う同期も含む)。`sync` に `--diff-stats` を付けた場合は取得します |
 | `-j`、`--jobs <N>` | GitHub への同時リクエスト数の上限。1〜16(既定は 8、または `GHUSAGE_JOBS`)。大きくすると短い期間の初回同期が速くなりますが、メモリを多く使い、GitHub の二次レート制限に当たりやすくなります。以前の名前の `--concurrency` も使えます |
 | `--max-age <AGE>` | キャッシュの同期からこの時間が経っていなければ、レポートは同期をせず、その同期の時点のデータを表示します。`30s`、`5m`、`1h`、または常に最新を取得する `0`(既定は `5m`、または `GHUSAGE_MAX_AGE`) |
 | `-h`, `--help` | ヘルプを表示します |
@@ -235,6 +236,7 @@ error: the argument '--offline' cannot be used with '--no-cache'
 | `GHUSAGE_DATA_DIR` | キャッシュを置くデータディレクトリ(`--data-dir` が優先します) |
 | `GHUSAGE_MAX_AGE` | `--max-age` の既定値 |
 | `GHUSAGE_JOBS` | `--jobs` の既定値 |
+| `CI` | 設定されていると(空、`false`、`0` 以外)、アカウントの最初の同期と同じように、すべての同期で行数も取得します。`--no-diff-stats` で止められます |
 | `GHUSAGE_API_URL` | GitHub Enterprise Server 向けの REST API のベース URL(既定は `https://api.github.com`)。GraphQL のエンドポイントもこれに合わせて変わり、URL が `/api/v3` で終わるときは `https://HOST/api/graphql`、それ以外は `<GHUSAGE_API_URL>/graphql` になります |
 | `GHUSAGE_GRAPHQL_URL` | GraphQL のエンドポイントの URL(`GHUSAGE_API_URL` から決まる URL より優先します) |
 | `GHUSAGE_LOG` | stderr に出す診断用ログのフィルター。`tracing` のフィルター構文で、`debug` や `ghusage_github=debug` のように書きます(既定は `warn`) |

@@ -169,9 +169,9 @@ combined with `--offline`. See [Syncing and the cache](../guide/syncing.md).
 | Option | Description |
 |---|---|
 | `--full` | Refetch the whole period instead of only missing ranges |
-| `--diff-stats` | Also fetch lines added and deleted by your commits in the period that do not have them yet (one GraphQL request per 100 commits). See [Line counts](../guide/syncing.md#line-counts) |
+| `--diff-stats` | Also fetch lines added and deleted by your commits in the period that do not have them yet (one GraphQL request per 100 commits). Done by default on the first sync of an account and in CI (`CI` set); see `--no-diff-stats`. See [Line counts](../guide/syncing.md#line-counts) |
 
-With `--diff-stats`, the output has an extra line,
+When line counts are fetched, the output has an extra line,
 `line counts: N commits (already known K, fetched F, unavailable U)`, and
 the JSON output a `diff_stats` object (see [JSON output](./json.md#sync)).
 
@@ -237,6 +237,7 @@ Cache: /Users/me/Library/Application Support/dev.ghusage.ghusage/ghusage.db
 | `--commit-date <committer\|author>` | Which commit date decides a commit's day and whether it is in the period (default `committer`). Also used by the terminal UI |
 | `--token-file <PATH>` | Read the GitHub token from this file (must not be readable by others) |
 | `--data-dir <PATH>` | Directory for the cache database (default: OS user data directory, or `GHUSAGE_DATA_DIR`) |
+| `--no-diff-stats` | Do not fetch line counts on the first sync of an account or in CI, where syncs (including the one a report runs) fetch them by default. `--diff-stats` on `sync` still fetches them |
 | `-j`, `--jobs <N>` | Maximum concurrent GitHub requests, 1–16 (default 8, or `GHUSAGE_JOBS`). Higher values make a first sync of a short period faster, but use more memory and hit GitHub's secondary rate limits sooner. `--concurrency` is accepted as an older name |
 | `--max-age <AGE>` | Reports skip syncing when the cache was synced this recently, and show the data as of that sync: `30s`, `5m`, `1h`, or `0` to always fetch the latest (default `5m`, or `GHUSAGE_MAX_AGE`) |
 | `-h`, `--help` | Print help |
@@ -313,6 +314,7 @@ error: the argument '--offline' cannot be used with '--no-cache'
 | `GHUSAGE_DATA_DIR` | Data directory for the cache (overridden by `--data-dir`) |
 | `GHUSAGE_MAX_AGE` | Default for `--max-age` |
 | `GHUSAGE_JOBS` | Default for `--jobs` |
+| `CI` | When set (to anything but empty, `false` or `0`), every sync also fetches line counts, as on the first sync of an account; `--no-diff-stats` turns this off |
 | `GHUSAGE_API_URL` | REST API base URL, for GitHub Enterprise Server (default `https://api.github.com`). Also moves the GraphQL endpoint: `https://HOST/api/graphql` when the URL ends in `/api/v3`, otherwise `<GHUSAGE_API_URL>/graphql` |
 | `GHUSAGE_GRAPHQL_URL` | GraphQL endpoint URL (overrides the one derived from `GHUSAGE_API_URL`) |
 | `GHUSAGE_LOG` | Log filter for diagnostics on stderr, in `tracing` filter syntax, e.g. `debug` or `ghusage_github=debug` (default `warn`) |

@@ -86,8 +86,9 @@ See [Lines changed](./metrics.md#lines-changed) for the definitions.
   what GitHub reports. For a merge commit, they are against its first
   parent, which is why merge commits are left out of the totals. Binary
   files, renames and generated files are counted as GitHub counts them.
-- **Line counts of commits outside pull requests are fetched only on
-  request** (`ghusage sync --diff-stats`). Until then the totals are
+- **Line counts of commits outside pull requests are fetched only on the
+  first sync of an account, in CI, or on request** (`ghusage sync
+  --diff-stats`). Until then the totals are
   `partial` or `unavailable`, never zero.
 - **Pull request changes are a snapshot.** A pull request's diff is the one
   seen at the last sync and changes with pushes, force pushes and updates of
