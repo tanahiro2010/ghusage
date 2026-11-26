@@ -100,12 +100,14 @@ async fn search_prs(
                 }
                 refs.insert(r.node_id.clone(), r);
             }
+            // Kept up to date, so that it is right even if a later search
+            // fails.
+            sh.report.borrow_mut().pull_requests_found = refs.len() as u64;
             send(keys);
         }
         let reason = (!reasons.is_empty()).then(|| reasons.join("; "));
         search_status.push((*range, CoverageStatus::combine(statuses), reason));
     }
-    sh.report.borrow_mut().pull_requests_found = refs.len() as u64;
     let mut repos: Vec<RepositoryRef> = Vec::new();
     let mut seen_names = HashSet::new();
     for r in refs.values() {

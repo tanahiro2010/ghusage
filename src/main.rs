@@ -400,7 +400,10 @@ async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<
         drop(progress);
         match synced {
             Ok(r) => {
-                for f in r.failures.iter().take(5) {
+                // Failed phases first: they must not be hidden behind the
+                // failures of single pull requests or issues.
+                let single = r.failures.iter().filter(|f| !r.failed_phases.contains(f));
+                for f in r.failed_phases.iter().chain(single.take(5)) {
                     eprintln!("warning: {}", ghusage_core::sanitize::sanitize_line(f));
                 }
                 match counted {

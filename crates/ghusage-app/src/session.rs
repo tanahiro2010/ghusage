@@ -590,7 +590,8 @@ impl Session {
     }
 
     /// Number of finished syncs (success or partial) of the subject, the
-    /// one just run included.
+    /// one just run included. Syncs in which a whole phase failed are not
+    /// counted.
     pub fn completed_syncs(&self) -> Result<u64> {
         Ok(self.store.completed_sync_runs(&self.subject.login)?)
     }

@@ -212,8 +212,8 @@ async fn search_failing_mid_pagination_keeps_the_existing_cache() {
     .await
     .expect_code(6);
 
-    // A report command that needs the missing range warns that the pull
-    // request search failed and shows the cache plus what the other phases
+    // A report command that needs the missing range warns that syncing
+    // pull requests failed and shows the cache plus what the other phases
     // fetched, without calling it complete.
     let online = env
         .run(&[
@@ -228,9 +228,7 @@ async fn search_failing_mid_pagination_keeps_the_existing_cache() {
         .await;
     online.expect_code(0).assert_clean();
     assert!(
-        online
-            .stderr
-            .contains("warning: pull request search failed"),
+        online.stderr.contains("warning: pull request sync failed"),
         "{}",
         online.stderr
     );
@@ -1054,7 +1052,7 @@ async fn failing_issue_search_keeps_pull_requests_and_commits() {
     let env = Env::new(&server);
     let r = env.sync(&[]).await;
     r.expect_code(4).assert_clean();
-    assert!(r.stderr.contains("issue search failed"), "{}", r.stderr);
+    assert!(r.stderr.contains("issue sync failed"), "{}", r.stderr);
     let s = r.json();
     assert_eq!(s["status"], "partial");
     // The pull request and commit phases went on to the end.
@@ -1066,7 +1064,7 @@ async fn failing_issue_search_keeps_pull_requests_and_commits() {
     );
     assert_eq!(s["issues_fetched"], 0, "{s}");
     assert!(
-        s["failures"].to_string().contains("issue search failed"),
+        s["failures"].to_string().contains("issue sync failed"),
         "{s}"
     );
     assert_eq!(cached_prs(&env).await, vec![3, 10, 20]);
@@ -1077,7 +1075,7 @@ async fn failing_issue_search_keeps_pull_requests_and_commits() {
     assert_eq!(coverage_status(&o, "pull_requests"), "complete");
     assert_eq!(coverage_status(&o, "issues"), "partial");
     let reasons = coverage_reasons(&o, "issues").join(" ");
-    assert!(reasons.contains("issue search failed"), "{reasons}");
+    assert!(reasons.contains("issue sync failed"), "{reasons}");
     // Commits were all stored, but which repositories the subject is
     // related to through issues is unknown, so they are not complete.
     assert_eq!(o["metrics"]["commits"], expected["metrics"]["commits"]);
@@ -1187,4 +1185,105 @@ async fn rejected_token_in_the_issue_search_still_stops_the_sync() {
         )
         .unwrap();
     assert_eq!(status, "failed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failing_pull_request_search_keeps_issues_and_commits() {
+    let world = World::base();
+    let clean_server = serve(&world).await;
+    let clean = Env::new(&clean_server);
+    clean.sync(&[]).await.expect_code(0);
+    let expected = clean.offline_json(&["overview"]).await.json();
+
+    // `involves:` answers, then `reviewed-by:` keeps failing.
+    let server = serve(&world).await;
+    Mock::given(method("GET"))
+        .and(path("/search/issues"))
+        .and(query_param_contains("q", format!("reviewed-by:{ME} is:pr")))
+        .respond_with(server_error())
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let env = Env::new(&server);
+    let r = env.sync(&[]).await;
+    r.expect_code(4).assert_clean();
+    assert!(
+        r.stderr.contains("pull request sync failed"),
+        "{}",
+        r.stderr
+    );
+    let s = r.json();
+    assert_eq!(s["status"], "partial");
+    assert_eq!(s["issues_fetched"], 2, "{s}");
+    // What the search that answered found is counted and was fetched.
+    let found = s["pull_requests_found"].as_u64().unwrap();
+    assert!(found > 0, "{s}");
+    assert_eq!(s["pull_requests_fetched"].as_u64().unwrap(), found, "{s}");
+
+    let o = env.offline_json(&["overview"]).await.json();
+    assert_eq!(coverage_status(&o, "issues"), "complete");
+    assert_eq!(coverage_status(&o, "pull_requests"), "partial");
+    let reasons = coverage_reasons(&o, "pull_requests").join(" ");
+    assert!(reasons.contains("pull request sync failed"), "{reasons}");
+    assert_eq!(coverage_status(&o, "commits"), "partial");
+    let reasons = coverage_reasons(&o, "commits").join(" ");
+    assert!(
+        reasons.contains("repositories of pull requests unknown"),
+        "{reasons}"
+    );
+
+    reserve(&server, &world).await;
+    let r = env.sync(&[]).await;
+    r.expect_code(0).assert_clean();
+    assert_eq!(r.json()["status"], "complete");
+    let o = env.offline_json(&["overview"]).await.json();
+    for kind in ["commits", "pull_requests", "issues"] {
+        assert_eq!(coverage_status(&o, kind), "complete", "{kind}");
+    }
+    assert_eq!(o["metrics"], expected["metrics"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failing_commit_search_keeps_pull_requests_and_issues() {
+    let world = World::base();
+    let clean_server = serve(&world).await;
+    let clean = Env::new(&clean_server);
+    clean.sync(&[]).await.expect_code(0);
+    let expected = clean.offline_json(&["overview"]).await.json();
+
+    let server = serve(&world).await;
+    Mock::given(method("GET"))
+        .and(path("/search/commits"))
+        .respond_with(server_error())
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let env = Env::new(&server);
+    let r = env.sync(&[]).await;
+    r.expect_code(4).assert_clean();
+    assert!(r.stderr.contains("commit sync failed"), "{}", r.stderr);
+    let s = r.json();
+    assert_eq!(s["status"], "partial");
+    assert_eq!(s["pull_requests_fetched"], 3, "{s}");
+    assert_eq!(s["issues_fetched"], 2, "{s}");
+    let o = env.offline_json(&["overview"]).await.json();
+    assert_eq!(coverage_status(&o, "pull_requests"), "complete");
+    assert_eq!(coverage_status(&o, "issues"), "complete");
+    assert_eq!(coverage_status(&o, "commits"), "partial");
+    let reasons = coverage_reasons(&o, "commits").join(" ");
+    assert!(reasons.contains("commit sync failed"), "{reasons}");
+
+    // The rerun fetches the commits and nothing else.
+    reserve(&server, &world).await;
+    let r = env.sync(&[]).await;
+    r.expect_code(0).assert_clean();
+    let s = r.json();
+    assert_eq!(s["status"], "complete", "{s}");
+    assert_eq!(s["pull_requests_fetched"], 0, "{s}");
+    assert_eq!(s["issues_fetched"], 0, "{s}");
+    let o = env.offline_json(&["overview"]).await.json();
+    for kind in ["commits", "pull_requests", "issues"] {
+        assert_eq!(coverage_status(&o, kind), "complete", "{kind}");
+    }
+    assert_eq!(o["metrics"], expected["metrics"]);
 }

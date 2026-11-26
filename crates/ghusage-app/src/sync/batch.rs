@@ -106,7 +106,13 @@ pub async fn run(
     match &result {
         Ok(report) => {
             let stats = serde_json::to_string(&report.api).ok();
-            let sync_status = if report.is_complete() {
+            // A run in which a whole phase failed is not counted as a
+            // finished sync (see `Store::completed_sync_runs`): it did not
+            // fetch what it was asked for, so a sync that does is still the
+            // first one.
+            let sync_status = if !report.failed_phases.is_empty() {
+                "incomplete"
+            } else if report.is_complete() {
                 "success"
             } else {
                 "partial"
@@ -290,12 +296,12 @@ fn phase_result<T>(result: Result<T>) -> Result<std::result::Result<T, ApiError>
     }
 }
 
-/// What a phase of `kind` searches for, as used in failure messages.
+/// The phase of `kind`, as named in failure messages.
 const fn phase_name(kind: DataKind) -> &'static str {
     match kind {
-        DataKind::Commits => "commit",
-        DataKind::PullRequests => "pull request",
-        DataKind::Issues => "issue",
+        DataKind::Commits => "commit sync",
+        DataKind::PullRequests => "pull request sync",
+        DataKind::Issues => "issue sync",
     }
 }
 
@@ -310,7 +316,7 @@ async fn phase_failed(
     error: &ApiError,
 ) -> Result<()> {
     let (subject, opts) = (sh.subject, sh.opts);
-    let message = format!("{} search failed: {error}", phase_name(kind));
+    let message = format!("{} failed: {error}", phase_name(kind));
     let summary = coverage::summarize(existing, kind, opts.period.start, opts.period.end);
     let records: Vec<CoverageRecord> = summary
         .gaps()

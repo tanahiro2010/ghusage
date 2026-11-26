@@ -116,7 +116,7 @@ pub struct SyncReport {
     /// Errors encountered while fetching individual resources.
     pub failures: Vec<String>,
     /// Phases (pull requests, commits or issues) that failed as a whole,
-    /// with the error. Each is in `failures` too; the other phases still
+    /// with the error, such as `issue sync failed: ...`. Each is in `failures` too; the other phases still
     /// ran to the end.
     #[serde(skip)]
     pub failed_phases: Vec<String>,

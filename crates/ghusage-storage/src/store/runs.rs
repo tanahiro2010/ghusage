@@ -102,6 +102,8 @@ impl Store {
     }
 
     /// Number of syncs of an account that finished (success or partial).
+    /// Runs that failed, or in which a whole phase failed (`incomplete`),
+    /// are not counted.
     pub fn completed_sync_runs(&self, account: &str) -> Result<u64> {
         let n: i64 = self
             .conn
