@@ -37,6 +37,10 @@ type SearchStatus = Vec<(Period, CoverageStatus, Option<String>)>;
 type PrQueue = futures::channel::mpsc::UnboundedSender<Vec<PrKey>>;
 
 /// Finds pull requests updated in `ranges` and queues the ones to fetch.
+/// Each range is searched from its start with no upper bound: GitHub
+/// matches `updated:` against the current update time, so a pull request
+/// active in a range but updated again later, even during this sync, is
+/// only found that way. The range is still what is recorded as covered.
 /// Changed ones are queued as soon as the search that found them returns,
 /// so fetching them does not wait for the remaining searches (one of which
 /// may wait for a rate limit). Once every search is done, the repositories
@@ -87,7 +91,7 @@ async fn search_prs(
                 .search_issues(
                     &q,
                     IssueKind::PullRequest,
-                    search_window(*range, opts),
+                    range.start,
                     opts.public_only,
                 )
                 .await?;

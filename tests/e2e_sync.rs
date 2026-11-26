@@ -2474,3 +2474,157 @@ async fn a_search_waiting_for_the_rate_limit_does_not_hold_up_listing_commits() 
         }
     }
 }
+
+/// Answers `GET /search/issues` like GitHub does: only the items whose
+/// current update time is inside the query's `updated:` range
+/// (`lo..hi` or `>=lo`, whole seconds). The items in `moved` are updated
+/// once more while the sync runs: from the first search on, their update
+/// time is one second after that search arrived.
+struct UpdatedDuringSync {
+    items: Vec<Value>,
+    moved: Vec<&'static str>,
+    updated_at: std::sync::Arc<std::sync::Mutex<Option<jiff::Timestamp>>>,
+}
+
+impl wiremock::Respond for UpdatedDuringSync {
+    fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+        let moved_to = *self.updated_at.lock().unwrap().get_or_insert_with(|| {
+            let next = jiff::Timestamp::now().as_second() + 1;
+            jiff::Timestamp::from_second(next).unwrap()
+        });
+        let q = request
+            .url
+            .query_pairs()
+            .find(|(k, _)| k == "q")
+            .map(|(_, v)| v.into_owned())
+            .unwrap_or_default();
+        let range = q
+            .split_whitespace()
+            .find_map(|t| t.strip_prefix("updated:"))
+            .unwrap_or_else(|| panic!("search without updated: {q}"));
+        let time = |s: &str| s.parse::<jiff::Timestamp>().unwrap();
+        let (lo, hi) = match range.strip_prefix(">=") {
+            Some(lo) => (time(lo), None),
+            None => {
+                let (lo, hi) = range.split_once("..").unwrap();
+                (time(lo), Some(time(hi)))
+            }
+        };
+        let items: Vec<Value> = self
+            .items
+            .iter()
+            .cloned()
+            .map(|mut item| {
+                if self.moved.contains(&item["node_id"].as_str().unwrap()) {
+                    item["updated_at"] = json!(moved_to.to_string());
+                }
+                item
+            })
+            .filter(|item| {
+                let updated = time(item["updated_at"].as_str().unwrap());
+                updated >= lo && hi.is_none_or(|hi| updated <= hi)
+            })
+            .collect();
+        ResponseTemplate::new(200).set_body_json(search_page(items))
+    }
+}
+
+/// A pull request and an issue updated after the sync started, but before
+/// they were searched, are still found: GitHub matches `updated:` against
+/// the current update time, so a search that stops at the start of the
+/// sync would miss them while the range is recorded as complete.
+#[tokio::test(flavor = "multi_thread")]
+async fn items_updated_during_a_sync_are_still_found() {
+    let world = World::base();
+    let server = serve(&world).await;
+    let updated_at = std::sync::Arc::default();
+    let pr =
+        |p: &PrFixture| search_issue(&p.owner, &p.name, p.number, &p.node_id, true, &p.updated_at);
+    let issue = |i: &IssueFixture| {
+        search_issue(
+            &i.owner,
+            &i.name,
+            i.number,
+            &i.node_id,
+            false,
+            &i.updated_at,
+        )
+    };
+    for (q, items) in [
+        (
+            format!("involves:{ME} is:pr"),
+            world.prs.iter().map(pr).collect::<Vec<_>>(),
+        ),
+        (
+            format!("reviewed-by:{ME} is:pr"),
+            world
+                .prs
+                .iter()
+                .filter(|p| p.reviewed_by_me)
+                .map(pr)
+                .collect(),
+        ),
+        (
+            format!("involves:{ME} is:issue"),
+            world.issues.iter().map(issue).collect(),
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path("/search/issues"))
+            .and(query_param_contains("q", q))
+            .respond_with(UpdatedDuringSync {
+                items,
+                // Pull request C (reviewed by me) and issue 1 (mine).
+                moved: vec!["PR_C", "I_1"],
+                updated_at: std::sync::Arc::clone(&updated_at),
+            })
+            .with_priority(1)
+            .mount(&server)
+            .await;
+    }
+    let env = Env::new(&server);
+
+    let r = env.sync(&[]).await;
+    r.expect_code(0).assert_clean();
+    let first = r.json();
+    assert_eq!(first["status"], "complete");
+
+    // Coverage is complete, so every item updated in the period must be
+    // there.
+    let metrics = reported_items(&env).await;
+    assert_eq!(first["pull_requests_found"], 3);
+    assert_eq!(first["pull_requests_fetched"], 3);
+    assert_eq!(first["issues_fetched"], 2);
+
+    // The same sync again finds the same items and counts nothing twice.
+    let r = env.sync(&["--full"]).await;
+    r.expect_code(0).assert_clean();
+    assert_eq!(r.json()["status"], "complete");
+    assert_eq!(r.json()["pull_requests_found"], 3);
+    assert_eq!(reported_items(&env).await, metrics);
+}
+
+/// Checks that every pull request and issue of the period is reported,
+/// with complete coverage, and returns the overview metrics.
+async fn reported_items(env: &Env) -> Value {
+    let p = env.offline_json(&["prs"]).await;
+    p.expect_code(0);
+    let p = p.json();
+    assert_eq!(coverage_status(&p, "pull_requests"), "complete");
+    assert_eq!(pr_numbers(&p), vec![3, 10, 20]);
+    let i = env.offline_json(&["issues"]).await;
+    i.expect_code(0);
+    let i = i.json();
+    let mut issues: Vec<u64> = i["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["number"].as_u64().unwrap())
+        .collect();
+    issues.sort_unstable();
+    assert_eq!(coverage_status(&i, "issues"), "complete");
+    assert_eq!(issues, vec![5, 7]);
+    let o = env.offline_json(&["overview"]).await;
+    o.expect_code(0);
+    o.json()["metrics"].clone()
+}

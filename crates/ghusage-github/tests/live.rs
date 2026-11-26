@@ -59,7 +59,7 @@ async fn live_search_and_metadata() {
         CoverageStatus::Complete | CoverageStatus::Partial
     ));
     let prs = c
-        .search_issues("repo:cli/cli", IssueKind::PullRequest, period, true)
+        .search_issues("repo:cli/cli", IssueKind::PullRequest, period.start, true)
         .await
         .unwrap();
     eprintln!("prs={} status={:?}", prs.items.len(), prs.status);

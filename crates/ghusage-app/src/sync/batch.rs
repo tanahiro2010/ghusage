@@ -252,13 +252,6 @@ fn issue_cursor(node_id: &str) -> String {
     format!("issue_updated_at:{node_id}")
 }
 
-/// Search window for pull requests and issues. GitHub matches `updated:`
-/// against the current update time, so anything active in `range` but
-/// updated again later is only found when the window extends to now.
-fn search_window(range: Period, opts: &SyncOptions) -> Period {
-    Period::new(range.start, opts.now.max(range.end)).unwrap_or(range)
-}
-
 fn add_commits(batch: &mut WriteBatch, commits: Vec<CommitRecord>) {
     let mut repos = HashSet::new();
     for c in commits {

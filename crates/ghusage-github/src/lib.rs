@@ -456,16 +456,20 @@ impl GitHubClient {
     }
 
     /// Pull requests or issues matching `qualifiers` (e.g.
-    /// `involves:octocat`) updated in `period` via `GET /search/issues`,
-    /// with the same splitting and completeness rules.
+    /// `involves:octocat`) updated at or after `since` via
+    /// `GET /search/issues`, with the same splitting and completeness
+    /// rules. The search has no upper bound: GitHub matches `updated:`
+    /// against the current update time, so an item updated again while the
+    /// search runs (for example while it waits for a rate limit) would
+    /// otherwise drop out of it.
     pub async fn search_issues(
         &self,
         qualifiers: &str,
         kind: IssueKind,
-        period: Period,
+        since: Timestamp,
         public_only: bool,
     ) -> Result<Fetched<Vec<IssueRef>>, ApiError> {
-        search::issues(&self.transport, qualifiers, kind, period, public_only).await
+        search::issues(&self.transport, qualifiers, kind, since, public_only).await
     }
 
     /// Fetches a pull request with every page of commits, reviews, review
