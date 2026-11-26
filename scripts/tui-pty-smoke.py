@@ -26,6 +26,9 @@ import termios
 # Indexes into the list returned by termios.tcgetattr.
 IFLAG, OFLAG, CFLAG, LFLAG = 0, 1, 2, 3
 
+# How long the TUI may take to exit after being asked to.
+EXIT_TIMEOUT = 15.0
+
 
 def read_for(fd, seconds):
     out = b""
@@ -41,6 +44,21 @@ def read_for(fd, seconds):
                 break
             out += data
     return out
+
+
+def send(fd, data):
+    # Fails once the TUI has gone; the exit check reports that.
+    try:
+        os.write(fd, data)
+    except OSError:
+        pass
+
+
+def signal_child(pid, signum):
+    try:
+        os.kill(pid, signum)
+    except ProcessLookupError:
+        pass
 
 
 def start(binary, data_dir):
@@ -66,22 +84,51 @@ def start(binary, data_dir):
                 binary,
                 [binary, "tui", "--offline", "--user", "octocat", "--data-dir", data_dir],
             )
+        except BaseException as e:
+            os.write(2, f"cannot start {binary}: {e!r}\n".encode())
         finally:
             os._exit(127)
     return pid, master, slave, before
 
 
+def wait_for_exit(pid, master):
+    """Keeps reading the output while waiting, so the TUI never blocks on a
+    full terminal buffer. Kills it if it does not exit in time. Returns the
+    output, the exit code and whether it exited by itself."""
+    out = b""
+    end = time.time() + EXIT_TIMEOUT
+    while True:
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done:
+            return out + read_for(master, 0.3), os.waitstatus_to_exitcode(status), True
+        if time.time() >= end:
+            os.kill(pid, signal.SIGKILL)
+            _, status = os.waitpid(pid, 0)
+            return out + read_for(master, 0.3), os.waitstatus_to_exitcode(status), False
+        out += read_for(master, 0.1)
+
+
+def describe_exit(code):
+    if code < 0:
+        try:
+            return f"killed by {signal.Signals(-code).name}"
+        except ValueError:
+            return f"killed by signal {-code}"
+    return f"exit code {code}"
+
+
 def check(name, pid, master, slave, before, out):
-    _, status = os.waitpid(pid, 0)
-    code = os.waitstatus_to_exitcode(status)
-    out += read_for(master, 0.3)
+    rest, code, exited = wait_for_exit(pid, master)
+    out += rest
     after = termios.tcgetattr(master)
     os.close(master)
     os.close(slave)
     text = out.decode("utf-8", "replace")
     problems = []
-    if code != 0:
-        problems.append(f"exit code {code}")
+    if not exited:
+        problems.append(f"did not exit within {EXIT_TIMEOUT:.0f} s (killed)")
+    elif code != 0:
+        problems.append(describe_exit(code))
     if "\x1b[?1049h" not in text:
         problems.append("never entered the alternate screen")
     if text.rfind("\x1b[?1049l") < text.rfind("\x1b[?1049h"):
@@ -104,18 +151,17 @@ def check(name, pid, master, slave, before, out):
     if "panicked" in text:
         problems.append("panic message in output")
     if problems:
-        print(f"TUI smoke ({name}) failed: " + "; ".join(problems))
-        print(repr(text[-2000:]))
+        print(f"TUI smoke ({name}) failed: " + "; ".join(problems), flush=True)
+        print(repr(text[-2000:]), flush=True)
         return False
-    print(f"TUI smoke ({name}) passed ({len(out)} bytes of output)")
+    print(f"TUI smoke ({name}) passed ({len(out)} bytes of output)", flush=True)
     return True
 
 
 def run_and_signal(binary, data_dir, signum, name):
     pid, master, slave, before = start(binary, data_dir)
     out = read_for(master, 2.0)
-    os.kill(pid, signum)
-    out += read_for(master, 2.0)
+    signal_child(pid, signum)
     return check(name, pid, master, slave, before, out)
 
 
@@ -123,14 +169,13 @@ def quit_with_q(binary, data_dir):
     pid, master, slave, before = start(binary, data_dir)
     out = read_for(master, 2.0)
     for key in [b"2", b"3", b"4", b"5", b"6", b"1", b"?", b"?"]:
-        os.write(master, key)
+        send(master, key)
         out += read_for(master, 0.3)
     # A resize is handled without crashing.
     fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 20, 60, 0, 0))
-    os.kill(pid, signal.SIGWINCH)
+    signal_child(pid, signal.SIGWINCH)
     out += read_for(master, 0.5)
-    os.write(master, b"q")
-    out += read_for(master, 2.0)
+    send(master, b"q")
     return check("quit with q", pid, master, slave, before, out)
 
 
