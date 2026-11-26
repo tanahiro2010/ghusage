@@ -137,6 +137,11 @@ the API does not keep cannot be recovered later:
   refetches the pull request completely. They are then marked removed and
   excluded from counts. The deletion time is not known; only the time the
   removal was observed is recorded.
+- Deleted CI results (for example a deleted workflow run) are noticed only
+  when a pull request whose head is still that commit is refetched with all
+  of its checks. When pull requests share a head commit, refetching either
+  of them is enough. Results of earlier head commits are never marked
+  removed.
 - A period that is already fully covered is not refetched automatically, so
   deletions and state changes there are only noticed when the pull request
   is refetched (for example after `ghusage sync`, which refreshes pull
