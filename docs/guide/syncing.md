@@ -379,8 +379,10 @@ deleting a repository that was already in the account's cache.
 - While a search waits for the secondary rate limit, work that does not need
   its results goes on. For example, the default branches of the repositories
   from step 1 of [How commits are found](#how-commits-are-found) are listed
-  without waiting for the commit, pull request and issue searches, so the
-  total shown for commits in the progress can grow once the searches finish.
+  without waiting for the commit, pull request and issue searches, and the
+  pull requests found by the `involves:` search are fetched while the
+  `reviewed-by:` search waits. The totals shown for commits and pull requests
+  in the progress can therefore grow once the searches finish.
 - `GHUSAGE_LOG=debug` (or any `tracing` filter such as
   `ghusage_github=debug`) prints diagnostic logs to stderr.
   At the debug level each GitHub request is logged with its method, path,
