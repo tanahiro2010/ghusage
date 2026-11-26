@@ -66,7 +66,7 @@ lines each of your commits added and deleted.
   non-merge commits in the period (by committer or author date) whose line
   counts are not in the cache yet, and fetches them through GraphQL, 100
   commits per query, with several queries in parallel (up to
-  `--concurrency`). Commits whose changes are
+  `--jobs`). Commits whose changes are
   [counted through other commits](../reference/metrics.md#commits-counted-through-other-commits)
   are skipped, because they do not go into the totals; so are commits of
   non-public repositories with `--public-only`.
@@ -149,7 +149,7 @@ The period then ends at that sync. `--max-age` (default `5m`, or the
 ### Progress
 
 While a sync runs and stderr is a terminal, `ghusage` shows a spinner with
-how many requests run in parallel (out of `--concurrency`), how many have
+how many requests run in parallel (out of `--jobs`), how many have
 finished, and the state of pull requests, commits and issues. Below it are
 the requests in flight with how long each has been running (up to four, the
 rest counted), and the latest step (the repository or pull request just
@@ -353,7 +353,7 @@ deleting a repository that was already in the account's cache.
 
 ## Network behavior
 
-- Up to `--concurrency` requests run in parallel (default 8, maximum 16).
+- Up to `--jobs` requests run in parallel (default 8, maximum 16).
 - Each request times out after 30 seconds and is retried up to 5 attempts in
   total with exponential backoff for timeouts, network errors and HTTP
   500/502/503/504.

@@ -237,7 +237,7 @@ Cache: /Users/me/Library/Application Support/dev.ghusage.ghusage/ghusage.db
 | `--commit-date <committer\|author>` | Which commit date decides a commit's day and whether it is in the period (default `committer`). Also used by the terminal UI |
 | `--token-file <PATH>` | Read the GitHub token from this file (must not be readable by others) |
 | `--data-dir <PATH>` | Directory for the cache database (default: OS user data directory, or `GHUSAGE_DATA_DIR`) |
-| `--concurrency <N>` | Maximum concurrent GitHub requests, 1–16 (default 8) |
+| `-j`, `--jobs <N>` | Maximum concurrent GitHub requests, 1–16 (default 8, or `GHUSAGE_JOBS`). Higher values make a first sync of a short period faster, but use more memory and hit GitHub's secondary rate limits sooner. `--concurrency` is accepted as an older name |
 | `--max-age <AGE>` | Reports skip syncing when the cache was synced this recently, and show the data as of that sync: `30s`, `5m`, `1h`, or `0` to always fetch the latest (default `5m`, or `GHUSAGE_MAX_AGE`) |
 | `-h`, `--help` | Print help |
 | `-V`, `--version` | Print version |
@@ -312,6 +312,7 @@ error: the argument '--offline' cannot be used with '--no-cache'
 | `GITHUB_TOKEN` | GitHub token (used when `GH_TOKEN` is not set) |
 | `GHUSAGE_DATA_DIR` | Data directory for the cache (overridden by `--data-dir`) |
 | `GHUSAGE_MAX_AGE` | Default for `--max-age` |
+| `GHUSAGE_JOBS` | Default for `--jobs` |
 | `GHUSAGE_API_URL` | REST API base URL, for GitHub Enterprise Server (default `https://api.github.com`). Also moves the GraphQL endpoint: `https://HOST/api/graphql` when the URL ends in `/api/v3`, otherwise `<GHUSAGE_API_URL>/graphql` |
 | `GHUSAGE_GRAPHQL_URL` | GraphQL endpoint URL (overrides the one derived from `GHUSAGE_API_URL`) |
 | `GHUSAGE_LOG` | Log filter for diagnostics on stderr, in `tracing` filter syntax, e.g. `debug` or `ghusage_github=debug` (default `warn`) |
