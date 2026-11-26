@@ -270,3 +270,21 @@ test("does not mark a p95 change when p50 or the median moved the other way", ()
   assert.equal(latencyVerdict(15, 12, -12, 10), "≈");
   assert.equal(latencyVerdict(-15, -12, 12, 10), "≈");
 });
+
+test("flags a large p95-only change without counting it", () => {
+  assert.equal(latencyVerdict(60, 2, 1, 10), ":warning: p95 only");
+  assert.equal(latencyVerdict(-60, 2, undefined, 10), ":warning: p95 only");
+  assert.equal(latencyVerdict(50, 2, 1, 10), "≈");
+  assert.equal(latencyVerdict(33.3, 0, 0.4, 10), "≈");
+  assert.equal(latencyVerdict(60, 55, 58, 10), ":red_circle: slower");
+  const md = buildReport({
+    criterionBase: new Map([["aggregate 100k events (daily, 1 year)", { ns: 90e6 }]]),
+    criterionHead: new Map([["aggregate 100k events (daily, 1 year)", { ns: 91e6 }]]),
+    latencyBase: parseLatency(latencyLines([["100k event aggregation (daily, 1 year)", 90.0, 100.0]])),
+    latencyHead: parseLatency(latencyLines([["100k event aggregation (daily, 1 year)", 91.0, 180.0]])),
+    runner: "r",
+  });
+  assert.match(md, /\| 100k event aggregation \(daily, 1 year\) \|.*\| \+80\.0% \| ≤ 1000 ms pass \| :warning: p95 only \|/);
+  assert.match(md, /\*\*0\*\* slower and \*\*0\*\* faster/);
+  assert.match(md, /p95 alone moves by more than 50%.*p95 only/);
+});

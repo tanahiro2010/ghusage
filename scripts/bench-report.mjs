@@ -93,6 +93,9 @@ export function verdict(pct, threshold) {
   return "≈";
 }
 
+/** p95 changes beyond this (in %) are shown even when p50 and the median stay put. */
+export const P95_ONLY_THRESHOLD = 50;
+
 /** The Criterion benchmark that measures the same work as a latency scenario, if any. */
 export function criterionTwin(scenario) {
   let m;
@@ -110,14 +113,15 @@ export function criterionTwin(scenario) {
  * on the slowest few runs and, on shared runners, swings by up to about 30%
  * between runs of unchanged code; p50 and Criterion's median are steadier.
  * A scenario without a Criterion counterpart is confirmed by p50 alone.
+ * An unconfirmed p95 change beyond `P95_ONLY_THRESHOLD` is still shown, but
+ * not counted as slower or faster.
  */
 export function latencyVerdict(p95, p50, median, threshold) {
   const mark = verdict(p95, threshold);
   if (mark === "" || mark === "≈") return mark;
   const agrees = (pct) => verdict(pct, threshold) === mark;
-  if (!agrees(p50)) return "≈";
-  if (median != null && !agrees(median)) return "≈";
-  return mark;
+  if (agrees(p50) && (median == null || agrees(median))) return mark;
+  return Math.abs(p95) > P95_ONLY_THRESHOLD ? ":warning: p95 only" : "≈";
 }
 
 function formatPct(pct) {
@@ -208,7 +212,8 @@ export function buildReport(opts) {
       `The base is measured first and the PR right after on the same machine; re-run the workflow or benchmark locally before acting on a single result.`,
     `>`,
     `> A latency p95 change is marked only when p50 and the scenario's Criterion median (if it has one) also moved by more than ${threshold}% in the same direction. ` +
-      `On its own, p95 can move by up to about 30% between runs of unchanged code.`,
+      `On its own, p95 can move by up to about 30% between runs of unchanged code. ` +
+      `When p95 alone moves by more than ${P95_ONLY_THRESHOLD}%, the row says "p95 only" and is not counted above; check it before relying on the result.`,
     "",
   );
   return lines.join("\n");
