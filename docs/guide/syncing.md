@@ -18,6 +18,14 @@ Each pull request and issue is written in its own transaction, so an
 interrupted sync keeps everything written so far and the next run continues
 with what is missing.
 
+Pull requests are fetched up to five per GraphQL query, as long as enough
+queries remain to run `--jobs` of them at once. Further pages of a pull
+request's commits, reviews, comments and timeline, and its head commit's
+checks when they come from REST, are fetched per pull request. If GitHub's
+answer to such a query cannot be attributed to single pull requests (for
+example the request fails), those pull requests are fetched again one by
+one.
+
 ### How commits are found
 
 GitHub's commit search index can silently miss commits, even in repositories
@@ -153,8 +161,9 @@ how many requests run in parallel (out of `--jobs`), how many have
 finished, and the state of pull requests, commits and issues. Below it are
 the requests in flight with how long each has been running (up to four, the
 rest counted), and the latest step (the repository or pull request just
-fetched). All of it is erased when the sync ends, so the report output stays
-clean.
+fetched). A query for several pull requests shows the first one and how many
+more, for example `octo/app#16 +4`. All of it is erased when the sync ends,
+so the report output stays clean.
 
 ```text
 ⠹ Syncing with GitHub 0:04 · 6/8 in parallel · 31 requests done · pull requests 1/2 · commits 9/22
