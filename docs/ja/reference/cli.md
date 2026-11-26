@@ -239,7 +239,7 @@ error: the argument '--offline' cannot be used with '--no-cache'
 | `CI` | 設定されていると(空、`false`、`0` 以外)、アカウントの最初の同期と同じように、すべての同期で行数も取得します。`--no-diff-stats` で止められます |
 | `GHUSAGE_API_URL` | GitHub Enterprise Server 向けの REST API のベース URL(既定は `https://api.github.com`)。GraphQL のエンドポイントもこれに合わせて変わり、URL が `/api/v3` で終わるときは `https://HOST/api/graphql`、それ以外は `<GHUSAGE_API_URL>/graphql` になります |
 | `GHUSAGE_GRAPHQL_URL` | GraphQL のエンドポイントの URL(`GHUSAGE_API_URL` から決まる URL より優先します) |
-| `GHUSAGE_LOG` | stderr に出す診断用ログのフィルター。`tracing` のフィルター構文で、`debug` や `ghusage_github=debug` のように書きます(既定は `warn`)。debug では GitHub へのリクエストを、GraphQL の操作名と、レート制限を受けたときはレート制限のヘッダーとエラーメッセージと合わせて出力します。トークンは出力しません |
+| `GHUSAGE_LOG` | stderr に出す診断用ログのフィルター。`tracing` のフィルター構文で、`debug` や `ghusage_github=debug` のように書きます(既定は `warn`)。debug では GitHub へのリクエストを、GraphQL の操作名と、403/429 の応答ではレート制限のヘッダーとエラーメッセージと合わせて出力します。トークンは出力しません |
 | `TZ` | `--timezone` を指定しないときの既定のタイムゾーン(`Europe/Berlin` のような IANA 名) |
 | `NO_COLOR` | 空でない値を設定すると、色を付けません |
 
