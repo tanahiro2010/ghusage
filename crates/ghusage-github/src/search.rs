@@ -61,7 +61,7 @@ impl Range {
 
     /// The earlier and the later half. Only the later half of an open
     /// range stays open.
-    fn halves(self) -> (Self, Self) {
+    const fn halves(self) -> (Self, Self) {
         let mid = self.lo + (self.hi - self.lo) / 2;
         (
             Self {
