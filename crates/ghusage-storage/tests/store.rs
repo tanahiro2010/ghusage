@@ -2010,7 +2010,7 @@ fn shared_check_owners(path: &std::path::Path) -> Vec<(String, Option<String>, O
 
 #[test]
 fn checks_of_a_head_shared_by_two_pull_requests_belong_to_one_regardless_of_order() {
-    let owners = |first: &WriteBatch, second: &WriteBatch| {
+    let owners = |first: &WriteBatch, second: &WriteBatch, ids: [&str; 2]| {
         let dir = tempfile::tempdir().unwrap();
         let (mut s, path) = file_store_with_base(&dir);
         s.apply(first).unwrap();
@@ -2031,44 +2031,36 @@ fn checks_of_a_head_shared_by_two_pull_requests_belong_to_one_regardless_of_orde
                 })
                 .count()
         };
-        (once, per_pr("PR1"), per_pr("PR2"))
+        (once, per_pr(ids[0]), per_pr(ids[1]))
     };
-    let one = shared_head_batch("PR1", 1, "fff666", false);
-    let two = shared_head_batch("PR2", 2, "fff666", false);
-    let expected = vec![
-        (
-            "check:CR_SHARED".to_string(),
-            Some("PR1".to_string()),
-            Some("PR1".to_string()),
-        ),
-        (
-            "status:ST_SHARED".to_string(),
-            Some("PR1".to_string()),
-            Some("PR1".to_string()),
-        ),
-    ];
     // The pull request with the lower number keeps the checks, whichever
-    // was fetched last; the checks are counted once in total.
-    assert_eq!(owners(&one, &two), (expected.clone(), 2, 0));
-    assert_eq!(owners(&two, &one), (expected, 2, 0));
+    // was fetched last, also when its id sorts after the other one; the
+    // checks are counted once in total.
+    for (low, high) in [("PR1", "PR2"), ("PRz", "PRa")] {
+        let one = shared_head_batch(low, 1, "fff666", false);
+        let two = shared_head_batch(high, 2, "fff666", false);
+        let expected = (shared_checks_owned_by(low), 2, 0);
+        assert_eq!(owners(&one, &two, [low, high]), expected);
+        assert_eq!(owners(&two, &one, [low, high]), expected);
+    }
+}
+
+/// Both shared checks stored under `pr_id`.
+fn shared_checks_owned_by(pr_id: &str) -> Vec<(String, Option<String>, Option<String>)> {
+    ["check:CR_SHARED", "status:ST_SHARED"]
+        .into_iter()
+        .map(|id| {
+            (
+                id.to_string(),
+                Some(pr_id.to_string()),
+                Some(pr_id.to_string()),
+            )
+        })
+        .collect()
 }
 
 #[test]
 fn viewing_a_pull_request_does_not_take_shared_checks_from_a_synced_one() {
-    let expected = |pr_id: &str| {
-        vec![
-            (
-                "check:CR_SHARED".to_string(),
-                Some(pr_id.to_string()),
-                Some(pr_id.to_string()),
-            ),
-            (
-                "status:ST_SHARED".to_string(),
-                Some(pr_id.to_string()),
-                Some(pr_id.to_string()),
-            ),
-        ]
-    };
     // PR0 is only viewed; its lower number does not matter.
     let viewed = shared_head_batch("PR0", 0, "fff666", true);
     let synced = shared_head_batch("PR2", 2, "fff666", false);
@@ -2077,7 +2069,7 @@ fn viewing_a_pull_request_does_not_take_shared_checks_from_a_synced_one() {
         let (mut s, path) = file_store_with_base(&dir);
         s.apply(order[0]).unwrap();
         s.apply(order[1]).unwrap();
-        assert_eq!(shared_check_owners(&path), expected("PR2"));
+        assert_eq!(shared_check_owners(&path), shared_checks_owned_by("PR2"));
         let ci = ci_counts(&s);
         assert_eq!((ci.failed, ci.passed), (1, 1));
     }
