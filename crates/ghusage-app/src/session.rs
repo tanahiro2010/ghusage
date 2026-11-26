@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::FutureExt as _;
+use futures::future::Either;
 use ghusage_core::coverage::{self, DataKind};
 use ghusage_core::metrics::Dataset;
 use ghusage_core::model::{Subject, Visibility};
@@ -48,6 +50,10 @@ pub struct Session {
     config: SessionConfig,
     /// Set when GitHub could not be reached and cached data is used instead.
     offline_reason: Option<String>,
+    /// The subject is the viewer remembered from the last online run and
+    /// has not been checked against `GET /user` yet (see
+    /// [`Session::open_deferred`]).
+    unconfirmed: bool,
 }
 
 /// Account identity associated with a session.
@@ -258,6 +264,7 @@ impl Session {
                 token_source: None,
                 config: cfg,
                 offline_reason: None,
+                unconfirmed: false,
             });
         }
         let creds = credentials(cfg.token_file.as_deref())?;
@@ -280,6 +287,7 @@ impl Session {
                         token_source: Some(source),
                         config: cfg,
                         offline_reason: Some(e.to_string()),
+                        unconfirmed: false,
                     });
                 }
                 Err(e) => return Err(e),
@@ -293,7 +301,92 @@ impl Session {
             token_source: Some(source),
             config: cfg,
             offline_reason: None,
+            unconfirmed: false,
         })
+    }
+
+    /// Opens a session like [`Session::open`], but when the viewer is
+    /// remembered from an earlier online run (and neither `--user` nor
+    /// offline mode is given) it does not wait for `GET /user`: the session
+    /// starts with the remembered viewer and checks it later, at the same
+    /// time as the first requests of [`Session::sync`] or in
+    /// [`Session::confirm_subject`]. Nothing is written or shown for the
+    /// remembered viewer before the check confirms it.
+    pub async fn open_deferred(cfg: SessionConfig) -> Result<Self> {
+        if cfg.offline || cfg.user.is_some() {
+            return Self::open(cfg).await;
+        }
+        let (store, data_dir) = open_store(&cfg)?;
+        let cached = match sync::cached_subject(&store, None) {
+            Ok((subject, true)) if subject.id.is_some() => subject,
+            _ => {
+                drop(store);
+                return Self::open(cfg).await;
+            }
+        };
+        let creds = credentials(cfg.token_file.as_deref())?;
+        let source = creds.source.clone();
+        let client = GitHubClient::new(Some(creds), cfg.client.clone())?;
+        Ok(Self {
+            store,
+            data_dir,
+            subject: cached,
+            subject_is_viewer: true,
+            client: Some(client),
+            token_source: Some(source),
+            config: cfg,
+            offline_reason: None,
+            unconfirmed: true,
+        })
+    }
+
+    /// Checks a remembered subject against `GET /user` (see
+    /// [`Session::open_deferred`]); does nothing once it was checked.
+    /// Switches to the authenticated account when the token now belongs to
+    /// another one, and to cached data when GitHub cannot be reached.
+    pub async fn confirm_subject(&mut self) -> Result<()> {
+        if !self.unconfirmed {
+            return Ok(());
+        }
+        let Some(client) = &self.client else {
+            self.unconfirmed = false;
+            return Ok(());
+        };
+        let viewer = client.viewer().await;
+        self.apply_viewer(viewer)
+    }
+
+    /// Takes the result of `GET /user` for an unconfirmed subject.
+    fn apply_viewer(
+        &mut self,
+        viewer: std::result::Result<ghusage_github::Viewer, ghusage_github::ApiError>,
+    ) -> Result<()> {
+        match viewer {
+            Ok(v) => {
+                if !sync::is_viewer(&self.subject, &v) {
+                    self.store.set_meta(sync::META_VIEWER_LOGIN, &v.login)?;
+                    self.store.set_meta(sync::META_VIEWER_ID, &v.id)?;
+                    self.subject = Subject {
+                        id: Some(v.id),
+                        login: v.login,
+                    };
+                }
+                self.unconfirmed = false;
+                Ok(())
+            }
+            Err(e) if is_connectivity(&e) => {
+                self.unconfirmed = false;
+                self.mark_offline(e.to_string());
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Whether the subject still has to be checked against `GET /user`
+    /// (see [`Session::open_deferred`]).
+    pub const fn is_unconfirmed(&self) -> bool {
+        self.unconfirmed
     }
 
     /// Whether the session can contact GitHub.
@@ -548,7 +641,64 @@ impl Session {
         opts.public_only = self.config.public_only;
         opts.concurrency = concurrency;
         opts.subject_is_viewer = self.subject_is_viewer;
-        sync::run(client, &mut self.store, &self.subject, &opts, progress).await
+        if self.unconfirmed {
+            // Check the remembered viewer while the sync starts. The sync
+            // writes nothing before the check confirms it; when the check
+            // says otherwise, the sync is dropped at once, which cancels its
+            // requests in flight, and runs again for the right account.
+            let check: sync::ViewerCheck<'_> = client.viewer().boxed_local().shared();
+            let run = Box::pin(sync::run(
+                client,
+                &mut self.store,
+                &self.subject,
+                &opts,
+                progress,
+                Some(check.clone()),
+            ));
+            let viewer = match futures::future::select(check.clone(), run).await {
+                Either::Left((viewer, run)) => {
+                    if viewer
+                        .as_ref()
+                        .is_ok_and(|v| sync::is_viewer(&self.subject, v))
+                    {
+                        let report = run.await;
+                        self.unconfirmed = false;
+                        return report;
+                    }
+                    drop(run);
+                    viewer
+                }
+                Either::Right((report, _)) => {
+                    let viewer = check.clone().await;
+                    if viewer
+                        .as_ref()
+                        .is_ok_and(|v| sync::is_viewer(&self.subject, v))
+                    {
+                        self.unconfirmed = false;
+                        return report;
+                    }
+                    viewer
+                }
+            };
+            drop(check);
+            self.apply_viewer(viewer)?;
+            if let Some(error) = self.offline_error() {
+                return Err(error);
+            }
+            opts.subject_is_viewer = self.subject_is_viewer;
+        }
+        let Some(client) = &self.client else {
+            return Err(AppError::Other("cannot sync in offline mode".into()));
+        };
+        sync::run(
+            client,
+            &mut self.store,
+            &self.subject,
+            &opts,
+            progress,
+            None,
+        )
+        .await
     }
 
     /// Fetches the line counts still missing for the subject's commits in
@@ -558,6 +708,7 @@ impl Session {
         period: Period,
         progress: &dyn Fn(SyncProgress),
     ) -> Result<sync::LineCountSync> {
+        self.confirm_subject().await?;
         let Some(client) = &self.client else {
             return Err(AppError::Other("cannot sync in offline mode".into()));
         };

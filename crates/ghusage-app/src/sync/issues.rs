@@ -2,7 +2,7 @@
 /// repositories of the issues found are sent to `issue_repos` as soon as
 /// every range was searched.
 async fn sync_issues(
-    sh: &Shared<'_, '_>,
+    sh: &Shared<'_, '_, '_>,
     ranges: &[Period],
     issue_repos: tokio::sync::oneshot::Sender<Vec<RepositoryRef>>,
 ) -> Result<()> {
@@ -84,6 +84,7 @@ async fn sync_issues(
                     } else {
                         Vec::new()
                     };
+                    sh.writable().await?;
                     sh.store.borrow_mut().apply(&WriteBatch {
                         account: subject.login.clone(),
                         repositories: vec![bundle.repository],
@@ -97,6 +98,7 @@ async fn sync_issues(
                 Err(e @ ApiError::Unauthorized) => return Err(e.into()),
                 Err(e) => {
                     if matches!(e, ApiError::NotFound(_) | ApiError::Forbidden(_)) {
+                        sh.writable().await?;
                         sh.store
                             .borrow_mut()
                             .set_repository_accessible(&r.owner, &r.name, false)?;
@@ -117,6 +119,7 @@ async fn sync_issues(
         };
         let reason = (!reasons.is_empty()).then(|| reasons.join("; "));
         let rec = record(DataKind::Issues, range, status, reason, subject, opts);
+        sh.writable().await?;
         sh.store.borrow_mut().apply(&WriteBatch {
             account: subject.login.clone(),
             coverage: vec![rec.clone()],

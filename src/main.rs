@@ -348,14 +348,18 @@ async fn run(cli: Cli) -> Result<i32> {
 /// period to report: when the cache was synced within `--max-age`, it ends
 /// at that sync instead of fetching the last few minutes again.
 async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<(Session, Period)> {
-    let mut s = Session::open(session_config(g)).await?;
-    if let Some(reason) = &s.offline_state().reason {
-        eprintln!(
-            "warning: GitHub is not reachable ({}); showing cached data",
-            clean(reason)
-        );
-    }
-    if !s.is_offline() && s.needs_sync(period)? {
+    // A remembered viewer is checked at the same time as the sync starts;
+    // when nothing is synced, it is checked before the cache is shown.
+    let mut s = Session::open_deferred(session_config(g)).await?;
+    let mut shown = period;
+    loop {
+        if s.is_offline() || !s.needs_sync(period)? {
+            if s.is_unconfirmed() {
+                s.confirm_subject().await?;
+                continue;
+            }
+            break;
+        }
         let now = Timestamp::now();
         let max_age =
             SignedDuration::from_secs(i64::try_from(g.max_age.as_secs()).unwrap_or(i64::MAX));
@@ -363,6 +367,10 @@ async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<
             && until < period.end
             && until.duration_until(now) <= max_age
         {
+            if s.is_unconfirmed() {
+                s.confirm_subject().await?;
+                continue;
+            }
             let mins = until.duration_until(now).as_secs() / 60;
             eprintln!(
                 "note: showing data synced {} ago (up to {}); use --max-age 0 to fetch the latest",
@@ -373,7 +381,8 @@ async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<
                 },
                 zone.format(until, "%Y-%m-%d %H:%M")
             );
-            return Ok((s, Period::new(period.start, until)?));
+            shown = Period::new(period.start, until)?;
+            break;
         }
         let progress = progress::Progress::start(s.api_activity());
         let synced = s
@@ -389,12 +398,30 @@ async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<
                 }
             }
             Err(e @ (AppError::AuthRejected(_) | AppError::Auth(_))) => return Err(e),
+            // The sync failed before the account was checked (for example
+            // another sync holds the lock): check it now, then show the
+            // cache as for any failed sync. A failed check fails the report.
+            Err(e) if s.is_unconfirmed() => {
+                s.confirm_subject().await?;
+                if s.offline_state().reason.is_none() {
+                    eprintln!("warning: sync failed, showing cached data: {}", clean(&e));
+                }
+            }
+            // GitHub turned out to be unreachable; reported below.
+            Err(_) if s.offline_state().reason.is_some() => {}
             Err(e) => {
                 eprintln!("warning: sync failed, showing cached data: {}", clean(&e));
             }
         }
+        break;
     }
-    Ok((s, period))
+    if let Some(reason) = &s.offline_state().reason {
+        eprintln!(
+            "warning: GitHub is not reachable ({}); showing cached data",
+            clean(reason)
+        );
+    }
+    Ok((s, shown))
 }
 
 fn require_complete(g: &GlobalArgs, status: CoverageStatus) -> i32 {
@@ -548,7 +575,7 @@ async fn sync_cmd(
         ));
     }
     let period = period(g, cmd, &zone)?;
-    let mut s = Session::open(session_config(g)).await?;
+    let mut s = Session::open_deferred(session_config(g)).await?;
     if let Some(error) = s.offline_error() {
         return Err(error);
     }

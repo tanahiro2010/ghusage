@@ -5,7 +5,7 @@
 //! with what is missing. Coverage records describe exactly which ranges
 //! were fetched and how completely.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use futures::StreamExt;
@@ -20,7 +20,7 @@ use ghusage_core::model::{
 use ghusage_core::time::Period;
 use ghusage_github::{
     ApiError, ApiStats, CommitRecord, CommitRef, GitHubClient, IssueKind, IssueRef, PrBundle,
-    PushedRepository,
+    PushedRepository, Viewer,
 };
 use ghusage_storage::{CommitStats, PrCommitLink, PrSnapshot, Store, WriteBatch};
 use jiff::{SignedDuration, Timestamp};
