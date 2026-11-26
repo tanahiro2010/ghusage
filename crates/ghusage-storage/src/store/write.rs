@@ -825,26 +825,45 @@ fn apply_snapshot(
     let complete: HashSet<Collection> = s.complete_collections.iter().copied().collect();
     // Checks are only fetched for the current head commit, so a complete
     // checks fetch says nothing about the checks of earlier heads.
-    let head_sha: Option<String> = if complete.contains(&Collection::Checks) {
+    let head: Option<(String, String)> = if complete.contains(&Collection::Checks) {
         tx.query_row(
-            "SELECT head_sha FROM pull_requests WHERE id = ?1",
+            "SELECT repository_id, head_sha FROM pull_requests WHERE id = ?1",
             params![s.pr_id],
-            |r| r.get::<_, Option<String>>(0),
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
         )
         .optional()?
-        .flatten()
-        .map(|h| h.to_ascii_lowercase())
+        .and_then(|(repo, sha)| Some((repo, sha?.to_ascii_lowercase())))
     } else {
         None
     };
+    let head_sha = head.as_ref().map(|(_, sha)| sha.clone());
+    // The events of this pull request, and the checks of its head commit
+    // stored under another pull request of the repository that has that
+    // commit: checks belong to the commit, so this fetch sees them too.
     let stored: Vec<(String, String, bool, Option<String>)> = {
         let mut stmt = tx.prepare(
             "SELECT event_id, event_type, removed_observed_at IS NOT NULL, \
-             json_extract(meta, '$.sha') FROM activity_events WHERE parent_pr_id = ?1",
+             json_extract(meta, '$.sha') FROM activity_events WHERE parent_pr_id = ?1 \
+             UNION ALL \
+             SELECT event_id, event_type, removed_observed_at IS NOT NULL, \
+             json_extract(meta, '$.sha') FROM activity_events \
+             WHERE parent_pr_id IN ( \
+                 SELECT pr_id FROM pull_request_commits WHERE repository_id = ?2 AND sha = ?3 \
+                 UNION SELECT id FROM pull_requests \
+                 WHERE repository_id = ?2 AND lower(head_sha) = ?3) \
+             AND parent_pr_id <> ?1 AND repository_id = ?2 AND event_type IN (?4, ?5) \
+             AND lower(json_extract(meta, '$.sha')) = ?3",
         )?;
-        stmt.query_map(params![s.pr_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-        })?
+        stmt.query_map(
+            params![
+                s.pr_id,
+                head.as_ref().map(|(repo, _)| repo.as_str()),
+                head_sha,
+                EventType::CheckRun.as_str(),
+                EventType::CommitStatus.as_str(),
+            ],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?
         .collect::<rusqlite::Result<_>>()?
     };
     for (id, ty, removed, sha) in stored {
