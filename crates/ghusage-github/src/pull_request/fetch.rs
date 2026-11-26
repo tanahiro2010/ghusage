@@ -250,10 +250,7 @@ pub(crate) async fn fetch_many(
         .collect()
 }
 
-async fn fetch_batch(
-    t: &Transport,
-    prs: &[(&str, &str, u64)],
-) -> Vec<Result<PrBundle, ApiError>> {
+async fn fetch_batch(t: &Transport, prs: &[(&str, &str, u64)]) -> Vec<Result<PrBundle, ApiError>> {
     if let [(owner, name, number)] = prs {
         return vec![fetch(t, owner, name, *number).await];
     }
@@ -277,27 +274,28 @@ async fn fetch_batch(
         return fetch_each(t, prs).await;
     };
     let data = resp.data.as_ref();
-    let fetches = prs.iter().zip(errors).enumerate().map(|(i, ((owner, name, number), errors))| {
-        let repo_value = data.and_then(|d| d.get(format!("r{i}")));
-        async move {
-            let returned = repo_value
-                .and_then(|r| r.get("pullRequest"))
-                .is_some_and(|p| !p.is_null());
-            if !returned && errors.is_empty() {
-                // Left out without a reason: ask for it on its own.
-                return fetch(t, owner, name, *number).await;
+    let fetches = prs
+        .iter()
+        .zip(errors)
+        .enumerate()
+        .map(|(i, ((owner, name, number), errors))| {
+            let repo_value = data.and_then(|d| d.get(format!("r{i}")));
+            async move {
+                let returned = repo_value
+                    .and_then(|r| r.get("pullRequest"))
+                    .is_some_and(|p| !p.is_null());
+                if !returned && errors.is_empty() {
+                    // Left out without a reason: ask for it on its own.
+                    return fetch(t, owner, name, *number).await;
+                }
+                let main = read_main(owner, name, *number, repo_value, &errors)?;
+                Ok(bundle(fetch_rest(t, owner, name, main).await?, *number))
             }
-            let main = read_main(owner, name, *number, repo_value, &errors)?;
-            Ok(bundle(fetch_rest(t, owner, name, main).await?, *number))
-        }
-    });
+        });
     futures::future::join_all(fetches).await
 }
 
-async fn fetch_each(
-    t: &Transport,
-    prs: &[(&str, &str, u64)],
-) -> Vec<Result<PrBundle, ApiError>> {
+async fn fetch_each(t: &Transport, prs: &[(&str, &str, u64)]) -> Vec<Result<PrBundle, ApiError>> {
     futures::future::join_all(
         prs.iter()
             .map(|(owner, name, number)| fetch(t, owner, name, *number)),
@@ -308,10 +306,7 @@ async fn fetch_each(
 /// Splits the errors of a batched query by alias (`r<i>`), with each path
 /// rewritten to start at `repository` as in the single query. `None` when
 /// an error has no path or names no alias of the query.
-fn errors_by_alias(
-    errors: Vec<GraphqlError>,
-    count: usize,
-) -> Option<Vec<Vec<GraphqlError>>> {
+fn errors_by_alias(errors: Vec<GraphqlError>, count: usize) -> Option<Vec<Vec<GraphqlError>>> {
     let mut out: Vec<Vec<GraphqlError>> = (0..count).map(|_| Vec::new()).collect();
     for mut e in errors {
         let i = e
