@@ -151,6 +151,11 @@ the API does not keep cannot be recovered later:
   statuses are fetched for each pull request's current head commit. Results
   for earlier commits of the pull request are not fetched; those stored by
   an earlier sync, while the commit was the head, are kept.
+  When pull requests share a head commit, its results are listed under one
+  of them only (see [CI results](metrics.md#ci-results)). In a cache
+  written by an earlier version, which one can depend on the order of
+  earlier syncs until both pull requests are fetched again (for example by
+  `ghusage sync --full`).
 - **Comments nested under reviews.** Inline comments are read from review
   threads (all pages). Comments listed under each review are only used as a
   secondary source (first 20 per review) to fill gaps.

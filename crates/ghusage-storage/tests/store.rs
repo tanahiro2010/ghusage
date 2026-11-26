@@ -1969,3 +1969,155 @@ fn pull_request_diff_keeps_the_latest_observation() {
     s.apply(&batch(diff(55, t(4, 0)))).unwrap();
     assert_eq!(alice_dataset(&s).pr_diffs["PR1"].additions, 55);
 }
+
+/// A sync of one pull request of R1 whose head commit `sha` has the check
+/// run `node` and the commit status `status`.
+fn shared_head_batch(pr_id: &str, number: u64, sha: &str, viewed: bool) -> WriteBatch {
+    let mut p = pr(pr_id, "R1", number);
+    p.head_sha = Some(sha.into());
+    let mut run = check_run_event("CR_SHARED", sha, CheckOutcome::Failure, t(2, 10));
+    run.parent_pr_id = Some(pr_id.into());
+    let mut status = check_run_event("ST_SHARED", sha, CheckOutcome::Success, t(2, 11));
+    status.event_id = EventId::commit_status("ST_SHARED");
+    status.event_type = EventType::CommitStatus;
+    status.parent_pr_id = Some(pr_id.into());
+    WriteBatch {
+        account: "alice".into(),
+        repositories: vec![repo("R1", "alice", "tool")],
+        pull_requests: vec![p],
+        events: vec![run, status],
+        viewed_pull_requests: if viewed { vec![pr_id.into()] } else { vec![] },
+        ..Default::default()
+    }
+}
+
+/// The pull request each shared check is stored under, in the events and in
+/// the checks table.
+fn shared_check_owners(path: &std::path::Path) -> Vec<(String, Option<String>, Option<String>)> {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT e.event_id, e.parent_pr_id, c.pr_id FROM activity_events e \
+             LEFT JOIN check_runs c ON c.event_id = e.event_id \
+             WHERE e.event_id IN ('check:CR_SHARED', 'status:ST_SHARED') ORDER BY e.event_id",
+        )
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+#[test]
+fn checks_of_a_head_shared_by_two_pull_requests_belong_to_one_regardless_of_order() {
+    let owners = |first: &WriteBatch, second: &WriteBatch, ids: [&str; 2]| {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, path) = file_store_with_base(&dir);
+        s.apply(first).unwrap();
+        s.apply(second).unwrap();
+        let once = shared_check_owners(&path);
+        // Fetching both again, in either order, changes nothing.
+        s.apply(second).unwrap();
+        s.apply(first).unwrap();
+        assert_eq!(shared_check_owners(&path), once);
+        let per_pr = |pr_id: &str| {
+            s.load_pr_dataset(&subject("alice"), true, pr_id)
+                .unwrap()
+                .events
+                .iter()
+                .filter(|e| {
+                    matches!(e.event_type, EventType::CheckRun | EventType::CommitStatus)
+                        && e.parent_pr_id.as_deref() == Some(pr_id)
+                })
+                .count()
+        };
+        (once, per_pr(ids[0]), per_pr(ids[1]))
+    };
+    // The pull request with the lower number keeps the checks, whichever
+    // was fetched last, also when its id sorts after the other one; the
+    // checks are counted once in total.
+    for (low, high) in [("PR1", "PR2"), ("PRz", "PRa")] {
+        let one = shared_head_batch(low, 1, "fff666", false);
+        let two = shared_head_batch(high, 2, "fff666", false);
+        let expected = (shared_checks_owned_by(low), 2, 0);
+        assert_eq!(owners(&one, &two, [low, high]), expected);
+        assert_eq!(owners(&two, &one, [low, high]), expected);
+    }
+}
+
+/// Both shared checks stored under `pr_id`.
+fn shared_checks_owned_by(pr_id: &str) -> Vec<(String, Option<String>, Option<String>)> {
+    ["check:CR_SHARED", "status:ST_SHARED"]
+        .into_iter()
+        .map(|id| {
+            (
+                id.to_string(),
+                Some(pr_id.to_string()),
+                Some(pr_id.to_string()),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn viewing_a_pull_request_does_not_take_shared_checks_from_a_synced_one() {
+    // PR0 is only viewed; its lower number does not matter.
+    let viewed = shared_head_batch("PR0", 0, "fff666", true);
+    let synced = shared_head_batch("PR2", 2, "fff666", false);
+    for order in [[&viewed, &synced], [&synced, &viewed]] {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, path) = file_store_with_base(&dir);
+        s.apply(order[0]).unwrap();
+        s.apply(order[1]).unwrap();
+        assert_eq!(shared_check_owners(&path), shared_checks_owned_by("PR2"));
+        let ci = ci_counts(&s);
+        assert_eq!((ci.failed, ci.passed), (1, 1));
+    }
+}
+
+#[test]
+fn checks_shared_by_two_viewed_pull_requests_belong_to_one_regardless_of_order() {
+    // Neither pull request is synced by an account: the lower number keeps
+    // the checks, also when its id sorts after the other one.
+    let low = shared_head_batch("PRz", 1, "fff666", true);
+    let high = shared_head_batch("PRa", 2, "fff666", true);
+    for order in [[&low, &high], [&high, &low]] {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, path) = file_store_with_base(&dir);
+        s.apply(order[0]).unwrap();
+        s.apply(order[1]).unwrap();
+        assert_eq!(shared_check_owners(&path), shared_checks_owned_by("PRz"));
+        s.apply(order[1]).unwrap();
+        s.apply(order[0]).unwrap();
+        assert_eq!(shared_check_owners(&path), shared_checks_owned_by("PRz"));
+        let shown = s
+            .load_pr_dataset(&subject("alice"), true, "PRz")
+            .unwrap()
+            .events
+            .iter()
+            .filter(|e| e.parent_pr_id.as_deref() == Some("PRz"))
+            .filter(|e| matches!(e.event_type, EventType::CheckRun | EventType::CommitStatus))
+            .count();
+        assert_eq!(shown, 2);
+    }
+}
+
+#[test]
+fn viewed_copy_of_a_pull_request_synced_by_another_account_follows_the_rule() {
+    // bob syncs PRz (#1) before its head has any checks; alice syncs PRm
+    // (#2) and only views PRz. PRz is synced by an account and has the
+    // lower number, so it keeps the checks in either order.
+    let mut bob = shared_head_batch("PRz", 1, "fff666", false);
+    bob.account = "bob".into();
+    bob.events.clear();
+    let synced = shared_head_batch("PRm", 2, "fff666", false);
+    let viewed = shared_head_batch("PRz", 1, "fff666", true);
+    for order in [[&synced, &viewed], [&viewed, &synced]] {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, path) = file_store_with_base(&dir);
+        s.apply(&bob).unwrap();
+        s.apply(order[0]).unwrap();
+        s.apply(order[1]).unwrap();
+        assert_eq!(shared_check_owners(&path), shared_checks_owned_by("PRz"));
+    }
+}

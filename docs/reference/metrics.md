@@ -276,6 +276,12 @@ time. Results already stored for earlier head commits are kept when new
 commits are pushed, so a failure on an earlier head still counts; CI of a
 head commit that was never synced while it was the head is not available.
 
+When two pull requests share a head commit, each check run or commit status
+of that commit is counted once, under one of them: a pull request your
+account syncs comes before one only opened with `ghusage pr`, then the lower
+pull request number. The choice does not depend on the order in which the
+pull requests are synced. Totals for the period are the same either way.
+
 ### Review threads (current)
 
 `snapshot.threads` counts the review threads of the pull requests that had
