@@ -814,6 +814,25 @@ fn mark_removed(tx: &Transaction<'_>, event_id: &str, at: Timestamp) -> Result<(
     Ok(())
 }
 
+/// The stored events a pull request snapshot is compared with (?1 the pull
+/// request, ?2 its repository, ?3 its lower-case head SHA, ?4 and ?5 the
+/// check event types): its own events, and the checks of its head commit
+/// stored under another pull request of the repository that has that
+/// commit. Both halves look events up by `activity_events_parent_pr`; the
+/// `+` on `repository_id` keeps SQLite from scanning every event of the
+/// repository through `activity_events_repository` instead.
+const SNAPSHOT_EVENTS_SQL: &str = "SELECT event_id, event_type, removed_observed_at IS NOT NULL, \
+     json_extract(meta, '$.sha') FROM activity_events WHERE parent_pr_id = ?1 \
+     UNION ALL \
+     SELECT event_id, event_type, removed_observed_at IS NOT NULL, \
+     json_extract(meta, '$.sha') FROM activity_events \
+     WHERE parent_pr_id IN ( \
+         SELECT pr_id FROM pull_request_commits WHERE repository_id = ?2 AND sha = ?3 \
+         UNION SELECT id FROM pull_requests \
+         WHERE repository_id = ?2 AND lower(head_sha) = ?3) \
+     AND parent_pr_id <> ?1 AND +repository_id = ?2 AND event_type IN (?4, ?5) \
+     AND lower(json_extract(meta, '$.sha')) = ?3";
+
 fn apply_snapshot(
     tx: &Transaction<'_>,
     s: &PrSnapshot,
@@ -837,23 +856,10 @@ fn apply_snapshot(
         None
     };
     let head_sha = head.as_ref().map(|(_, sha)| sha.clone());
-    // The events of this pull request, and the checks of its head commit
-    // stored under another pull request of the repository that has that
-    // commit: checks belong to the commit, so this fetch sees them too.
+    // Checks belong to the commit, so this fetch also sees the checks of
+    // its head stored under another pull request.
     let stored: Vec<(String, String, bool, Option<String>)> = {
-        let mut stmt = tx.prepare(
-            "SELECT event_id, event_type, removed_observed_at IS NOT NULL, \
-             json_extract(meta, '$.sha') FROM activity_events WHERE parent_pr_id = ?1 \
-             UNION ALL \
-             SELECT event_id, event_type, removed_observed_at IS NOT NULL, \
-             json_extract(meta, '$.sha') FROM activity_events \
-             WHERE parent_pr_id IN ( \
-                 SELECT pr_id FROM pull_request_commits WHERE repository_id = ?2 AND sha = ?3 \
-                 UNION SELECT id FROM pull_requests \
-                 WHERE repository_id = ?2 AND lower(head_sha) = ?3) \
-             AND parent_pr_id <> ?1 AND repository_id = ?2 AND event_type IN (?4, ?5) \
-             AND lower(json_extract(meta, '$.sha')) = ?3",
-        )?;
+        let mut stmt = tx.prepare(SNAPSHOT_EVENTS_SQL)?;
         stmt.query_map(
             params![
                 s.pr_id,

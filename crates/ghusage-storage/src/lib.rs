@@ -489,4 +489,28 @@ mod tests {
             "unexpected plan: {plan:?}"
         );
     }
+
+    #[test]
+    fn snapshot_events_are_found_through_the_parent_index_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("t.db")).unwrap();
+        let plan: Vec<String> = query_list(
+            &store.conn,
+            &format!("EXPLAIN QUERY PLAN {SNAPSHOT_EVENTS_SQL}"),
+            params!["PR_x", "R_x", "abc", "check_run", "commit_status"],
+            |r| Ok(r.get::<_, String>(3)?),
+        )
+        .unwrap();
+        let events: Vec<&String> = plan
+            .iter()
+            .filter(|step| step.contains(" activity_events"))
+            .collect();
+        assert_eq!(events.len(), 2, "unexpected plan: {plan:?}");
+        assert!(
+            events
+                .iter()
+                .all(|step| step.contains("USING INDEX activity_events_parent_pr")),
+            "unexpected plan: {plan:?}"
+        );
+    }
 }
