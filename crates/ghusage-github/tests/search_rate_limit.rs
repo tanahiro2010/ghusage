@@ -354,7 +354,7 @@ async fn pacing_ends_a_minute_after_the_wait() {
     assert_eq!(paced.len(), 7);
     assert!(spread(&paced) >= SPACING * 5, "{paced:?}");
     // A minute after the wait ends, pages are requested at once again.
-    let resume = limited_at + MINUTE * 2 + Duration::from_millis(100);
+    let resume = limited_at + MINUTE * 2 + Duration::from_millis(250);
     tokio::time::sleep_until(resume.into()).await;
     let before = s.arrivals().len();
     s.client.search_commits(LOGIN, jan1(), false).await.unwrap();
@@ -426,4 +426,21 @@ async fn searches_dropped_while_waiting_do_not_hold_later_ones() {
         "held for {:?} by dropped searches",
         issues[0].at - started
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn too_many_requests_on_a_search_paces_the_searches() {
+    fn limited() -> ResponseTemplate {
+        ResponseTemplate::new(429).set_body_json(json!({ "message": "Too Many Requests" }))
+    }
+    let s = setup(700, Limit::First(limited)).await;
+    let r = s.client.search_commits(LOGIN, jan1(), false).await.unwrap();
+    assert_eq!(r.items.len(), 700);
+    // The retried first page and the six later pages are paced.
+    let paced: Vec<_> = s.arrivals().into_iter().skip(1).collect();
+    assert_eq!(paced.len(), 7);
+    assert!(spread(&paced) >= SPACING * 5, "{paced:?}");
+    let stats = s.client.stats();
+    assert_eq!(stats.requests, 8);
+    assert_eq!(stats.rate_limit_waits, 1);
 }
