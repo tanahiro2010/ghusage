@@ -1,0 +1,74 @@
+# Test targets whose results do not depend on the operating system.
+#
+# On pushes to `dev` and on pull requests that do not target `release`, CI
+# runs these targets only on the Linux runner that runs every test. Every
+# other runner runs the library and binary unit tests, every test target
+# that is not listed here, and the tests named below. Pull requests into
+# `release`, pushes to `release` and the weekly run still run every test on
+# every OS.
+#
+# A test target that is not listed here runs on every OS, so a new target is
+# platform-dependent until it is listed. List a target when what it checks
+# does not depend on the OS. It may still start processes, keep a cache in
+# a temporary directory or take the sync lock, as long as those OS-dependent
+# paths are checked by targets that run on every OS (for example `cli`,
+# `failure_injection`, `store` and `time_calendar`). A target whose purpose
+# is paths, file permissions, processes or signals, locks, the terminal,
+# time zones, line endings or `#[cfg(windows)]` / `#[cfg(unix)]` code is not
+# listed. When a listed target has a few tests of that kind, name them below
+# the target so they keep running on every OS.
+#
+# Format:
+#   <package> <test target>              the target is platform-independent
+#   <package> <test target> <test name>  this test still runs on every OS
+
+# Aggregation, parsing and rendering without files or the system time zone.
+ghusage-core aggregation_scenarios
+# Named time zones, daylight saving time and local day boundaries.
+ghusage-core aggregation_scenarios combined_report_aggregates_match_the_individual_calculations
+ghusage-core aggregation_scenarios created_and_merged_on_different_tokyo_days
+ghusage-core aggregation_scenarios empty_activity_reports_zero_everywhere
+ghusage-core aggregation_scenarios fall_back_day_has_25_hours_and_keeps_its_events
+ghusage-core aggregation_scenarios issue_opened_counts_on_its_creation_day_in_the_zone
+ghusage-core aggregation_scenarios merge_in_a_later_period_is_not_counted_at_creation
+ghusage-core aggregation_scenarios reviews_land_on_their_submission_days
+ghusage-core aggregation_scenarios spring_forward_day_has_23_hours_and_keeps_its_events
+ghusage-core aggregation_scenarios tokyo_and_utc_put_a_boundary_commit_on_different_days
+ghusage-core detail_rows
+ghusage-core diff_stats
+ghusage-core pr_commits
+ghusage-core thread_replies
+
+# GraphQL and REST parsing, pagination and retries against a local mock server.
+ghusage-github commit
+ghusage-github debug_log
+ghusage-github http
+ghusage-github live
+ghusage-github pagination_properties
+ghusage-github pull_request
+ghusage-github repos
+ghusage-github search
+
+# Reports computed from a scratch cache.
+ghusage-app reports
+
+# Terminal UI screens rendered into an in-memory buffer.
+ghusage-tui commits
+# The cache on disk and a loader thread, as in `worker` and `background_sync`.
+ghusage-tui commits background_loader_answers_over_a_channel
+ghusage-tui commits offline_loader_reads_cached_commits_and_reports_missing_ones
+ghusage-tui details
+ghusage-tui navigation
+ghusage-tui screens
+# The 100,000-event latency check runs on one runner only.
+ghusage-tui performance
+
+# End-to-end sync and reports against a local mock server.
+ghusage e2e_reports
+# A time zone option, and whether a cache file is left on disk.
+ghusage e2e_reports repo_and_timezone_options_change_the_report
+ghusage e2e_reports no_cache_reports_match_cached_reports_and_leave_no_database
+ghusage e2e_sync
+# A second process holding the sync lock, and terminal control characters.
+ghusage e2e_sync a_report_during_another_sync_still_shows_the_cache
+ghusage e2e_sync untrusted_text_is_sanitized_in_tables_and_escaped_in_json
