@@ -152,7 +152,11 @@ async fn fetch_prs(
         // Several pull requests per query, but not so many that fewer
         // queries run at once than are allowed.
         let batch = keys.len().div_ceil(concurrency).clamp(1, PULL_REQUEST_BATCH);
-        futures::stream::iter(keys.chunks(batch).map(<[PrKey]>::to_vec).collect::<Vec<_>>())
+        let mut keys = keys.into_iter();
+        futures::stream::iter(std::iter::from_fn(move || {
+            let chunk: Vec<PrKey> = keys.by_ref().take(batch).collect();
+            (!chunk.is_empty()).then_some(chunk)
+        }))
     });
     let mut stream = batches.map(|keys| async move {
         let prs: Vec<(&str, &str, u64)> = keys
