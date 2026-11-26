@@ -376,16 +376,10 @@ fn bundle(fetched: FetchedPr, number: u64) -> PrBundle {
         &mut tracker,
     );
 
-    let review_comments = append_reviews(
-        reviews,
-        &dismissed_previous,
-        &mut b,
-        &mut tracker,
-    );
+    append_reviews(reviews, &dismissed_previous, &mut b, &mut tracker);
 
     let out_threads = append_review_threads(
         threads,
-        review_comments,
         &pr_id,
         &mut b,
         &mut tracker,
@@ -758,12 +752,11 @@ fn append_reviews(
     dismissed_previous: &HashMap<String, String>,
     b: &mut Builder,
     tracker: &mut Tracker,
-) -> Vec<(String, Value)> {
+) {
     let (review_nodes, bad) = parse_values::<ReviewNode>(reviews);
     tracker.skipped(Collection::Reviews, "reviews", bad);
     let mut bad = 0;
     let mut pending = 0;
-    let mut review_comments: Vec<(String, Value)> = Vec::new();
     for r in review_nodes {
         let Some(id) = r.id.clone() else {
             bad += 1;
@@ -810,7 +803,7 @@ fn append_reviews(
                 actor,
                 id.clone(),
                 at,
-                r.url.clone(),
+                r.url,
                 EventMeta {
                     review_state: state,
                     review_id: Some(id.clone()),
@@ -819,22 +812,15 @@ fn append_reviews(
                 Source::Graphql,
             );
         }
-        if let Some(c) = &r.comments {
-            for v in c.nodes.iter().flatten() {
-                review_comments.push((id.clone(), v.clone()));
-            }
-        }
     }
     tracker.skipped(Collection::Reviews, "reviews", bad);
     if pending > 0 {
         tracker.note(format!("{pending} pending (unsubmitted) review(s) ignored"));
     }
-    review_comments
 }
 
 fn append_review_threads(
     threads: Vec<(ThreadNode, Vec<Value>, Option<u64>)>,
-    review_comments: Vec<(String, Value)>,
     pr_id: &str,
     b: &mut Builder,
     tracker: &mut Tracker,
@@ -851,7 +837,7 @@ fn append_review_threads(
         let mut pending = 0u32;
         for c in comment_nodes {
             fetched += 1;
-            match inline_comment(b, &c, Some(&thread_id), None) {
+            match inline_comment(b, &c, &thread_id) {
                 CommentOutcome::Added => {
                     if first_author.is_none() {
                         first_author = Some(actor_of(&c.author));
@@ -881,16 +867,6 @@ fn append_review_threads(
                 .saturating_sub(pending),
             first_comment_author: first_author,
         });
-    }
-    for (review_id, v) in review_comments {
-        match serde_json::from_value::<CommentNode>(v) {
-            Ok(c) => {
-                if matches!(inline_comment(b, &c, None, Some(&review_id)), CommentOutcome::Bad) {
-                    bad += 1;
-                }
-            }
-            Err(_) => bad += 1,
-        }
     }
     tracker.skipped(Collection::ReviewComments, "inline comments", bad);
     out_threads

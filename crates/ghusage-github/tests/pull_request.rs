@@ -2647,6 +2647,78 @@ async fn later_pages_of_a_batched_pull_request_are_fetched() {
     );
 }
 
+/// Inline comments are read from the review threads; comments listed under
+/// a review never add, drop or change an event.
+#[tokio::test]
+async fn comments_listed_under_reviews_do_not_change_the_events() {
+    let with = fetch_rich().await;
+    let server = MockServer::start().await;
+    let mut pr = rich_pr();
+    for r in pr["reviews"]["nodes"].as_array_mut().unwrap() {
+        r.as_object_mut().unwrap().remove("comments");
+    }
+    mount_main(&server, pr_response(pr)).await;
+    mount_checks(&server, &oid(3)).await;
+    let without = client(&server)
+        .fetch_pull_request("acme", "widget", 42)
+        .await
+        .unwrap();
+    assert_eq!(
+        without.status,
+        CoverageStatus::Complete,
+        "{:?}",
+        without.notes
+    );
+    // Everything but the time they were observed.
+    let observed = |b: &PrBundle| {
+        let mut events = b.events.clone();
+        for e in &mut events {
+            e.observed_at = ts("2024-01-01T00:00:00Z");
+        }
+        events
+    };
+    assert_eq!(observed(&without), observed(&with));
+    assert_eq!(without.threads, with.threads);
+    assert_eq!(of_type(&without, EventType::InlineComment).len(), 3);
+    // Each inline comment keeps its thread and its review.
+    let c = find(&without, &EventId::comment("PRRC_2"));
+    assert_eq!(c.meta.thread_id.as_deref(), Some("PRRT_1"));
+    assert_eq!(c.meta.review_id.as_deref(), Some("PRR_5"));
+}
+
+/// A head commit with 40 check suites: when the query reports more, the
+/// check runs come from REST; when it does not, from the query.
+#[tokio::test]
+async fn more_than_forty_check_suites_fall_back_to_rest() {
+    let runs_path = format!("/repos/acme/widget/commits/{}/check-runs", oid(3));
+    let statuses_path = format!("/repos/acme/widget/commits/{}/statuses", oid(3));
+    let forty = |more: bool| {
+        move |c: &mut Value| {
+            let mut nodes = c["checkSuites"]["nodes"].as_array().unwrap().clone();
+            for i in nodes.len()..40 {
+                nodes.push(json!({
+                    "databaseId": 1000 + i,
+                    "app": { "id": format!("APP_{i}"), "slug": format!("app-{i}") },
+                    "checkRuns": connection(vec![], false, None),
+                }));
+            }
+            c["checkSuites"] = connection(nodes, more, Some("c40"));
+        }
+    };
+    let (b, paths) = fetch_with_head_commit(forty(true), None).await;
+    assert_eq!(paths, vec![runs_path.clone(), statuses_path.clone()]);
+    let runs = of_type(&b, EventType::CheckRun);
+    assert_eq!(runs.len(), 2);
+    assert!(runs.iter().all(|r| r.source == Source::Rest));
+    assert!(b.complete_collections.contains(&Collection::Checks));
+
+    let (b, paths) = fetch_with_head_commit(forty(false), None).await;
+    assert_eq!(paths, vec![statuses_path]);
+    let runs = of_type(&b, EventType::CheckRun);
+    assert_eq!(runs.len(), 2);
+    assert!(runs.iter().all(|r| r.source == Source::Graphql));
+}
+
 /// The GraphQL points each response reports are added up in the client's
 /// statistics; a response without them adds nothing.
 #[tokio::test]

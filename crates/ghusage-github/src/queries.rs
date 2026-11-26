@@ -20,21 +20,23 @@ const REPOSITORY: &str = "fragment RepositoryFields on Repository { id name url 
 const PR_COMMIT: &str = "fragment PrCommitFields on PullRequestCommit { url commit { oid messageHeadline committedDate authoredDate url additions deletions parents { totalCount } author { user { id login } } committer { user { id login } } } }";
 
 /// The head commit's latest CI rollup, whether it has any commit statuses,
-/// and its check runs: up to 100 suites with up to 100 runs each (a head
-/// commit with more falls back to the REST checks endpoint). `ALL` returns
+/// and its check runs: up to 40 suites with up to 100 runs each (a head
+/// commit with more falls back to the REST checks endpoint). GitHub computes
+/// a query's cost from the requested page sizes, and the suites multiply the
+/// runs asked for in each, so the suite page is kept small. `ALL` returns
 /// every attempt, so a failed run that was re-run is kept alongside the
 /// re-run (the default, `LATEST`, keeps only the most recent run of each
-/// name); the REST fallback asks for the same with `filter=all`. Commit statuses themselves are not read here: GraphQL
-/// only exposes the latest status of each context, while every status
-/// posted is an event.
-const HEAD_COMMIT: &str = "fragment HeadCommitFields on Commit { oid statusCheckRollup { state } status { state } checkSuites(first: 100) { pageInfo { hasNextPage endCursor } nodes { databaseId app { id slug } checkRuns(first: 100, filterBy: { checkType: ALL }) { pageInfo { hasNextPage endCursor } nodes { id name status conclusion startedAt completedAt permalink } } } } }";
+/// name); the REST fallback asks for the same with `filter=all`. Commit
+/// statuses themselves are not read here: GraphQL only exposes the latest
+/// status of each context, while every status posted is an event.
+const HEAD_COMMIT: &str = "fragment HeadCommitFields on Commit { oid statusCheckRollup { state } status { state } checkSuites(first: 40) { pageInfo { hasNextPage endCursor } nodes { databaseId app { id slug } checkRuns(first: 100, filterBy: { checkType: ALL }) { pageInfo { hasNextPage endCursor } nodes { id name status conclusion startedAt completedAt permalink } } } } }";
 
 const REVIEW_COMMENT: &str = "fragment ReviewCommentFields on PullRequestReviewComment { id state createdAt lastEditedAt url author { ...ActorFields } replyTo { id } pullRequestReview { id } }";
 
-/// Comments listed under a review are a secondary source of inline comments
-/// (the thread comments are authoritative and fully paginated); they are
-/// deduplicated by node id.
-const REVIEW: &str = "fragment ReviewFields on PullRequestReview { id state body submittedAt url author { ...ActorFields } comments(first: 20) { nodes { ...ReviewCommentFields } } }";
+/// A review's inline comments are not listed here: they are read from the
+/// review threads, which are paginated in full and carry each comment's
+/// review id. Listing them again would only raise the query's cost.
+const REVIEW: &str = "fragment ReviewFields on PullRequestReview { id state body submittedAt url author { ...ActorFields } }";
 
 const THREAD: &str = "fragment ReviewThreadFields on PullRequestReviewThread { id isResolved isOutdated path resolvedBy { __typename login id } comments(first: 50) { totalCount pageInfo { hasNextPage endCursor } nodes { ...ReviewCommentFields } } }";
 
@@ -178,7 +180,7 @@ impl PrConnection {
                 "PullRequestReviewsPage",
                 format!("first: {PAGE_SIZE}, after: $after"),
                 "...ReviewFields",
-                vec![ACTOR, REVIEW_COMMENT, REVIEW],
+                vec![ACTOR, REVIEW],
             ),
             Self::Threads => (
                 "PullRequestReviewThreadsPage",
@@ -368,6 +370,27 @@ mod tests {
                 "no top-level rateLimit {{ cost }} in {d}"
             );
         }
+    }
+
+    /// Inline comments come from the review threads, which are paginated in
+    /// full; listing them again under each review only adds query cost.
+    #[test]
+    fn reviews_do_not_list_their_comments() {
+        let review = REVIEW;
+        assert!(!review.contains("comments"), "{review}");
+        let page = PrConnection::Reviews.page_query();
+        assert!(!page.contains("ReviewCommentFields"), "{page}");
+    }
+
+    /// The check suites of the head commit are asked for 40 at a time, the
+    /// size the query cost is computed from; a commit with more falls back
+    /// to the REST checks endpoint.
+    #[test]
+    fn head_commit_check_suites_page_size() {
+        assert!(
+            HEAD_COMMIT.contains("checkSuites(first: 40)"),
+            "{HEAD_COMMIT}"
+        );
     }
 
     #[test]
