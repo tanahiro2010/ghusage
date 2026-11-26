@@ -1287,3 +1287,53 @@ async fn failing_commit_search_keeps_pull_requests_and_issues() {
     }
     assert_eq!(o["metrics"], expected["metrics"]);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_report_warns_about_a_failed_phase_even_after_many_other_failures() {
+    let mut world = World::base();
+    // Seven pull requests, none of which can be fetched.
+    for n in 0..4_u64 {
+        let mut p = pr_b();
+        p.number = 100 + n;
+        p.node_id = format!("PR_X{n}");
+        p.gql["id"] = json!(p.node_id);
+        p.gql["number"] = json!(p.number);
+        world.prs.push(p);
+    }
+    let server = serve(&world).await;
+    for query in ["query PullRequestBatch", "query PullRequestDetail"] {
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(wiremock::matchers::body_string_contains(query))
+            .respond_with(server_error())
+            .with_priority(1)
+            .mount(&server)
+            .await;
+    }
+    // The issue search fails too, after the pull requests (each attempt
+    // waits), so its failure comes after theirs.
+    mount_issue_search(
+        &server,
+        server_error().set_delay(Duration::from_millis(400)),
+    )
+    .await;
+    let env = Env::new(&server);
+    let r = env
+        .run(&[
+            "overview", "--since", SINCE, "--until", UNTIL, "--format", "json",
+        ])
+        .await;
+    r.expect_code(0).assert_clean();
+    let pr_failures = r
+        .stderr
+        .lines()
+        .filter(|l| l.starts_with("warning: ") && l.contains('#'))
+        .count();
+    assert!(pr_failures >= 5, "{}", r.stderr);
+    assert!(
+        r.stderr.contains("warning: issue sync failed"),
+        "{}",
+        r.stderr
+    );
+    assert_ne!(coverage_status(&r.json(), "issues"), "complete");
+}
