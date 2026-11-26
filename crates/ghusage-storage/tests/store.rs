@@ -2101,3 +2101,23 @@ fn checks_shared_by_two_viewed_pull_requests_belong_to_one_regardless_of_order()
         assert_eq!(shown, 2);
     }
 }
+
+#[test]
+fn viewed_copy_of_a_pull_request_synced_by_another_account_follows_the_rule() {
+    // bob syncs PRz (#1) before its head has any checks; alice syncs PRm
+    // (#2) and only views PRz. PRz is synced by an account and has the
+    // lower number, so it keeps the checks in either order.
+    let mut bob = shared_head_batch("PRz", 1, "fff666", false);
+    bob.account = "bob".into();
+    bob.events.clear();
+    let synced = shared_head_batch("PRm", 2, "fff666", false);
+    let viewed = shared_head_batch("PRz", 1, "fff666", true);
+    for order in [[&synced, &viewed], [&viewed, &synced]] {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut s, path) = file_store_with_base(&dir);
+        s.apply(&bob).unwrap();
+        s.apply(order[0]).unwrap();
+        s.apply(order[1]).unwrap();
+        assert_eq!(shared_check_owners(&path), shared_checks_owned_by("PRz"));
+    }
+}

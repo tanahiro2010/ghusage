@@ -581,9 +581,6 @@ fn owning_pull_request(
     let Some(existing) = existing.filter(|x| x != incoming) else {
         return Ok(None);
     };
-    if viewed_detail && synced_by_an_account(tx, &existing)? {
-        return Ok(None);
-    }
     let owner: Option<String> = tx
         .query_row(
             "SELECT id FROM pull_requests p WHERE id IN (?1, ?2) \
@@ -594,14 +591,6 @@ fn owning_pull_request(
         )
         .optional()?;
     Ok(owner.filter(|o| *o != existing || !viewed_detail))
-}
-
-fn synced_by_an_account(tx: &Transaction<'_>, pr_id: &str) -> Result<bool> {
-    row_exists(
-        tx,
-        "SELECT 1 FROM account_pull_requests WHERE pr_id = ?1 AND viewed = 0",
-        pr_id,
-    )
 }
 
 /// Moves a stored event, and its entity projection, to another pull request.
