@@ -589,6 +589,12 @@ impl Session {
         self.offline_reason = Some(reason);
     }
 
+    /// Number of finished syncs (success or partial) of the subject, the
+    /// one just run included.
+    pub fn completed_syncs(&self) -> Result<u64> {
+        Ok(self.store.completed_sync_runs(&self.subject.login)?)
+    }
+
     /// Coverage records that apply to this session's mode.
     pub fn coverage(&self) -> Result<Vec<coverage::CoverageRecord>> {
         Ok(sync::applicable_coverage(

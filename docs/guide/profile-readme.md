@@ -132,6 +132,9 @@ runs every day.
 - **First run.** The first run has no cache and syncs the whole period,
   which takes longer; later runs only fetch what changed. See
   [Syncing and the cache](./syncing.md).
+- **Line counts.** GitHub Actions sets `CI`, so the report's sync also
+  fetches the line counts of your commits, and "Lines changed" is complete
+  without an extra step. Add `--no-diff-stats` to skip them.
 - **Other reports.** Replace `overview --since 30d` with, for example,
   `weekly --since 12w`, `monthly --since 12m` or `repos --since 90d`.
 - **Time zone.** Runners use UTC. Set `--timezone` to your own zone so days

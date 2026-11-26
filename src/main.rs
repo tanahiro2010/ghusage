@@ -11,6 +11,7 @@ use std::process::ExitCode;
 use clap::Parser;
 use ghusage_app::report::{self, QueryContext, ReportKind};
 use ghusage_app::session::{Session, SessionConfig};
+use ghusage_app::sync::SyncReport;
 use ghusage_app::{AppError, Result, commands, csv_out, exit};
 use ghusage_core::coverage::CoverageStatus;
 use ghusage_core::metrics::{
@@ -390,11 +391,24 @@ async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<
                 progress.update(p);
             })
             .await;
+        let counted = match synced {
+            Ok(_) if auto_diff_stats(g, &s)? => {
+                Some(s.fetch_line_counts(period, &|p| progress.update(p)).await)
+            }
+            _ => None,
+        };
         drop(progress);
         match synced {
             Ok(r) => {
                 for f in r.failures.iter().take(5) {
                     eprintln!("warning: {}", ghusage_core::sanitize::sanitize_line(f));
+                }
+                match counted {
+                    Some(Err(e @ (AppError::AuthRejected(_) | AppError::Auth(_)))) => {
+                        return Err(e);
+                    }
+                    Some(Err(e)) => eprintln!("warning: line counts not fetched: {}", clean(&e)),
+                    _ => {}
                 }
             }
             Err(e @ (AppError::AuthRejected(_) | AppError::Auth(_))) => return Err(e),
@@ -422,6 +436,31 @@ async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<
         );
     }
     Ok((s, shown))
+}
+
+/// Whether a sync also fetches line counts without `--diff-stats`: on the
+/// first sync of an account (the sync just run is its only finished one)
+/// and in CI, unless `--no-diff-stats` is given.
+fn auto_diff_stats(g: &GlobalArgs, s: &Session) -> Result<bool> {
+    if g.no_diff_stats {
+        return Ok(false);
+    }
+    Ok(in_ci() || s.completed_syncs()? <= 1)
+}
+
+/// Whether ghusage runs in CI: `CI` is set to anything but empty, `false`
+/// or `0` (GitHub Actions and most CI services set `CI=true`).
+fn in_ci() -> bool {
+    std::env::var("CI")
+        .is_ok_and(|v| !(v.is_empty() || v == "0" || v.eq_ignore_ascii_case("false")))
+}
+
+/// Copies the request totals of the whole session into a sync report.
+fn update_api_stats(r: &mut SyncReport, s: &Session) {
+    let stats = s.api_stats();
+    r.api.requests = stats.requests;
+    r.api.retries = stats.retries;
+    r.api.total_api_time_ms = stats.total_api_time_ms;
 }
 
 fn require_complete(g: &GlobalArgs, status: CoverageStatus) -> i32 {
@@ -590,12 +629,24 @@ async fn sync_cmd(
             let counts = s.fetch_line_counts(period, &|p| progress.update(p)).await;
             counts.map(|c| {
                 r.diff_stats = Some(c);
-                let stats = s.api_stats();
-                r.api.requests = stats.requests;
-                r.api.retries = stats.retries;
-                r.api.total_api_time_ms = stats.total_api_time_ms;
+                update_api_stats(&mut r, &s);
                 r
             })
+        }
+        // Fetched by default; a failure only warns, the sync itself worked.
+        Ok(mut r) if auto_diff_stats(g, &s)? => {
+            match s.fetch_line_counts(period, &|p| progress.update(p)).await {
+                Ok(c) => {
+                    r.diff_stats = Some(c);
+                    update_api_stats(&mut r, &s);
+                    Ok(r)
+                }
+                Err(e @ (AppError::AuthRejected(_) | AppError::Auth(_))) => Err(e),
+                Err(e) => {
+                    eprintln!("warning: line counts not fetched: {}", clean(&e));
+                    Ok(r)
+                }
+            }
         }
         other => other,
     };

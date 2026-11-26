@@ -1691,8 +1691,11 @@ async fn diff_stats_are_fetched_once_and_unknown_ones_stay_unknown() {
         .await;
     let env = Env::new(&server);
 
-    // A plain sync asks for no line counts.
-    env.sync(&[]).await.expect_code(0).assert_clean();
+    // A sync with --no-diff-stats asks for no line counts, even the first.
+    env.sync(&["--no-diff-stats"])
+        .await
+        .expect_code(0)
+        .assert_clean();
     let asked = |reqs: &[wiremock::Request]| {
         reqs.iter()
             .filter(|r| String::from_utf8_lossy(&r.body).contains("query CommitLineCounts"))
@@ -2044,4 +2047,180 @@ async fn a_report_during_another_sync_still_shows_the_cache() {
     tokio::task::spawn_blocking(move || first.wait().unwrap())
         .await
         .unwrap();
+}
+
+/// Answers every line count query, with all commits known.
+async fn mount_line_counts(server: &wiremock::MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query CommitLineCounts"))
+        .respond_with(|req: &wiremock::Request| line_count_answer(req, &[]))
+        .mount(server)
+        .await;
+}
+
+/// Line count queries the server has received.
+async fn line_count_queries(server: &wiremock::MockServer) -> usize {
+    requests(server)
+        .await
+        .iter()
+        .filter(|r| String::from_utf8_lossy(&r.body).contains("query CommitLineCounts"))
+        .count()
+}
+
+/// `sync` over the standard period as JSON, with `CI` set to `ci`.
+async fn sync_in(env: &Env, ci: Option<&str>, extra: &[&str]) -> Run {
+    let mut args = vec![
+        "sync", "--since", SINCE, "--until", UNTIL, "--format", "json",
+    ];
+    args.extend_from_slice(extra);
+    let mut c = env.command(&args);
+    if let Some(v) = ci {
+        c.env("CI", v);
+    }
+    env.run_command(c).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_first_sync_fetches_line_counts_and_later_ones_do_not() {
+    let server = serve(&World::base()).await;
+    mount_line_counts(&server).await;
+    let env = Env::new(&server);
+    let first = sync_in(&env, None, &[]).await;
+    first.expect_code(0).assert_clean();
+    assert!(first.json()["diff_stats"].is_object(), "{}", first.stdout);
+    let asked = line_count_queries(&server).await;
+    assert!(asked > 0);
+    let o = env.offline_json(&["overview"]).await.json();
+    assert_eq!(o["metrics"]["diff_stats"]["coverage"], "complete");
+    // A later interactive sync stays as it was.
+    let later = sync_in(&env, None, &["--full"]).await;
+    later.expect_code(0).assert_clean();
+    assert!(later.json()["diff_stats"].is_null(), "{}", later.stdout);
+    assert_eq!(line_count_queries(&server).await, asked);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn syncs_in_ci_fetch_line_counts_unless_told_not_to() {
+    let server = serve(&World::base()).await;
+    mount_line_counts(&server).await;
+    let env = Env::new(&server);
+    sync_in(&env, None, &["--no-diff-stats"])
+        .await
+        .expect_code(0);
+    assert_eq!(line_count_queries(&server).await, 0);
+    // CI=false or 0 is not CI.
+    for off in ["false", "0", ""] {
+        let r = sync_in(&env, Some(off), &[]).await;
+        r.expect_code(0);
+        assert!(r.json()["diff_stats"].is_null(), "CI={off}: {}", r.stdout);
+    }
+    assert_eq!(line_count_queries(&server).await, 0);
+    let r = sync_in(&env, Some("true"), &["--no-diff-stats"]).await;
+    assert!(r.json()["diff_stats"].is_null(), "{}", r.stdout);
+    assert_eq!(line_count_queries(&server).await, 0);
+    let r = sync_in(&env, Some("true"), &[]).await;
+    r.expect_code(0).assert_clean();
+    assert!(r.json()["diff_stats"].is_object(), "{}", r.stdout);
+    assert!(line_count_queries(&server).await > 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_sync_of_a_first_report_fetches_line_counts() {
+    let server = serve(&World::base()).await;
+    mount_line_counts(&server).await;
+    let env = Env::new(&server);
+    let r = env
+        .run(&[
+            "overview", "--since", SINCE, "--until", UNTIL, "--format", "json",
+        ])
+        .await;
+    r.expect_code(0).assert_clean();
+    assert!(line_count_queries(&server).await > 0);
+    assert_eq!(r.json()["metrics"]["diff_stats"]["coverage"], "complete");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn line_counts_fetched_by_default_do_not_fail_the_sync() {
+    let server = serve(&World::base()).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query CommitLineCounts"))
+        .respond_with(ResponseTemplate::new(502))
+        .mount(&server)
+        .await;
+    let env = Env::new(&server);
+    let r = sync_in(&env, None, &[]).await;
+    r.expect_code(0).assert_clean();
+    assert!(r.stderr.contains("line counts not fetched"), "{}", r.stderr);
+    // Unknown line counts stay unknown, never zero.
+    let o = env.offline_json(&["overview"]).await.json();
+    assert_eq!(o["metrics"]["diff_stats"]["coverage"], "unavailable");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejected_token_while_fetching_line_counts_by_default_fails() {
+    let server = serve(&World::base()).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .and(body_string_contains("query CommitLineCounts"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "message": "Bad credentials", "documentation_url": "https://docs.github.com/rest"
+        })))
+        .mount(&server)
+        .await;
+    let env = Env::new(&server);
+    // The first sync, and the first report on a second empty cache.
+    sync_in(&env, None, &[]).await.expect_code(3).assert_clean();
+    let other = Env::new(&server);
+    other
+        .run(&["overview", "--since", SINCE, "--until", UNTIL])
+        .await
+        .expect_code(3)
+        .assert_clean();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_first_sync_leaves_the_next_one_first_and_a_partial_one_does_not() {
+    let server = serve(&World::base()).await;
+    mount_line_counts(&server).await;
+    let env = Env::new(&server);
+    // The first sync fails: pull request search answers 500 while `failing`.
+    let failing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let on = std::sync::Arc::clone(&failing);
+    Mock::given(method("GET"))
+        .and(path("/search/issues"))
+        .and(move |_: &wiremock::Request| on.load(std::sync::atomic::Ordering::SeqCst))
+        .respond_with(ResponseTemplate::new(500))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let failed = sync_in(&env, None, &["--no-diff-stats"]).await;
+    assert_ne!(failed.code, Some(0), "{}", failed.stderr);
+    failing.store(false, std::sync::atomic::Ordering::SeqCst);
+    // So the next sync is still the first finished one and fetches them.
+    let r = sync_in(&env, None, &[]).await;
+    r.expect_code(0).assert_clean();
+    assert!(r.json()["diff_stats"].is_object(), "{}", r.stdout);
+
+    // A partial first sync counts as finished: the next one is not first.
+    let server = serve(&World::base()).await;
+    mount_line_counts(&server).await;
+    let env = Env::new(&server);
+    let partial = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let on = std::sync::Arc::clone(&partial);
+    Mock::given(method("GET"))
+        .and(path("/repos/acme/widget/commits"))
+        .and(move |_: &wiremock::Request| on.load(std::sync::atomic::Ordering::SeqCst))
+        .respond_with(ResponseTemplate::new(404))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    sync_in(&env, None, &["--no-diff-stats"])
+        .await
+        .expect_code(4);
+    partial.store(false, std::sync::atomic::Ordering::SeqCst);
+    let r = sync_in(&env, None, &["--full"]).await;
+    r.expect_code(0).assert_clean();
+    assert!(r.json()["diff_stats"].is_null(), "{}", r.stdout);
 }

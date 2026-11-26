@@ -86,6 +86,10 @@ pub(crate) struct GlobalArgs {
     /// the data as of that sync, e.g. 30s, 5m, 1h; 0 always syncs.
     #[arg(long, global = true, env = "GHUSAGE_MAX_AGE", default_value = "5m", value_parser = parse_max_age)]
     pub max_age: std::time::Duration,
+    /// Do not fetch line counts on the first sync of an account or in CI
+    /// (`CI` set), where syncs fetch them by default.
+    #[arg(long, global = true)]
+    pub no_diff_stats: bool,
     /// Maximum concurrent GitHub requests (1-16). Higher values make a
     /// first sync faster but use more memory and hit GitHub's secondary
     /// rate limits sooner.
@@ -225,6 +229,7 @@ pub(crate) struct SyncArgs {
     pub full: bool,
     /// Also fetch lines added and deleted by your commits in the period
     /// that do not have them yet (one GraphQL request per 100 commits).
+    /// Done by default on the first sync of an account and in CI.
     #[arg(long)]
     pub diff_stats: bool,
 }
