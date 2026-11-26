@@ -33,43 +33,13 @@ impl Shared<'_, '_, '_> {
 
 type SearchStatus = Vec<(Period, CoverageStatus, Option<String>)>;
 
-/// Pull requests to fetch, in groups as they are found.
-type PrQueue = futures::channel::mpsc::UnboundedSender<Vec<PrKey>>;
-
-/// Finds pull requests updated in `ranges` and queues the ones to fetch.
-/// Changed ones are queued as soon as the search that found them returns,
-/// so fetching them does not wait for the remaining searches (one of which
-/// may wait for a rate limit). Once every search is done, the repositories
-/// found are sent to `pr_repos`, and pull requests whose last found version
-/// is changed but was not queued yet, and stale open ones, are queued.
+/// Finds pull requests updated in `ranges`.
 async fn search_prs(
     sh: &Shared<'_, '_, '_>,
     ranges: &[Period],
-    states: &HashMap<String, (Option<Timestamp>, CoverageStatus)>,
-    stale_open: Vec<(String, PrKey)>,
-    pr_repos: tokio::sync::oneshot::Sender<Vec<RepositoryRef>>,
-    queue: PrQueue,
-    queued: &Cell<usize>,
-) -> Result<SearchStatus> {
+) -> Result<(BTreeMap<String, IssueRef>, SearchStatus)> {
     let (client, subject, opts) = (sh.client, sh.subject, sh.opts);
-    let unchanged = |r: &IssueRef| {
-        !opts.full
-            && matches!(
-                states.get(&r.node_id),
-                Some((Some(u), CoverageStatus::Complete)) if *u == r.updated_at
-            )
-    };
-    let key = |r: &IssueRef| (RepositoryRef::new(r.owner.clone(), r.name.clone()), r.number);
-    let send = |keys: Vec<PrKey>| {
-        if !keys.is_empty() {
-            queued.set(queued.get() + keys.len());
-            // The receiver is only gone when fetching failed, which fails
-            // the sync anyway.
-            drop(queue.unbounded_send(keys));
-        }
-    };
     let mut refs: BTreeMap<String, IssueRef> = BTreeMap::new();
-    let mut seen: HashSet<String> = HashSet::new();
     let mut search_status = Vec::new();
     for range in ranges {
         (sh.progress)(SyncProgress::Searching(DataKind::PullRequests));
@@ -93,72 +63,63 @@ async fn search_prs(
                 .await?;
             statuses.push(found.status);
             reasons.extend(found.reason);
-            let mut keys = Vec::new();
             for r in found.items {
-                if !unchanged(&r) && seen.insert(r.node_id.clone()) {
-                    keys.push(key(&r));
-                }
                 refs.insert(r.node_id.clone(), r);
             }
-            send(keys);
         }
         let reason = (!reasons.is_empty()).then(|| reasons.join("; "));
         search_status.push((*range, CoverageStatus::combine(statuses), reason));
     }
     sh.report.borrow_mut().pull_requests_found = refs.len() as u64;
-    let mut repos: Vec<RepositoryRef> = Vec::new();
-    let mut seen_names = HashSet::new();
+    Ok((refs, search_status))
+}
+
+/// Fetches changed and stale pull requests and records pull request
+/// coverage for the searched ranges.
+async fn fetch_prs(
+    sh: &Shared<'_, '_, '_>,
+    refs: &BTreeMap<String, IssueRef>,
+    search_status: SearchStatus,
+    states: &HashMap<String, (Option<Timestamp>, CoverageStatus)>,
+    stale_open: Vec<(String, PrKey)>,
+) -> Result<()> {
+    let (client, subject, opts, progress) = (sh.client, sh.subject, sh.opts, sh.progress);
+    let mut to_fetch: Vec<PrKey> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     for r in refs.values() {
-        let repo = RepositoryRef::new(r.owner.clone(), r.name.clone());
-        if seen_names.insert(repo.clone()) {
-            repos.push(repo);
-        }
-    }
-    drop(pr_repos.send(repos));
-    let mut keys = Vec::new();
-    for r in refs.values() {
-        if seen.contains(&r.node_id) {
+        let unchanged = matches!(
+            states.get(&r.node_id),
+            Some((Some(u), CoverageStatus::Complete)) if *u == r.updated_at
+        );
+        if unchanged && !opts.full {
+            sh.report.borrow_mut().pull_requests_unchanged += 1;
             continue;
         }
-        if unchanged(r) {
-            sh.report.borrow_mut().pull_requests_unchanged += 1;
-        } else {
-            seen.insert(r.node_id.clone());
-            keys.push(key(r));
+        if seen.insert(r.node_id.clone()) {
+            to_fetch.push((RepositoryRef::new(r.owner.clone(), r.name.clone()), r.number));
         }
     }
     for (id, key) in stale_open {
         if seen.insert(id) {
-            keys.push(key);
+            to_fetch.push(key);
         }
     }
-    send(keys);
-    Ok(search_status)
-}
 
-/// Fetches the pull requests queued by [`search_prs`] until it is done, and
-/// returns the failures and the partially fetched pull requests.
-async fn fetch_prs(
-    sh: &Shared<'_, '_, '_>,
-    queue: futures::channel::mpsc::UnboundedReceiver<Vec<PrKey>>,
-    queued: &Cell<usize>,
-) -> Result<(Vec<String>, Vec<String>)> {
-    let (client, subject, opts, progress) = (sh.client, sh.subject, sh.opts, sh.progress);
     let mut pr_failures: Vec<String> = Vec::new();
     let mut pr_partial: Vec<String> = Vec::new();
+    let total = to_fetch.len();
     let mut done = 0;
-    let concurrency = opts.concurrency.clamp(1, 16);
-    let batches = queue.flat_map(|keys| {
-        // Several pull requests per query, but not so many that fewer
-        // queries run at once than are allowed.
-        let batch = keys.len().div_ceil(concurrency).clamp(1, PULL_REQUEST_BATCH);
-        let mut keys = keys.into_iter();
-        futures::stream::iter(std::iter::from_fn(move || {
-            let chunk: Vec<PrKey> = keys.by_ref().take(batch).collect();
-            (!chunk.is_empty()).then_some(chunk)
-        }))
+    progress(SyncProgress::Fetching {
+        kind: DataKind::PullRequests,
+        done,
+        total,
     });
-    let mut stream = batches.map(|keys| async move {
+    let concurrency = opts.concurrency.clamp(1, 16);
+    // Several pull requests per query, but not so many that fewer queries
+    // run at once than are allowed.
+    let batch = total.div_ceil(concurrency).clamp(1, PULL_REQUEST_BATCH);
+    let batches = to_fetch.chunks(batch).map(<[PrKey]>::to_vec);
+    let mut stream = futures::stream::iter(batches.map(|keys| async move {
         let prs: Vec<(&str, &str, u64)> = keys
             .iter()
             .map(|(repo, num)| (repo.owner.as_str(), repo.name.as_str(), *num))
@@ -168,7 +129,7 @@ async fn fetch_prs(
             .zip(responses)
             .map(|((repo, num), response)| (repo.owner, repo.name, num, response))
             .collect::<Vec<_>>()
-    })
+    }))
     .buffer_unordered(concurrency)
     .flat_map(futures::stream::iter);
     while let Some((o, n, num, res)) = stream.next().await {
@@ -176,7 +137,7 @@ async fn fetch_prs(
         progress(SyncProgress::Fetching {
             kind: DataKind::PullRequests,
             done,
-            total: queued.get(),
+            total,
         });
         progress(SyncProgress::Detail(format!("pull request {o}/{n}#{num}")));
         match res {
@@ -203,23 +164,6 @@ async fn fetch_prs(
         }
     }
     drop(stream);
-    progress(SyncProgress::Fetching {
-        kind: DataKind::PullRequests,
-        done,
-        total: queued.get(),
-    });
-    Ok((pr_failures, pr_partial))
-}
-
-/// Records pull request coverage for the searched ranges once every pull
-/// request found was fetched.
-async fn record_pr_coverage(
-    sh: &Shared<'_, '_, '_>,
-    search_status: SearchStatus,
-    pr_failures: Vec<String>,
-    pr_partial: Vec<String>,
-) -> Result<()> {
-    let (subject, opts) = (sh.subject, sh.opts);
     for (range, status, reason) in search_status {
         let mut reasons: Vec<String> = reason.into_iter().collect();
         if !pr_failures.is_empty() {

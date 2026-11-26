@@ -244,43 +244,21 @@ async fn sync_commits(
         "listing repositories with recent pushes".into(),
     ));
     progress(SyncProgress::Detail("searching commits".into()));
-    // Every range's commit search runs alongside the repository list and the
-    // listing of the default branches of the repositories in it, which
-    // depend on no search. A search that waits for a rate limit (this one or
-    // that of pull requests or issues) does not hold them up.
-    let searches = async {
-        futures::future::try_join_all(
-            ranges
-                .iter()
-                .map(|range| client.search_commits(&subject.login, *range, opts.public_only)),
-        )
-        .await
-        .map_err(AppError::from)
+    // The repository list and every range's commit search run at once.
+    let (listing, searches) = tokio::join!(
+        client.pushed_repositories(user, earliest),
+        futures::future::try_join_all(ranges.iter().map(|range| client.search_commits(
+            &subject.login,
+            *range,
+            opts.public_only
+        )),),
+    );
+    let mut searches = searches?.into_iter();
+    let (pushed, listing_failure) = match listing {
+        Ok(list) => (list, None),
+        Err(e @ ApiError::Unauthorized) => return Err(e.into()),
+        Err(e) => (Vec::new(), Some(format!("repository list failed: {e}"))),
     };
-    let pushed_listings = async {
-        let (pushed, listing_failure) = match client.pushed_repositories(user, earliest).await {
-            Ok(list) => (list, None),
-            Err(e @ ApiError::Unauthorized) => return Err(e.into()),
-            Err(e) => (Vec::new(), Some(format!("repository list failed: {e}"))),
-        };
-        let mut listings = Vec::with_capacity(ranges.len());
-        for range in ranges {
-            let candidates = pushed_candidates(&pushed, *range);
-            let mut listed = Listings {
-                repository_ids: candidates.keys().cloned().collect(),
-                ..Listings::default()
-            };
-            let to_list = listable(candidates.into_values(), opts);
-            let total = to_list.len();
-            list_default_branches(sh, *range, to_list, total, &mut listed).await?;
-            listings.push(listed);
-        }
-        Ok((pushed, listing_failure, listings))
-    };
-    let (searches, (pushed, listing_failure, listings)) =
-        tokio::try_join!(searches, pushed_listings)?;
-    let mut searches = searches.into_iter();
-    let mut listings = listings.into_iter();
     // A failed pull request search fails the whole sync elsewhere; here it
     // just means no pull request repositories.
     let pr_repos = pr_repos.await.unwrap_or_default();
@@ -309,12 +287,10 @@ async fn sync_commits(
     for range in ranges {
         let range = *range;
         let fetched = searches.next().expect("one commit search per range");
-        let listed = listings.next().expect("one listing per range");
         sync_commit_range(
             sh,
             range,
             fetched,
-            listed,
             &pushed,
             &pr_repo_ids,
             cached_prs,
@@ -332,7 +308,6 @@ async fn sync_commit_range(
     sh: &Shared<'_, '_, '_>,
     range: Period,
     fetched: ghusage_github::Fetched<Vec<CommitRecord>>,
-    mut listed: Listings,
     pushed: &[PushedRepository],
     pr_repo_ids: &HashSet<String>,
     cached_prs: &[CachedPr],
@@ -341,7 +316,7 @@ async fn sync_commit_range(
     related: &Related<'_>,
     known_repos: &mut HashMap<String, Repository>,
 ) -> Result<()> {
-    let (subject, opts) = (sh.subject, sh.opts);
+    let (client, subject, opts, progress) = (sh.client, sh.subject, sh.opts, sh.progress);
             // Search results in repositories not known to be related are used as
         // they are: listing their default branches could fail or take long
         // for a huge copy, and could not tell copies apart either.
@@ -364,9 +339,13 @@ async fn sync_commit_range(
             ));
         }
 
-        // Candidate repositories for this range. Those from the repository
-        // list come first and were listed already.
-        let mut candidates = pushed_candidates(pushed, range);
+        // Candidate repositories for this range.
+        let mut candidates: BTreeMap<String, Repository> = BTreeMap::new();
+        for p in pushed {
+            if p.pushed_at.is_some_and(|t| t >= range.start) {
+                candidates.insert(p.repository.id.clone(), p.repository.clone());
+            }
+        }
         for c in &items {
             candidates
                 .entry(c.repository.id.clone())
@@ -383,20 +362,67 @@ async fn sync_commit_range(
                 candidates.entry(id.clone()).or_insert_with(|| r.clone());
             }
         }
-        candidates.retain(|id, _| !listed.repository_ids.contains(id));
-        let to_list = listable(candidates.into_values(), opts);
-        let total = listed.done + to_list.len();
-        list_default_branches(sh, range, to_list, total, &mut listed).await?;
+        // Forks repeat the commits of their upstream repository, and commit
+        // search leaves them out too.
+        let to_list: Vec<Repository> = candidates
+            .into_values()
+            .filter(|r| !r.is_fork)
+            .filter(|r| !opts.public_only || r.visibility.is_public())
+            .collect();
 
+        let total = to_list.len();
+        let mut done = 0;
+        progress(SyncProgress::Fetching {
+            kind: DataKind::Commits,
+            done,
+            total,
+        });
         let mut found: BTreeMap<EventId, CommitRecord> = BTreeMap::new();
         for c in items {
             found.insert(c.event.event_id.clone(), c);
         }
-        for c in listed.found {
-            found.entry(c.event.event_id.clone()).or_insert(c);
+        let mut inaccessible: Vec<RepositoryRef> = Vec::new();
+        let mut failed: Vec<String> = Vec::new();
+        let mut stream = futures::stream::iter(to_list.into_iter().map(|repo| async move {
+            let res = client
+                .default_branch_commits(&repo, &subject.login, range)
+                .await;
+            (repo, res)
+        }))
+        .buffer_unordered(opts.concurrency.clamp(1, 16));
+        while let Some((repo, res)) = stream.next().await {
+            done += 1;
+            progress(SyncProgress::Fetching {
+                kind: DataKind::Commits,
+                done,
+                total,
+            });
+            progress(SyncProgress::Detail(res.as_ref().map_or_else(
+                |_| format!("commits in {}: failed", repo.full_name()),
+                |listed| {
+                    format!(
+                        "commits in {}: {} found",
+                        repo.full_name(),
+                        listed.items.len()
+                    )
+                },
+            )));
+            match res {
+                Ok(listed) => {
+                    statuses.push(listed.status);
+                    reasons.extend(listed.reason);
+                    for c in listed.items {
+                        found.entry(c.event.event_id.clone()).or_insert(c);
+                    }
+                }
+                Err(e @ ApiError::Unauthorized) => return Err(e.into()),
+                Err(ApiError::NotFound(_) | ApiError::Forbidden(_)) => {
+                    inaccessible.push(RepositoryRef::new(repo.owner.clone(), repo.name));
+                }
+                Err(e) => failed.push(format!("{}: {e}", repo.full_name())),
+            }
         }
-        statuses.extend(listed.statuses);
-        reasons.extend(listed.reasons);
+        drop(stream);
 
         persist_commit_range(
             sh,
@@ -408,99 +434,9 @@ async fn sync_commit_range(
             known_repos,
             statuses,
             reasons,
-            listed.inaccessible,
-            listed.failed,
+            inaccessible,
+            failed,
         )
     .await?;
-    Ok(())
-}
-
-/// Repositories of the repository list pushed to since the start of `range`,
-/// by id.
-fn pushed_candidates(pushed: &[PushedRepository], range: Period) -> BTreeMap<String, Repository> {
-    pushed
-        .iter()
-        .filter(|p| p.pushed_at.is_some_and(|t| t >= range.start))
-        .map(|p| (p.repository.id.clone(), p.repository.clone()))
-        .collect()
-}
-
-/// The candidates whose default branch is listed. Forks repeat the commits
-/// of their upstream repository, and commit search leaves them out too.
-fn listable(candidates: impl Iterator<Item = Repository>, opts: &SyncOptions) -> Vec<Repository> {
-    candidates
-        .filter(|r| !r.is_fork)
-        .filter(|r| !opts.public_only || r.visibility.is_public())
-        .collect()
-}
-
-/// Default branch listings of one range.
-#[derive(Default)]
-struct Listings {
-    /// Candidate repositories already handled, listed or not.
-    repository_ids: HashSet<String>,
-    /// Repositories listed so far.
-    done: usize,
-    found: Vec<CommitRecord>,
-    statuses: Vec<CoverageStatus>,
-    reasons: Vec<String>,
-    inaccessible: Vec<RepositoryRef>,
-    failed: Vec<String>,
-}
-
-/// Lists the subject's commits on the default branches of `repos` in
-/// `range` into `listed`, `total` being the number of listings of the range.
-async fn list_default_branches(
-    sh: &Shared<'_, '_, '_>,
-    range: Period,
-    repos: Vec<Repository>,
-    total: usize,
-    listed: &mut Listings,
-) -> Result<()> {
-    let (client, subject, opts, progress) = (sh.client, sh.subject, sh.opts, sh.progress);
-    progress(SyncProgress::Fetching {
-        kind: DataKind::Commits,
-        done: listed.done,
-        total,
-    });
-    let mut stream = futures::stream::iter(repos.into_iter().map(|repo| async move {
-        let res = client
-            .default_branch_commits(&repo, &subject.login, range)
-            .await;
-        (repo, res)
-    }))
-    .buffer_unordered(opts.concurrency.clamp(1, 16));
-    while let Some((repo, res)) = stream.next().await {
-        listed.done += 1;
-        progress(SyncProgress::Fetching {
-            kind: DataKind::Commits,
-            done: listed.done,
-            total,
-        });
-        progress(SyncProgress::Detail(res.as_ref().map_or_else(
-            |_| format!("commits in {}: failed", repo.full_name()),
-            |found| {
-                format!(
-                    "commits in {}: {} found",
-                    repo.full_name(),
-                    found.items.len()
-                )
-            },
-        )));
-        match res {
-            Ok(found) => {
-                listed.statuses.push(found.status);
-                listed.reasons.extend(found.reason);
-                listed.found.extend(found.items);
-            }
-            Err(e @ ApiError::Unauthorized) => return Err(e.into()),
-            Err(ApiError::NotFound(_) | ApiError::Forbidden(_)) => {
-                listed
-                    .inaccessible
-                    .push(RepositoryRef::new(repo.owner.clone(), repo.name));
-            }
-            Err(e) => listed.failed.push(format!("{}: {e}", repo.full_name())),
-        }
-    }
     Ok(())
 }
