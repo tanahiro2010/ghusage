@@ -89,7 +89,8 @@ enum Decision {
 struct RateLimitWait {
     /// `primary`, `secondary`, `retry-after` or `too-many-requests`.
     kind: &'static str,
-    detail: RateLimitDetail,
+    /// Only built when debug logging is enabled.
+    detail: Option<RateLimitDetail>,
 }
 
 /// Rate-limit headers and the error message of a limited response, made
@@ -114,6 +115,12 @@ impl RateLimitDetail {
             retry_after: header("retry-after"),
             message: message.map(|m| log_safe(m, 160)),
         }
+    }
+
+    /// The details for the retry log line, or `None` without building them
+    /// when debug logging is off.
+    fn for_log(headers: &HeaderMap, message: impl FnOnce() -> Option<String>) -> Option<Self> {
+        tracing::enabled!(tracing::Level::DEBUG).then(|| Self::new(headers, message().as_deref()))
     }
 }
 
@@ -374,7 +381,7 @@ impl Transport {
                     if attempt >= max_attempts {
                         return Err(error);
                     }
-                    let detail = rate_limit.as_ref().map(|w| &w.detail);
+                    let detail = rate_limit.as_ref().and_then(|w| w.detail.as_ref());
                     tracing::debug!(
                         attempt,
                         delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
@@ -507,7 +514,7 @@ impl Transport {
         if (200..300).contains(&status) {
             if graphql && graphql_rate_limited(&body) {
                 let detail =
-                    RateLimitDetail::new(&headers, graphql_rate_limit_message(&body).as_deref());
+                    RateLimitDetail::for_log(&headers, || graphql_rate_limit_message(&body));
                 return self.primary_limit(&headers, attempt, detail);
             }
             return Decision::Done(RawResponse { headers, body });
@@ -516,7 +523,7 @@ impl Transport {
             401 => Decision::Fail(ApiError::Unauthorized),
             403 | 429 => {
                 let message = body_message(&body);
-                let detail = RateLimitDetail::new(&headers, message.as_deref());
+                let detail = RateLimitDetail::for_log(&headers, || message.clone());
                 if header_str(&headers, "x-ratelimit-remaining") == Some("0") {
                     return self.primary_limit(&headers, attempt, detail);
                 }
@@ -596,7 +603,7 @@ impl Transport {
         &self,
         headers: &HeaderMap,
         attempt: u32,
-        detail: RateLimitDetail,
+        detail: Option<RateLimitDetail>,
     ) -> Decision {
         let reset_at = header_str(headers, "x-ratelimit-reset")
             .and_then(|v| v.trim().parse::<i64>().ok())
