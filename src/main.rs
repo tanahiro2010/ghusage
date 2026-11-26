@@ -418,8 +418,12 @@ async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<
             // The sync failed before the account was checked (for example
             // another sync holds the lock): check it now, then show the
             // cache as for any failed sync. A failed check fails the report.
+            // When the token belongs to another account, decide again
+            // whether that account needs a sync.
             Err(e) if s.is_unconfirmed() => {
-                s.confirm_subject().await?;
+                if s.confirm_subject().await? {
+                    continue;
+                }
                 if s.offline_state().reason.is_none() {
                     eprintln!("warning: sync failed, showing cached data: {}", clean(&e));
                 }

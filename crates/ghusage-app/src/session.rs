@@ -365,26 +365,29 @@ impl Session {
     /// [`Session::open_deferred`]); does nothing once it was checked.
     /// Switches to the authenticated account when the token now belongs to
     /// another one, and to cached data when GitHub cannot be reached.
-    pub async fn confirm_subject(&mut self) -> Result<()> {
+    /// Returns whether the session switched to another account.
+    pub async fn confirm_subject(&mut self) -> Result<bool> {
         if !self.unconfirmed {
-            return Ok(());
+            return Ok(false);
         }
         let Some(client) = &self.client else {
             self.unconfirmed = false;
-            return Ok(());
+            return Ok(false);
         };
         let viewer = client.viewer().await;
         self.apply_viewer(viewer)
     }
 
-    /// Takes the result of `GET /user` for an unconfirmed subject.
+    /// Takes the result of `GET /user` for an unconfirmed subject. Returns
+    /// whether the subject switched to another account.
     fn apply_viewer(
         &mut self,
         viewer: std::result::Result<ghusage_github::Viewer, ghusage_github::ApiError>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         match viewer {
             Ok(v) => {
-                if !sync::is_viewer(&self.subject, &v) {
+                let switched = !sync::is_viewer(&self.subject, &v);
+                if switched {
                     self.store.set_meta(sync::META_VIEWER_LOGIN, &v.login)?;
                     self.store.set_meta(sync::META_VIEWER_ID, &v.id)?;
                     self.subject = Subject {
@@ -393,12 +396,12 @@ impl Session {
                     };
                 }
                 self.unconfirmed = false;
-                Ok(())
+                Ok(switched)
             }
             Err(e) if is_connectivity(&e) => {
                 self.unconfirmed = false;
                 self.mark_offline(e.to_string());
-                Ok(())
+                Ok(false)
             }
             Err(e) => Err(e.into()),
         }

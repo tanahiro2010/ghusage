@@ -2141,6 +2141,137 @@ async fn a_report_during_another_sync_still_shows_the_cache() {
         .unwrap();
 }
 
+/// Answers `GET /user` with `other` until `mine` is set, then with `me`.
+struct TokenOwner {
+    mine: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl wiremock::Respond for TokenOwner {
+    fn respond(&self, _: &wiremock::Request) -> ResponseTemplate {
+        let (login, id, node_id) = if self.mine.load(std::sync::atomic::Ordering::SeqCst) {
+            (ME, 1, ME_ID)
+        } else {
+            ("other", 2, "U_other")
+        };
+        ResponseTemplate::new(200).set_body_json(json!({
+            "login": login, "id": id, "node_id": node_id, "type": "User", "name": login
+        }))
+    }
+}
+
+/// Starts a sync that switches the remembered account from `me` to `other`
+/// and holds the lock while its searches for `other` wait. Returns once
+/// `other` is remembered and the token belongs to `me` again, so the next
+/// command opens with `other` and finds out that the account is `me`.
+async fn hold_the_lock_as_another_account(
+    server: &wiremock::MockServer,
+    env: &Env,
+) -> std::process::Child {
+    let mine = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    Mock::given(method("GET"))
+        .and(path("/user"))
+        .respond_with(TokenOwner {
+            mine: std::sync::Arc::clone(&mine),
+        })
+        .with_priority(1)
+        .mount(server)
+        .await;
+    for endpoint in ["/search/issues", "/search/commits"] {
+        Mock::given(method("GET"))
+            .and(path(endpoint))
+            .and(query_param_contains("q", "other"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(search_page(vec![]))
+                    .set_delay(std::time::Duration::from_secs(4)),
+            )
+            .with_priority(1)
+            .mount(server)
+            .await;
+    }
+    let holder = env
+        .command(&["sync", "--since", "2024-02-26", "--until", SINCE])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let searched_for_other = |reqs: &[wiremock::Request]| {
+        reqs.iter().any(|r| {
+            r.url.path().starts_with("/search/")
+                && r.url
+                    .query_pairs()
+                    .any(|(k, v)| k == "q" && v.contains("other"))
+        })
+    };
+    assert!(
+        wait_until(std::time::Duration::from_secs(10), || async {
+            searched_for_other(&requests(server).await) && remembered_viewer(env) == "other"
+        })
+        .await
+    );
+    mine.store(true, std::sync::atomic::Ordering::SeqCst);
+    holder
+}
+
+async fn wait_for(child: std::process::Child) {
+    let mut child = child;
+    tokio::task::spawn_blocking(move || child.wait().unwrap())
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_report_during_another_sync_needs_no_sync_once_the_account_changes() {
+    let server = serve(&World::base()).await;
+    let env = Env::new(&server);
+    env.sync(&[]).await.expect_code(0);
+    let holder = hold_the_lock_as_another_account(&server, &env).await;
+    // The remembered account has nothing for the period, so the report
+    // tries to sync and finds the lock taken. The token belongs to `me`,
+    // whose cache is complete: nothing needs a sync, so nothing is wrong.
+    let r = env
+        .run(&[
+            "overview", "--since", SINCE, "--until", UNTIL, "--format", "json",
+        ])
+        .await;
+    r.expect_code(0);
+    assert!(!r.stderr.contains("already running"), "{}", r.stderr);
+    assert!(!r.stderr.contains("sync failed"), "{}", r.stderr);
+    assert_eq!(r.json()["account"]["login"], ME, "{}", r.stdout);
+    for kind in ["commits", "pull_requests", "issues"] {
+        assert_eq!(coverage_status(&r.json(), kind), "complete");
+    }
+    wait_for(holder).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_report_during_another_sync_reuses_a_fresh_sync_once_the_account_changes() {
+    let server = serve(&World::base()).await;
+    let env = Env::new(&server);
+    // A period that runs until now, synced within --max-age.
+    env.run(&["sync", "--since", SINCE, "--format", "json"])
+        .await
+        .expect_code(0);
+    let holder = hold_the_lock_as_another_account(&server, &env).await;
+    let r = env
+        .run(&["overview", "--since", SINCE, "--format", "json"])
+        .await;
+    r.expect_code(0);
+    assert!(!r.stderr.contains("already running"), "{}", r.stderr);
+    assert!(
+        r.stderr
+            .contains("note: showing data synced less than a minute ago"),
+        "{}",
+        r.stderr
+    );
+    assert_eq!(r.json()["account"]["login"], ME, "{}", r.stdout);
+    // The report ends where the sync of `me` ended, so it is complete.
+    for kind in ["commits", "pull_requests", "issues"] {
+        assert_eq!(coverage_status(&r.json(), kind), "complete");
+    }
+    wait_for(holder).await;
+}
+
 /// Answers every line count query, with all commits known.
 async fn mount_line_counts(server: &wiremock::MockServer) {
     Mock::given(method("POST"))
