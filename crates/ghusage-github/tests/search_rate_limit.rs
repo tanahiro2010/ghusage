@@ -446,13 +446,13 @@ async fn too_many_requests_on_a_search_paces_the_searches() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn searches_queued_before_the_pacing_ends_stay_spaced_after_it() {
+    // More searches start during the wait than fit in the minute of pacing
+    // after it (one per slot), so some are still waiting when it ends.
+    const SEARCHES: usize = 45;
     let s = setup(1, Limit::First(secondary_limit)).await;
     let c = s.client.clone();
     let commits = tokio::spawn(async move { c.search_commits(LOGIN, jan1(), false).await });
     let limited_at = limited(&s).await;
-    // More searches start during the wait than fit in the minute of pacing
-    // after it (one per slot), so some are still waiting when it ends.
-    const SEARCHES: usize = 45;
     let mut searches = Vec::new();
     for _ in 0..SEARCHES {
         let c = s.client.clone();
