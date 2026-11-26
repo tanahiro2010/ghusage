@@ -8,12 +8,15 @@
 # every OS.
 #
 # A test target that is not listed here runs on every OS, so a new target is
-# platform-dependent until it is listed. List a target only when none of its
-# tests touch paths, file permissions or files on disk, processes or
-# signals, locks, the terminal, the system clock or time zones, line
-# endings, or `#[cfg(windows)]` / `#[cfg(unix)]` code. When a listed target
-# has a few tests that do, name them below the target so they keep running
-# on every OS.
+# platform-dependent until it is listed. List a target when what it checks
+# does not depend on the OS. It may still start processes, keep a cache in
+# a temporary directory or take the sync lock, as long as those OS-dependent
+# paths are checked by targets that run on every OS (for example `cli`,
+# `failure_injection`, `store` and `time_calendar`). A target whose purpose
+# is paths, file permissions, processes or signals, locks, the terminal,
+# time zones, line endings or `#[cfg(windows)]` / `#[cfg(unix)]` code is not
+# listed. When a listed target has a few tests of that kind, name them below
+# the target so they keep running on every OS.
 #
 # Format:
 #   <package> <test target>              the target is platform-independent
@@ -51,6 +54,9 @@ ghusage-app reports
 
 # Terminal UI screens rendered into an in-memory buffer.
 ghusage-tui commits
+# The cache on disk and a loader thread, as in `worker` and `background_sync`.
+ghusage-tui commits background_loader_answers_over_a_channel
+ghusage-tui commits offline_loader_reads_cached_commits_and_reports_missing_ones
 ghusage-tui details
 ghusage-tui navigation
 ghusage-tui screens
