@@ -1,5 +1,7 @@
 //! GraphQL documents. Each document contains exactly the fragments it uses.
 
+use std::fmt::Write as _;
+
 /// Page size of pull request commits, reviews, conversation comments and
 /// timeline items.
 pub(crate) const PAGE_SIZE: u32 = 100;
@@ -67,14 +69,10 @@ fn doc(body: String, fragments: &[&str]) -> String {
     s
 }
 
-pub(crate) fn pull_request() -> String {
-    doc(
-        format!(
-            "query PullRequestDetail($owner: String!, $name: String!, $number: Int!) {{
-  repository(owner: $owner, name: $name) {{
-    ...RepositoryFields
-    pullRequest(number: $number) {{
-      id number title url state isDraft createdAt updatedAt closedAt mergedAt headRefOid
+/// The fields of a pull request read by the pull request queries.
+fn pull_request_fields() -> String {
+    format!(
+        "id number title url state isDraft createdAt updatedAt closedAt mergedAt headRefOid
       additions deletions changedFiles mergeCommit {{ parents {{ totalCount }} }}
       author {{ ...ActorFields }}
       mergedBy {{ ...ActorFields }}
@@ -83,23 +81,61 @@ pub(crate) fn pull_request() -> String {
       reviews(first: {PAGE_SIZE}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ ...ReviewFields }} }}
       reviewThreads(first: {THREAD_PAGE_SIZE}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ ...ReviewThreadFields }} }}
       comments(first: {PAGE_SIZE}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ ...IssueCommentFields }} }}
-      timelineItems(first: {PAGE_SIZE}, itemTypes: {PR_TIMELINE_TYPES}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ ...PrTimelineFields }} }}
+      timelineItems(first: {PAGE_SIZE}, itemTypes: {PR_TIMELINE_TYPES}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ ...PrTimelineFields }} }}"
+    )
+}
+
+const PULL_REQUEST_FRAGMENTS: [&str; 9] = [
+    ACTOR,
+    REPOSITORY,
+    HEAD_COMMIT,
+    PR_COMMIT,
+    REVIEW_COMMENT,
+    REVIEW,
+    THREAD,
+    ISSUE_COMMENT,
+    TIMELINE,
+];
+
+pub(crate) fn pull_request() -> String {
+    let fields = pull_request_fields();
+    doc(
+        format!(
+            "query PullRequestDetail($owner: String!, $name: String!, $number: Int!) {{
+  repository(owner: $owner, name: $name) {{
+    ...RepositoryFields
+    pullRequest(number: $number) {{
+      {fields}
     }}
   }}
 }}"
         ),
-        &[
-            ACTOR,
-            REPOSITORY,
-            HEAD_COMMIT,
-            PR_COMMIT,
-            REVIEW_COMMENT,
-            REVIEW,
-            THREAD,
-            ISSUE_COMMENT,
-            TIMELINE,
-        ],
+        &PULL_REQUEST_FRAGMENTS,
     )
+}
+
+/// `count` pull requests in one query, with the same fields as
+/// [`pull_request`]: alias `r<i>` is the repository with owner `$o<i>` and
+/// name `$n<i>`, and its pull request number `$k<i>`.
+pub(crate) fn pull_requests(count: usize) -> String {
+    let fields = pull_request_fields();
+    let params: Vec<String> = (0..count)
+        .map(|i| format!("$o{i}: String!, $n{i}: String!, $k{i}: Int!"))
+        .collect();
+    let mut body = format!("query PullRequestBatch({}) {{\n", params.join(", "));
+    for i in 0..count {
+        let _ = writeln!(
+            body,
+            "  r{i}: repository(owner: $o{i}, name: $n{i}) {{
+    ...RepositoryFields
+    pullRequest(number: $k{i}) {{
+      {fields}
+    }}
+  }}"
+        );
+    }
+    body.push('}');
+    doc(body, &PULL_REQUEST_FRAGMENTS)
 }
 
 /// The follow-up page queries of a pull request's connections.
@@ -254,6 +290,7 @@ mod tests {
         };
         let mut all = vec![
             ("pull_request", pull_request()),
+            ("pull_requests", pull_requests(3)),
             ("thread_comments", thread_comments_page()),
             ("issue", issue()),
             ("issue_timeline", issue_timeline_page()),
@@ -277,6 +314,8 @@ mod tests {
     fn documents_only_contain_used_fragments() {
         let mut docs = vec![
             pull_request(),
+            pull_requests(1),
+            pull_requests(5),
             thread_comments_page(),
             issue(),
             issue_timeline_page(),
@@ -300,5 +339,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn batched_query_reads_the_same_pull_request_fields() {
+        let single = pull_request();
+        let batch = pull_requests(2);
+        let selection = |q: &str, from: &str| {
+            let start = q.find(from).unwrap() + from.len();
+            let end = start + q[start..].find("\n    }").unwrap();
+            q[start..end].to_string()
+        };
+        let fields = selection(&single, "pullRequest(number: $number) {");
+        assert_eq!(selection(&batch, "pullRequest(number: $k0) {"), fields);
+        assert_eq!(selection(&batch, "pullRequest(number: $k1) {"), fields);
+        assert!(batch.starts_with(
+            "query PullRequestBatch($o0: String!, $n0: String!, $k0: Int!, $o1: String!, $n1: String!, $k1: Int!) {"
+        ));
+        assert!(batch.contains("r1: repository(owner: $o1, name: $n1) {\n    ...RepositoryFields"));
+        assert_eq!(
+            single.split("\nfragment ").count(),
+            batch.split("\nfragment ").count()
+        );
     }
 }

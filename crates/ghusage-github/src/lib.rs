@@ -32,6 +32,10 @@ pub use auth::{AuthError, Credentials, Secret, TokenSource, gh_cli_token, resolv
 pub use line_counts::CommitRef;
 pub use url::{parse_commit_ref, parse_pr_url};
 
+/// Most pull requests [`GitHubClient::fetch_pull_requests`] asks for in one
+/// query.
+pub const PULL_REQUEST_BATCH: usize = pull_request::BATCH;
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -473,6 +477,21 @@ impl GitHubClient {
         number: u64,
     ) -> Result<PrBundle, ApiError> {
         pull_request::fetch(&self.transport, owner, name, number).await
+    }
+
+    /// Fetches pull requests (`owner`, `name`, `number`) like
+    /// [`Self::fetch_pull_request`], asking for up to
+    /// [`PULL_REQUEST_BATCH`] of them in one query. Results are in the order
+    /// of `prs`. When a batched response cannot be attributed to single pull
+    /// requests (a failed request, an error without a path, a pull request
+    /// left out without an error), the pull requests concerned are fetched
+    /// again one by one; rejected credentials and exhausted rate limits fail
+    /// all of them.
+    pub async fn fetch_pull_requests(
+        &self,
+        prs: &[(&str, &str, u64)],
+    ) -> Vec<Result<PrBundle, ApiError>> {
+        pull_request::fetch_many(&self.transport, prs).await
     }
 
     /// Fetches an issue with its open/close/reopen history (GraphQL).

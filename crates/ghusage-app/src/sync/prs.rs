@@ -114,11 +114,24 @@ async fn fetch_prs(
         done,
         total,
     });
-    let mut stream = futures::stream::iter(to_fetch.into_iter().map(|(repo, num)| async move {
-        let response = client.fetch_pull_request(&repo.owner, &repo.name, num).await;
-        (repo.owner, repo.name, num, response)
+    let concurrency = opts.concurrency.clamp(1, 16);
+    // Several pull requests per query, but not so many that fewer queries
+    // run at once than are allowed.
+    let batch = total.div_ceil(concurrency).clamp(1, PULL_REQUEST_BATCH);
+    let batches = to_fetch.chunks(batch).map(<[PrKey]>::to_vec);
+    let mut stream = futures::stream::iter(batches.map(|keys| async move {
+        let prs: Vec<(&str, &str, u64)> = keys
+            .iter()
+            .map(|(repo, num)| (repo.owner.as_str(), repo.name.as_str(), *num))
+            .collect();
+        let responses = client.fetch_pull_requests(&prs).await;
+        keys.into_iter()
+            .zip(responses)
+            .map(|((repo, num), response)| (repo.owner, repo.name, num, response))
+            .collect::<Vec<_>>()
     }))
-    .buffer_unordered(opts.concurrency.clamp(1, 16));
+    .buffer_unordered(concurrency)
+    .flat_map(futures::stream::iter);
     while let Some((o, n, num, res)) = stream.next().await {
         done += 1;
         progress(SyncProgress::Fetching {

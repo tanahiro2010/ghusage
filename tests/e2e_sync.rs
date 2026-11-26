@@ -20,6 +20,63 @@ const REPORTS: [&str; 7] = [
     "overview", "daily", "prs", "reviews", "comments", "issues", "repos",
 ];
 
+/// With fewer parallel requests than pull requests, several pull requests go
+/// in one query; what is stored is the same as fetching them one by one.
+#[tokio::test(flavor = "multi_thread")]
+async fn pull_requests_fetched_in_one_query_match_one_by_one() {
+    let world = World::base();
+    let server = serve(&world).await;
+    let one_by_one = Env::new(&server);
+    one_by_one.sync(&[]).await.expect_code(0).assert_clean();
+    let reqs = requests(&server).await;
+    assert_eq!(all_pr_detail_requests(&reqs), 3);
+    assert_eq!(pr_batch_requests(&reqs), 0);
+
+    reserve(&server, &world).await;
+    let batched = Env::new(&server);
+    let r = batched.sync(&["--jobs", "1"]).await;
+    r.expect_code(0).assert_clean();
+    assert_eq!(r.json()["status"], "complete");
+    assert_eq!(r.json()["pull_requests_fetched"], 3);
+    let reqs = requests(&server).await;
+    assert_eq!(all_pr_detail_requests(&reqs), 0);
+    assert_eq!(pr_batch_requests(&reqs), 1);
+
+    for cmd in REPORTS {
+        let a = one_by_one.offline_json(&[cmd]).await;
+        let b = batched.offline_json(&[cmd]).await;
+        a.expect_code(0);
+        b.expect_code(0);
+        assert_eq!(without_times(a.json()), without_times(b.json()), "{cmd}");
+    }
+}
+
+/// `value` without the times at which it was synced or generated.
+fn without_times(mut value: Value) -> Value {
+    fn strip(v: &mut Value) {
+        match v {
+            Value::Object(m) => {
+                m.retain(|k, _| {
+                    !matches!(
+                        k.as_str(),
+                        "generated_at"
+                            | "synced_at"
+                            | "observed_at"
+                            | "started_at"
+                            | "finished_at"
+                            | "last_sync"
+                    )
+                });
+                m.values_mut().for_each(strip);
+            }
+            Value::Array(a) => a.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    strip(&mut value);
+    value
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn initial_sync_then_offline_reports_match_the_fixture() {
     let world = World::base();
