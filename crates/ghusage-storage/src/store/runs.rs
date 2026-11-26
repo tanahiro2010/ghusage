@@ -101,6 +101,20 @@ impl Store {
         Ok(())
     }
 
+    /// Number of syncs of an account that finished (success or partial).
+    pub fn completed_sync_runs(&self, account: &str) -> Result<u64> {
+        let n: i64 = self
+            .conn
+            .query_row(
+                "SELECT count(*) FROM sync_runs s JOIN accounts a ON a.id = s.account_id \
+                 WHERE a.login = ?1 AND s.status IN ('success', 'partial')",
+                params![account],
+                |r| r.get(0),
+            )
+            .map_err(|e| classify(e.into()))?;
+        Ok(u64::try_from(n).unwrap_or_default())
+    }
+
     /// Returns the most recently started sync record for an account.
     pub fn last_sync_run(&self, account: &str) -> Result<Option<SyncRun>> {
         self.conn
