@@ -44,14 +44,20 @@ jobs:
             printf '%s\n' "$files" | sha256sum | cut -c1-40
           }
           # Assignments, so a failing digest stops the step (bash -e).
-          rust=$(digest crates src tests benches Cargo.toml Cargo.lock .cargo rust-toolchain rust-toolchain.toml .github/actions/setup-rust scripts/tui-pty-smoke.py .github/workflows/ci.yml)
-          npm=$(digest npm scripts/bench-report.mjs scripts/bench-report.test.mjs .github/scripts/pr-guidance.cjs .github/scripts/pr-guidance.test.cjs .github/scripts/perf-bench.cjs .github/scripts/perf-bench.test.cjs .github/workflows/ci.yml)
+          rust=$(digest crates src tests benches Cargo.toml Cargo.lock .cargo rust-toolchain rust-toolchain.toml .github/actions/setup-rust scripts/tui-pty-smoke.py .github/platform-independent-tests.txt .github/scripts/platform-tests.cjs .github/workflows/ci.yml)
+          npm=$(digest npm scripts/bench-report.mjs scripts/bench-report.test.mjs .github/scripts/pr-guidance.cjs .github/scripts/pr-guidance.test.cjs .github/scripts/perf-bench.cjs .github/scripts/perf-bench.test.cjs .github/scripts/platform-tests.cjs .github/scripts/platform-tests.test.cjs .github/platform-independent-tests.txt .github/workflows/ci.yml)
           echo "rust=$rust" >> "$GITHUB_OUTPUT"
           echo "npm=$npm" >> "$GITHUB_OUTPUT"
           cat "$GITHUB_OUTPUT"
 
   # Tests and the release build of each OS run as separate jobs, so the
   # slowest runners (Windows, macOS Intel) do them at the same time.
+  #
+  # FULL_OS runs every test. On pushes to `dev` and pull requests that do
+  # not target `release`, the other runners skip the test targets listed in
+  # .github/platform-independent-tests.txt, apart from the tests named there.
+  # Pull requests into `release`, pushes to `release` and the weekly run
+  # still run every test on every OS.
   test:
     name: fmt / clippy / test (${{ matrix.os }})
     needs: inputs
@@ -61,11 +67,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-latest]
     env:
-      VERIFIED_KEY: ci-verified-test-${{ matrix.os }}-${{ needs.inputs.outputs.rust }}
       # One runner covers formatting and the platform-independent 100k-event
       # checks. The benchmark workflow measures benchmark targets separately
       # in release builds.
       FULL_OS: ubuntu-latest
+      ALL_TESTS: >-
+        ${{ github.event_name == 'schedule'
+        || github.ref == 'refs/heads/release'
+        || (github.event_name == 'pull_request' && github.base_ref == 'release') }}
       # The default MSVC linker is slow to link the many test binaries.
       CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld.exe
     steps:
@@ -73,57 +82,84 @@ jobs:
         with:
           # The build must never depend on private submodules.
           submodules: false
+      # A run of every test also covers a later run of the platform-dependent
+      # ones, but not the other way round.
+      - id: scope
+        name: Choose the tests to run
+        shell: bash
+        env:
+          OS: ${{ matrix.os }}
+          INPUTS: ${{ needs.inputs.outputs.rust }}
+        run: |
+          if [ "$OS" = "$FULL_OS" ] || [ "$ALL_TESTS" = true ]; then scope=all; else scope=platform; fi
+          {
+            echo "scope=$scope"
+            echo "key=ci-verified-test-$OS-$scope-$INPUTS"
+            echo "all-key=ci-verified-test-$OS-all-$INPUTS"
+          } >> "$GITHUB_OUTPUT"
+          echo "Running $scope tests on $OS."
       - id: verified
         name: Look for an earlier successful run with the same inputs
         uses: actions/cache/restore@v6
         with:
           path: .ci-verified
-          key: ${{ env.VERIFIED_KEY }}
+          key: ${{ steps.scope.outputs.key }}
+          restore-keys: ${{ steps.scope.outputs.all-key }}
           lookup-only: true
-      - if: steps.verified.outputs.cache-hit == 'true'
-        run: echo "Inputs ${{ needs.inputs.outputs.rust }} already passed on ${{ matrix.os }}; skipping."
+      - if: steps.verified.outputs.cache-matched-key != ''
+        run: echo "Inputs ${{ needs.inputs.outputs.rust }} already passed on ${{ matrix.os }} (${{ steps.verified.outputs.cache-matched-key }}); skipping."
       # Pinned so lint results are reproducible; upgraded deliberately.
       # Formatting and Clippy are platform-independent, so install their
       # components only on the full Linux runner. Other runners only need
       # the compiler for their platform-specific tests.
-      - if: steps.verified.outputs.cache-hit != 'true' && matrix.os == env.FULL_OS
+      - if: steps.verified.outputs.cache-matched-key == '' && matrix.os == env.FULL_OS
         uses: ./.github/actions/setup-rust
         with:
           components: rustfmt, clippy
-      - if: steps.verified.outputs.cache-hit != 'true' && matrix.os != env.FULL_OS
+      - if: steps.verified.outputs.cache-matched-key == '' && matrix.os != env.FULL_OS
         uses: ./.github/actions/setup-rust
-      - if: steps.verified.outputs.cache-hit != 'true'
+      - if: steps.verified.outputs.cache-matched-key == ''
         uses: Swatinem/rust-cache@v2.9.3
         with:
           # Keep compiled dependencies even when a test fails.
           cache-on-failure: true
-      - if: steps.verified.outputs.cache-hit != 'true' && matrix.os == env.FULL_OS
+      - if: steps.verified.outputs.cache-matched-key == '' && matrix.os == env.FULL_OS
         run: cargo fmt --all -- --check
       # Clippy is covered once on FULL_OS; repeating it on every OS only
       # duplicates a platform-independent compile and lint pass.
-      - if: steps.verified.outputs.cache-hit != 'true' && matrix.os == env.FULL_OS
+      - if: steps.verified.outputs.cache-matched-key == '' && matrix.os == env.FULL_OS
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - if: steps.verified.outputs.cache-hit != 'true' && matrix.os == env.FULL_OS
+      - if: steps.verified.outputs.cache-matched-key == '' && matrix.os == env.FULL_OS
         name: cargo test (workspace tests)
         # Bench targets run in bench.yml with release optimizations. Keeping
         # CI focused on test targets avoids rebuilding and executing the same
         # benchmark binaries here while preserving the full test suite.
         run: cargo test --workspace --lib --bins --tests --no-fail-fast
-      - if: steps.verified.outputs.cache-hit != 'true' && matrix.os != env.FULL_OS
+      - if: steps.verified.outputs.cache-matched-key == '' && matrix.os == env.FULL_OS
+        name: Check the list of platform-independent tests
+        run: node .github/scripts/platform-tests.cjs check
+      - if: >-
+          steps.verified.outputs.cache-matched-key == '' && matrix.os != env.FULL_OS
+          && steps.scope.outputs.scope == 'all'
         name: cargo test (without the platform-independent 100k-event checks)
         run: >-
           cargo test --workspace --lib --bins --tests --no-fail-fast
           -- --skip first_render_and_interaction_latency_on_100k_events
+      - if: >-
+          steps.verified.outputs.cache-matched-key == '' && matrix.os != env.FULL_OS
+          && steps.scope.outputs.scope == 'platform'
+        name: cargo test (platform-dependent tests)
+        run: node .github/scripts/platform-tests.cjs run
       # Reached only when every step above passed.
       - name: Remember that these inputs passed
-        if: steps.verified.outputs.cache-hit != 'true'
+        if: steps.verified.outputs.cache-matched-key == ''
         shell: bash
         run: echo "${{ needs.inputs.outputs.rust }}" > .ci-verified
-      - if: steps.verified.outputs.cache-hit != 'true'
+      - if: steps.verified.outputs.cache-matched-key == ''
         uses: actions/cache/save@v6
         with:
           path: .ci-verified
-          key: ${{ env.VERIFIED_KEY }}
+          key: ${{ steps.scope.outputs.key }}
 
   # The release build of every platform is checked where it matters: pull
   # requests into `release` (required checks there) and pushes to it. Pushes
@@ -243,6 +279,9 @@ jobs:
       - name: Benchmark request script tests
         if: steps.verified.outputs.cache-hit != 'true'
         run: node --test .github/scripts/perf-bench.test.cjs
+      - name: Platform test selection script tests
+        if: steps.verified.outputs.cache-hit != 'true'
+        run: node --test .github/scripts/platform-tests.test.cjs
       - name: Remember that these inputs passed
         if: steps.verified.outputs.cache-hit != 'true'
         shell: bash
