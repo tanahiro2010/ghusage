@@ -50,6 +50,12 @@ impl Range {
     }
 
     /// Every second from `since` on, split at the current time first.
+    ///
+    /// The split point comes from the system clock, not from the time a
+    /// caller treats as "now" (such as the start of a sync): it only decides
+    /// where a range with too many results is cut, and the range stays
+    /// open either way, so nothing is missed. When `since` is later than the
+    /// system clock, the range is one second wide and cannot be split.
     fn since(since: Timestamp) -> Self {
         let lo = since.as_second();
         Self {

@@ -1,8 +1,7 @@
 /// Finds issues updated in `ranges` and fetches the changed ones. Like
 /// pull requests, each range is searched from its start with no upper
-/// bound (see [`search_prs`]). The
-/// repositories of the issues found are sent to `issue_repos` as soon as
-/// every range was searched.
+/// bound (see [`search_prs`]). The repositories of the issues found are
+/// sent to `issue_repos` as soon as every range was searched.
 async fn sync_issues(
     sh: &Shared<'_, '_, '_>,
     ranges: &[Period],
