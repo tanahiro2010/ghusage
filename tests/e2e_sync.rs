@@ -2305,8 +2305,10 @@ fn nth_search(reqs: &[wiremock::Request], endpoint: &str, query: &str, n: usize)
                 .any(|(k, v)| k == "q" && v.contains(query))
         })
         .nth(n)
-        .map(|(i, _)| i)
-        .unwrap_or_else(|| panic!("no request {n} to {endpoint} for {query}"))
+        .map_or_else(
+            || panic!("no request {n} to {endpoint} for {query}"),
+            |(i, _)| i,
+        )
 }
 
 /// The sync report without times and request statistics, with coverage in
