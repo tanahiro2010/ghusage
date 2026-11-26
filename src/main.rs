@@ -398,8 +398,15 @@ async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<
                 }
             }
             Err(e @ (AppError::AuthRejected(_) | AppError::Auth(_))) => return Err(e),
-            // The account could not be confirmed: its cache must not be shown.
-            Err(e) if s.is_unconfirmed() => return Err(e),
+            // The sync failed before the account was checked (for example
+            // another sync holds the lock): check it now, then show the
+            // cache as for any failed sync. A failed check fails the report.
+            Err(e) if s.is_unconfirmed() => {
+                s.confirm_subject().await?;
+                if s.offline_state().reason.is_none() {
+                    eprintln!("warning: sync failed, showing cached data: {}", clean(&e));
+                }
+            }
             // GitHub turned out to be unreachable; reported below.
             Err(_) if s.offline_state().reason.is_some() => {}
             Err(e) => {

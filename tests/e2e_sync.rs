@@ -1985,3 +1985,63 @@ async fn a_failed_identity_check_shows_no_cache_of_the_remembered_account() {
     r.expect_code(4);
     assert!(r.stdout.is_empty(), "{}", r.stdout);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_report_during_another_sync_still_shows_the_cache() {
+    let world = World::base();
+    let server = serve(&world).await;
+    let env = Env::new(&server);
+    env.sync(&[]).await.expect_code(0);
+    // Keep the first sync, and its lock, busy on one pull request.
+    pr_detail_mock(
+        "acme",
+        "widget",
+        20,
+        ResponseTemplate::new(200)
+            .set_body_json(world.pr_body(&world.prs[2]))
+            .set_delay(std::time::Duration::from_secs(4)),
+        1,
+    )
+    .mount(&server)
+    .await;
+    let searches = |reqs: &[wiremock::Request]| {
+        reqs.iter()
+            .filter(|r| r.url.path() == "/search/commits")
+            .count()
+    };
+    let before = searches(&requests(&server).await);
+    let first = env
+        .command(&["sync", "--since", SINCE, "--until", UNTIL, "--full"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    assert!(
+        wait_until(std::time::Duration::from_secs(10), || async {
+            searches(&requests(&server).await) > before
+        })
+        .await
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    // A period that needs a sync: the lock is taken, so the report warns and
+    // shows the cache of the confirmed account.
+    let r = env
+        .run(&[
+            "overview",
+            "--since",
+            SINCE,
+            "--until",
+            "2024-03-12",
+            "--format",
+            "json",
+        ])
+        .await;
+    r.expect_code(0);
+    assert!(r.stderr.contains("already running"), "{}", r.stderr);
+    assert!(r.stderr.contains("showing cached data"), "{}", r.stderr);
+    assert!(r.json()["metrics"].is_object());
+    let mut first = first;
+    tokio::task::spawn_blocking(move || first.wait().unwrap())
+        .await
+        .unwrap();
+}
