@@ -367,3 +367,63 @@ async fn pacing_ends_a_minute_after_the_wait() {
     assert_eq!(later.len(), 6);
     assert!(spread(&later) < SPACING * 4, "{later:?}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn searches_dropped_while_waiting_do_not_hold_later_ones() {
+    let s = setup(1, Limit::First(secondary_limit)).await;
+    let c = s.client.clone();
+    let commits = tokio::spawn(async move { c.search_commits(LOGIN, jan1(), false).await });
+    let limited_at = loop {
+        if let Some(a) = s.arrivals().first() {
+            break a.at;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    };
+    // Twenty searches start during the wait and are dropped before it ends
+    // (as when another page of the same search fails).
+    let mut dropped = Vec::new();
+    for _ in 0..20 {
+        let c = s.client.clone();
+        dropped.push(tokio::spawn(async move {
+            c.search_issues(
+                &format!("involves:{LOGIN}"),
+                IssueKind::PullRequest,
+                jan1(),
+                false,
+            )
+            .await
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    for task in &dropped {
+        task.abort();
+    }
+    for task in dropped {
+        assert!(task.await.unwrap_err().is_cancelled());
+    }
+    assert_eq!(commits.await.unwrap().unwrap().items.len(), 1);
+    // While searches are still paced, a new search waits at most a slot or
+    // so, not behind the dropped ones.
+    tokio::time::sleep_until((limited_at + MINUTE + Duration::from_millis(300)).into()).await;
+    let started = Instant::now();
+    s.client
+        .search_issues(
+            &format!("involves:{LOGIN}"),
+            IssueKind::PullRequest,
+            jan1(),
+            false,
+        )
+        .await
+        .unwrap();
+    let issues: Vec<_> = s
+        .arrivals()
+        .into_iter()
+        .filter(|a| a.path == "/search/issues")
+        .collect();
+    assert_eq!(issues.len(), 1, "a dropped search was sent: {issues:?}");
+    assert!(
+        issues[0].at - started < SPACING * 2,
+        "held for {:?} by dropped searches",
+        issues[0].at - started
+    );
+}

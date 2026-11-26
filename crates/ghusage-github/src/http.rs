@@ -151,12 +151,16 @@ pub(crate) fn graphql_operation(query: &str) -> Option<&str> {
 /// Searches share one limit, so when one is limited, the others would be
 /// too. Every search, including the retries of the limited ones and the
 /// ones started later, waits until the end of the longest wait GitHub asked
-/// for. After that the searches are sent one at a time, one slot apart, for
-/// as long as `recover_until`: the limited requests and the ones that piled
-/// up during the wait would otherwise all go out at the same moment and be
-/// limited again. Requests that are not searches never pass through here,
-/// and while no search was limited the gate lets every search through at
-/// once.
+/// for. After that the searches are sent one at a time, at least `spacing`
+/// apart, until `recover_until`: the limited requests and the ones that
+/// piled up during the wait would otherwise all go out at the same moment
+/// and be limited again. A search that started waiting before
+/// `recover_until` keeps to the spacing after it too. Requests that are not
+/// searches never pass through here, and while no search was limited the
+/// gate lets every search through at once.
+///
+/// A search takes its turn only when it is sent, so a search dropped while
+/// waiting leaves nothing behind.
 #[derive(Default)]
 struct SearchGate {
     state: Mutex<GateState>,
@@ -168,11 +172,8 @@ struct GateState {
     paused_until: Option<Instant>,
     /// Searches are paced until this (never before `paused_until`).
     recover_until: Option<Instant>,
-    /// The next free slot while searches are paced.
-    next_slot: Option<Instant>,
-    /// Changes whenever a wait starts, so the slots taken before it are
-    /// taken again after it.
-    epoch: u64,
+    /// When the last paced search was sent.
+    last_sent: Option<Instant>,
 }
 
 impl SearchGate {
@@ -181,45 +182,45 @@ impl SearchGate {
     }
 
     /// Holds every search for at least `delay` from now, then paces them
-    /// `spacing` apart for `pacing` after the wait. Returns how long the
-    /// searches are held from now.
+    /// for `pacing` after the wait. Returns how long the searches are held
+    /// from now.
     fn pause(&self, delay: Duration, pacing: Duration) -> Duration {
         let now = Instant::now();
         let mut s = self.state();
         let until = s.paused_until.map_or(now + delay, |p| p.max(now + delay));
         s.paused_until = Some(until);
         s.recover_until = Some(until + pacing);
-        s.next_slot = Some(until);
-        s.epoch = s.epoch.wrapping_add(1);
         drop(s);
         until - now
     }
 
-    /// Waits until a search may be sent. Returns how long it waited.
+    /// Waits until a search may be sent, at least `spacing` after the
+    /// previous paced one. Returns how long it waited.
     async fn wait(&self, spacing: Duration) -> Duration {
         let start = Instant::now();
+        let mut paced = false;
         loop {
-            let (slot, epoch) = {
+            let next = {
                 let mut s = self.state();
                 let now = Instant::now();
-                if s.recover_until.is_none_or(|t| t <= now) {
+                paced |= s.recover_until.is_some_and(|t| t > now);
+                if !paced {
                     return start.elapsed();
                 }
-                let slot = [s.paused_until, s.next_slot]
+                let next = [s.paused_until, s.last_sent.map(|t| t + spacing)]
                     .into_iter()
                     .flatten()
                     .fold(now, Instant::max);
-                s.next_slot = Some(slot + spacing);
-                if slot <= now {
+                if next <= now {
+                    s.last_sent = Some(now);
                     return start.elapsed();
                 }
-                (slot, s.epoch)
+                drop(s);
+                next
             };
-            tokio::time::sleep_until(slot.into()).await;
-            // A wait that started meanwhile invalidates the slot.
-            if self.state().epoch == epoch {
-                return start.elapsed();
-            }
+            // Another search may take this turn first; then wait for the
+            // next one.
+            tokio::time::sleep_until(next.into()).await;
         }
     }
 }
