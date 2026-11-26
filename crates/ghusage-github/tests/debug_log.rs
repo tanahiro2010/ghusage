@@ -63,7 +63,7 @@ impl Respond for Sequence {
     }
 }
 
-fn sequence(responses: Vec<ResponseTemplate>) -> Sequence {
+const fn sequence(responses: Vec<ResponseTemplate>) -> Sequence {
     Sequence {
         calls: std::sync::atomic::AtomicUsize::new(0),
         responses,
