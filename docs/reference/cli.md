@@ -317,7 +317,7 @@ error: the argument '--offline' cannot be used with '--no-cache'
 | `CI` | When set (to anything but empty, `false` or `0`), every sync also fetches line counts, as on the first sync of an account; `--no-diff-stats` turns this off |
 | `GHUSAGE_API_URL` | REST API base URL, for GitHub Enterprise Server (default `https://api.github.com`). Also moves the GraphQL endpoint: `https://HOST/api/graphql` when the URL ends in `/api/v3`, otherwise `<GHUSAGE_API_URL>/graphql` |
 | `GHUSAGE_GRAPHQL_URL` | GraphQL endpoint URL (overrides the one derived from `GHUSAGE_API_URL`) |
-| `GHUSAGE_LOG` | Log filter for diagnostics on stderr, in `tracing` filter syntax, e.g. `debug` or `ghusage_github=debug` (default `warn`) |
+| `GHUSAGE_LOG` | Log filter for diagnostics on stderr, in `tracing` filter syntax, e.g. `debug` or `ghusage_github=debug` (default `warn`). At debug level, GitHub requests are logged with the GraphQL operation name and, when rate-limited, the rate-limit headers and error message; never the token |
 | `TZ` | Default time zone when `--timezone` is not given (an IANA name such as `Europe/Berlin`) |
 | `NO_COLOR` | Disable colors when set to a non-empty value |
 

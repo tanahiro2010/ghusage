@@ -378,3 +378,10 @@ deleting a repository that was already in the account's cache.
   Secondary rate limits and `Retry-After` are honored.
 - `GHUSAGE_LOG=debug` (or any `tracing` filter such as
   `ghusage_github=debug`) prints diagnostic logs to stderr.
+  At the debug level each GitHub request is logged with its method, path,
+  GraphQL operation name, status, duration and size. A rate-limited response
+  (403/429) and its retry also show the `x-ratelimit-*` and `Retry-After`
+  headers, a shortened error message and which limit is waited for
+  (`primary`, `secondary`, `retry-after` or `too-many-requests`). The token
+  and GraphQL variables are never logged, but request paths contain
+  repository names, so review a log before sharing it.
