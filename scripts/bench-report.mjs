@@ -93,6 +93,33 @@ export function verdict(pct, threshold) {
   return "≈";
 }
 
+/** The Criterion benchmark that measures the same work as a latency scenario, if any. */
+export function criterionTwin(scenario) {
+  let m;
+  if ((m = /^100k event aggregation \((.+), 1 year\)$/.exec(scenario))) return `aggregate 100k events (${m[1]}, 1 year)`;
+  if ((m = /^cached (\d+)-day database load$/.exec(scenario))) return `load 100k event dataset (${m[1]} days)`;
+  if ((m = /^cached pull request detail load \((.+)\)$/.exec(scenario))) return `load pull request detail (${m[1]})`;
+  if (/^cached \d+-day aggregation \(load \+ overview\)$/.test(scenario)) return scenario;
+  return null;
+}
+
+/**
+ * Marks a latency scenario only when p95, p50 and the Criterion median (when
+ * the scenario has one) all moved past the threshold in the same direction.
+ * The latency bench repeats each scenario a few dozen times, so its p95 rests
+ * on the slowest few runs and, on shared runners, swings by up to about 30%
+ * between runs of unchanged code; p50 and Criterion's median are steadier.
+ * A scenario without a Criterion counterpart is confirmed by p50 alone.
+ */
+export function latencyVerdict(p95, p50, median, threshold) {
+  const mark = verdict(p95, threshold);
+  if (mark === "" || mark === "≈") return mark;
+  const agrees = (pct) => verdict(pct, threshold) === mark;
+  if (!agrees(p50)) return "≈";
+  if (median != null && !agrees(median)) return "≈";
+  return mark;
+}
+
 function formatPct(pct) {
   if (pct === null) return "–";
   return `${pct > 0 ? "+" : ""}${pct.toFixed(1)}%`;
@@ -147,20 +174,28 @@ export function buildReport(opts) {
   const lh = opts.latencyHead ?? new Map();
   const names = [...new Set([...lb.keys(), ...lh.keys()])];
   if (names.length) {
-    lines.push("### Latency percentiles (p95)", "");
-    lines.push("| Scenario | Base p95 | PR p95 | Change | PR target | |", "|---|---:|---:|---:|---|---|");
+    lines.push("### Latency percentiles (p50, p95)", "");
+    lines.push(
+      "| Scenario | Base p50 | PR p50 | Change | Base p95 | PR p95 | Change | PR target | |",
+      "|---|---:|---:|---:|---:|---:|---:|---|---|",
+    );
     for (const name of names) {
       const b = lb.get(name);
       const h = lh.get(name);
-      const pct = change(b?.p95, h?.p95);
-      let mark = verdict(pct, threshold);
+      const p50 = change(b?.p50, h?.p50);
+      const p95 = change(b?.p95, h?.p95);
+      const twin = criterionTwin(name);
+      const median = twin && base.has(twin) && head.has(twin) ? change(base.get(twin).ns, head.get(twin).ns) : undefined;
+      let mark = latencyVerdict(p95, p50, median, threshold);
       if (!b) mark = "new";
       if (!h) mark = "removed";
       if (mark.includes("slower")) regressions++;
       if (mark.includes("faster")) improvements++;
       const ms = (v) => (Number.isFinite(v) ? `${v.toFixed(1)} ms` : "–");
       const target = h ? `≤ ${h.target} ms ${h.pass ? "pass" : ":x: **fail**"}` : "–";
-      lines.push(`| ${cell(name)} | ${ms(b?.p95)} | ${ms(h?.p95)} | ${formatPct(pct)} | ${target} | ${mark} |`);
+      lines.push(
+        `| ${cell(name)} | ${ms(b?.p50)} | ${ms(h?.p50)} | ${formatPct(p50)} | ${ms(b?.p95)} | ${ms(h?.p95)} | ${formatPct(p95)} | ${target} | ${mark} |`,
+      );
     }
     lines.push("");
   }
@@ -171,6 +206,9 @@ export function buildReport(opts) {
     `> [!NOTE]`,
     `> Shared CI runners are noisy: differences of a few percent, and occasionally more, can be measurement noise. ` +
       `The base is measured first and the PR right after on the same machine; re-run the workflow or benchmark locally before acting on a single result.`,
+    `>`,
+    `> A latency p95 change is marked only when p50 and the scenario's Criterion median (if it has one) also moved by more than ${threshold}% in the same direction. ` +
+      `On its own, p95 can move by up to about 30% between runs of unchanged code.`,
     "",
   );
   return lines.join("\n");

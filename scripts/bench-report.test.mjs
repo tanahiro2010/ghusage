@@ -4,7 +4,17 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { buildReport, change, formatNs, main, parseLatency, readCriterion, verdict } from "./bench-report.mjs";
+import {
+  buildReport,
+  change,
+  criterionTwin,
+  formatNs,
+  latencyVerdict,
+  main,
+  parseLatency,
+  readCriterion,
+  verdict,
+} from "./bench-report.mjs";
 
 function writeBaseline(root, dir, baseline, id, medianNs) {
   const d = path.join(root, dir, baseline);
@@ -128,8 +138,8 @@ test("includes latency percentiles and escapes table syntax in names", () => {
     runner: "r",
   });
   assert.match(md, /\| a\\\|b \\<x\\> \|/);
-  assert.match(md, /\| cached 7-day aggregation \(load \+ overview\) \| 40\.0 ms \| 250\.0 ms \| \+525\.0% \| ≤ 200 ms :x: \*\*fail\*\* \| :red_circle: slower \|/);
-  assert.match(md, /\| 100k event aggregation \(overview, 1 year\) \| 90\.0 ms \| 91\.0 ms \| \+1\.1% \| ≤ 1000 ms pass \| ≈ \|/);
+  assert.match(md, /\| cached 7-day aggregation \(load \+ overview\) \| 30\.0 ms \| 230\.0 ms \| \+666\.7% \| 40\.0 ms \| 250\.0 ms \| \+525\.0% \| ≤ 200 ms :x: \*\*fail\*\* \| :red_circle: slower \|/);
+  assert.match(md, /\| 100k event aggregation \(overview, 1 year\) \| 80\.0 ms \| 81\.0 ms \| \+1\.3% \| 90\.0 ms \| 91\.0 ms \| \+1\.1% \| ≤ 1000 ms pass \| ≈ \|/);
   assert.match(md, /more than 5%/);
 });
 
@@ -139,6 +149,117 @@ test("marks latency scenarios that exist on only one side", () => {
     latencyHead: parseLatency(LATENCY_HEAD.split("\n")[1]),
     runner: "r",
   });
-  assert.match(md, /\| 100k event aggregation \(overview, 1 year\) \| 90\.0 ms \| – \| – \| – \| removed \|/);
+  assert.match(md, /\| 100k event aggregation \(overview, 1 year\) \| 80\.0 ms \| – \| – \| 90\.0 ms \| – \| – \| – \| removed \|/);
   assert.match(md, /No Criterion results were found/);
+});
+
+// Latency lines for the `latency` bench, one per scenario.
+function latencyLines(rows) {
+  return rows
+    .map(([name, p50, p95]) => `${name}: p50 ${p50} ms, p95 ${p95} ms, max ${p95 + 1} ms (target p95 <= 1000 ms) PASS`)
+    .join("\n");
+}
+
+test("does not mark a p95 change when the median stays put", () => {
+  // Measured on a shared runner for a change that did not touch aggregation:
+  // p95 moved by up to a third while p50 and the Criterion median stayed within a few percent.
+  const md = buildReport({
+    criterionBase: new Map([
+      ["aggregate 100k events (weekly, 1 year)", { ns: 92.52e6 }],
+      ["load pull request detail (PR_0)", { ns: 258.36e3 }],
+    ]),
+    criterionHead: new Map([
+      ["aggregate 100k events (weekly, 1 year)", { ns: 91.32e6 }],
+      ["load pull request detail (PR_0)", { ns: 260.36e3 }],
+    ]),
+    latencyBase: parseLatency(
+      latencyLines([
+        ["100k event aggregation (weekly, 1 year)", 84.0, 93.3],
+        ["cached pull request detail load (PR_0)", 0.3, 0.3],
+        ["cached 7-day report aggregation (preloaded)", 1.9, 2.1],
+      ]),
+    ),
+    latencyHead: parseLatency(
+      latencyLines([
+        ["100k event aggregation (weekly, 1 year)", 91.3, 109.1],
+        ["cached pull request detail load (PR_0)", 0.3, 0.2],
+        ["cached 7-day report aggregation (preloaded)", 2.0, 2.5],
+      ]),
+    ),
+    runner: "r",
+  });
+  assert.match(md, /\| 100k event aggregation \(weekly, 1 year\) \| 84\.0 ms \| 91\.3 ms \| \+8\.7% \| 93\.3 ms \| 109\.1 ms \| \+16\.9% \| ≤ 1000 ms pass \| ≈ \|/);
+  assert.match(md, /\| cached pull request detail load \(PR\\_0\) \|.*\| -33\.3% \| ≤ 1000 ms pass \| ≈ \|/);
+  assert.match(md, /\| cached 7-day report aggregation \(preloaded\) \|.*\| \+19\.0% \| ≤ 1000 ms pass \| ≈ \|/);
+  assert.match(md, /\*\*0\*\* slower and \*\*0\*\* faster/);
+});
+
+test("does not mark a p95 change when p50 moves but the Criterion median does not", () => {
+  const md = buildReport({
+    criterionBase: new Map([["cached 7-day aggregation (load + overview)", { ns: 160e6 }]]),
+    criterionHead: new Map([["cached 7-day aggregation (load + overview)", { ns: 161e6 }]]),
+    latencyBase: parseLatency(latencyLines([["cached 7-day aggregation (load + overview)", 180.0, 200.0]])),
+    latencyHead: parseLatency(latencyLines([["cached 7-day aggregation (load + overview)", 150.0, 165.4]])),
+    runner: "r",
+  });
+  assert.match(md, /\| cached 7-day aggregation \(load \+ overview\) \|.*\| -17\.3% \| ≤ 1000 ms pass \| ≈ \|/);
+  assert.match(md, /\*\*0\*\* slower and \*\*0\*\* faster/);
+});
+
+test("marks a real regression where the median moves with p95", () => {
+  const md = buildReport({
+    criterionBase: new Map([
+      ["aggregate 100k events (daily, 1 year)", { ns: 90e6 }],
+      ["load 100k event dataset (30 days)", { ns: 240e6 }],
+    ]),
+    criterionHead: new Map([
+      ["aggregate 100k events (daily, 1 year)", { ns: 112.5e6 }],
+      ["load 100k event dataset (30 days)", { ns: 120e6 }],
+    ]),
+    latencyBase: parseLatency(
+      latencyLines([
+        ["100k event aggregation (daily, 1 year)", 90.0, 100.0],
+        ["cached 30-day database load", 240.0, 250.0],
+        ["cached 30-day report aggregation (preloaded)", 8.0, 10.0],
+      ]),
+    ),
+    latencyHead: parseLatency(
+      latencyLines([
+        ["100k event aggregation (daily, 1 year)", 112.0, 125.0],
+        ["cached 30-day database load", 121.0, 125.0],
+        // No Criterion counterpart: p50 alone confirms the change.
+        ["cached 30-day report aggregation (preloaded)", 10.4, 13.0],
+      ]),
+    ),
+    runner: "r",
+  });
+  assert.match(md, /\| 100k event aggregation \(daily, 1 year\) \|.*\| \+25\.0% \| ≤ 1000 ms pass \| :red_circle: slower \|/);
+  assert.match(md, /\| cached 30-day database load \|.*\| -50\.0% \| ≤ 1000 ms pass \| :green_circle: faster \|/);
+  assert.match(md, /\| cached 30-day report aggregation \(preloaded\) \|.*\| \+30\.0% \| ≤ 1000 ms pass \| :red_circle: slower \|/);
+  // Criterion: one slower, one faster; latency: two slower, one faster.
+  assert.match(md, /\*\*3\*\* slower and \*\*2\*\* faster/);
+});
+
+test("explains how latency changes are marked", () => {
+  const md = buildReport({
+    latencyBase: parseLatency(LATENCY_BASE),
+    latencyHead: parseLatency(LATENCY_HEAD),
+    runner: "r",
+  });
+  assert.match(md, /### Latency percentiles \(p50, p95\)/);
+  assert.match(md, /p95 change is marked only when p50.*same direction/);
+});
+
+test("pairs latency scenarios with the Criterion benchmark of the same work", () => {
+  assert.equal(criterionTwin("100k event aggregation (monthly, 1 year)"), "aggregate 100k events (monthly, 1 year)");
+  assert.equal(criterionTwin("cached 30-day database load"), "load 100k event dataset (30 days)");
+  assert.equal(criterionTwin("cached pull request detail load (PR_0)"), "load pull request detail (PR_0)");
+  assert.equal(criterionTwin("cached 7-day aggregation (load + overview)"), "cached 7-day aggregation (load + overview)");
+  assert.equal(criterionTwin("cached 7-day report aggregation (preloaded)"), null);
+  assert.equal(latencyVerdict(15, 12, undefined, 10), ":red_circle: slower");
+  assert.equal(latencyVerdict(15, 12, 2, 10), "≈");
+  assert.equal(latencyVerdict(15, 5, 12, 10), "≈");
+  assert.equal(latencyVerdict(-15, -12, -11, 10), ":green_circle: faster");
+  assert.equal(latencyVerdict(5, 30, 30, 10), "≈");
+  assert.equal(latencyVerdict(null, null, undefined, 10), "");
 });
