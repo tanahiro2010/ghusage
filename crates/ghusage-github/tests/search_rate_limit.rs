@@ -235,6 +235,15 @@ async fn pages_limited_together_wait_once_and_come_back_one_at_a_time() {
     drop(s.server);
 }
 
+/// Waits until the client has seen the first (limited) response and
+/// started its wait. Returns when the server sent that response.
+async fn limited(s: &Setup) -> Instant {
+    while s.client.stats().rate_limit_waits == 0 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    s.arrivals()[0].at
+}
+
 /// Starts a commit search that the server limits with `response`, then,
 /// while it waits, an issue search and a request that is not a search.
 /// Returns the time of the limited response and when the issue search and
@@ -245,12 +254,7 @@ async fn search_started_during_a_wait(
     let s = setup(1, Limit::First(response)).await;
     let c = s.client.clone();
     let commits = tokio::spawn(async move { c.search_commits(LOGIN, jan1(), false).await });
-    let limited_at = loop {
-        if let Some(a) = s.arrivals().first() {
-            break a.at;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    };
+    let limited_at = limited(&s).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     let c = s.client.clone();
     let issues = tokio::spawn(async move {
@@ -373,12 +377,7 @@ async fn searches_dropped_while_waiting_do_not_hold_later_ones() {
     let s = setup(1, Limit::First(secondary_limit)).await;
     let c = s.client.clone();
     let commits = tokio::spawn(async move { c.search_commits(LOGIN, jan1(), false).await });
-    let limited_at = loop {
-        if let Some(a) = s.arrivals().first() {
-            break a.at;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    };
+    let limited_at = limited(&s).await;
     // Twenty searches start during the wait and are dropped before it ends
     // (as when another page of the same search fails).
     let mut dropped = Vec::new();
