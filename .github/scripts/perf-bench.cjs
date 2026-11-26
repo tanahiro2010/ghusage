@@ -106,9 +106,10 @@ async function gate({ github, context }) {
 // After the benchmark job: post the report and say how the run ended.
 // `outcome` is the benchmark job's result. A cancelled run was replaced by a
 // newer request, which owns the comments now, so it leaves them alone.
-async function finish({ github, context, number, headSha, report, outcome }) {
+async function finish({ github, context, number, headSha, report, outcome, succeeded: legacy }) {
   if (outcome === "cancelled") return "superseded";
-  const succeeded = outcome === "success";
+  // Runs started by the previous workflow pass `succeeded` instead.
+  const succeeded = outcome === undefined ? legacy === true : outcome === "success";
   const { owner, repo } = context.repo;
   const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
   const short = headSha.slice(0, 7);
