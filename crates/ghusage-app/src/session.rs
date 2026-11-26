@@ -11,7 +11,7 @@ use ghusage_core::coverage::{self, DataKind};
 use ghusage_core::metrics::Dataset;
 use ghusage_core::model::{Subject, Visibility};
 use ghusage_core::time::Period;
-use ghusage_github::{ClientConfig, Credentials, GitHubClient, TokenSource};
+use ghusage_github::{ApiStats, ClientConfig, Credentials, GitHubClient, TokenSource};
 use ghusage_storage::{Store, SyncLock};
 use jiff::Timestamp;
 
@@ -143,17 +143,6 @@ impl ApiActivity {
             done: snapshot.done,
         }
     }
-}
-
-/// API request counters accumulated by a session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ApiStats {
-    /// Number of requests sent.
-    pub requests: u64,
-    /// Number of retries.
-    pub retries: u64,
-    /// Total API request time in milliseconds.
-    pub total_api_time_ms: u64,
 }
 
 /// Result of loading or refreshing a pull request.
@@ -431,21 +420,9 @@ impl Session {
 
     /// Returns cumulative API request statistics.
     pub fn api_stats(&self) -> ApiStats {
-        self.client.as_ref().map_or(
-            ApiStats {
-                requests: 0,
-                retries: 0,
-                total_api_time_ms: 0,
-            },
-            |client| {
-                let stats = client.stats();
-                ApiStats {
-                    requests: stats.requests,
-                    retries: stats.retries,
-                    total_api_time_ms: stats.total_api_time_ms,
-                }
-            },
-        )
+        self.client
+            .as_ref()
+            .map_or_else(ApiStats::default, GitHubClient::stats)
     }
 
     /// Fetches current GitHub API rate-limit information when online.

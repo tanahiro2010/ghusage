@@ -9,6 +9,9 @@ pub(crate) const PAGE_SIZE: u32 = 100;
 pub(crate) const THREAD_PAGE_SIZE: u32 = 50;
 /// Page size of comments inside a review thread.
 pub(crate) const THREAD_COMMENT_PAGE_SIZE: u32 = 50;
+/// Asks GitHub for the rate-limit points the query used; summed in
+/// [`crate::ApiStats::graphql_points`]. Reading it costs nothing.
+pub(crate) const COST: &str = "rateLimit { cost }";
 
 const ACTOR: &str = "fragment ActorFields on Actor { __typename login ... on Node { id } }";
 
@@ -17,21 +20,23 @@ const REPOSITORY: &str = "fragment RepositoryFields on Repository { id name url 
 const PR_COMMIT: &str = "fragment PrCommitFields on PullRequestCommit { url commit { oid messageHeadline committedDate authoredDate url additions deletions parents { totalCount } author { user { id login } } committer { user { id login } } } }";
 
 /// The head commit's latest CI rollup, whether it has any commit statuses,
-/// and its check runs: up to 100 suites with up to 100 runs each (a head
-/// commit with more falls back to the REST checks endpoint). `ALL` returns
+/// and its check runs: up to 40 suites with up to 100 runs each (a head
+/// commit with more falls back to the REST checks endpoint). GitHub computes
+/// a query's cost from the requested page sizes, and the suites multiply the
+/// runs asked for in each, so the suite page is kept small. `ALL` returns
 /// every attempt, so a failed run that was re-run is kept alongside the
 /// re-run (the default, `LATEST`, keeps only the most recent run of each
-/// name); the REST fallback asks for the same with `filter=all`. Commit statuses themselves are not read here: GraphQL
-/// only exposes the latest status of each context, while every status
-/// posted is an event.
-const HEAD_COMMIT: &str = "fragment HeadCommitFields on Commit { oid statusCheckRollup { state } status { state } checkSuites(first: 100) { pageInfo { hasNextPage endCursor } nodes { databaseId app { id slug } checkRuns(first: 100, filterBy: { checkType: ALL }) { pageInfo { hasNextPage endCursor } nodes { id name status conclusion startedAt completedAt permalink } } } } }";
+/// name); the REST fallback asks for the same with `filter=all`. Commit
+/// statuses themselves are not read here: GraphQL only exposes the latest
+/// status of each context, while every status posted is an event.
+const HEAD_COMMIT: &str = "fragment HeadCommitFields on Commit { oid statusCheckRollup { state } status { state } checkSuites(first: 40) { pageInfo { hasNextPage endCursor } nodes { databaseId app { id slug } checkRuns(first: 100, filterBy: { checkType: ALL }) { pageInfo { hasNextPage endCursor } nodes { id name status conclusion startedAt completedAt permalink } } } } }";
 
 const REVIEW_COMMENT: &str = "fragment ReviewCommentFields on PullRequestReviewComment { id state createdAt lastEditedAt url author { ...ActorFields } replyTo { id } pullRequestReview { id } }";
 
-/// Comments listed under a review are a secondary source of inline comments
-/// (the thread comments are authoritative and fully paginated); they are
-/// deduplicated by node id.
-const REVIEW: &str = "fragment ReviewFields on PullRequestReview { id state body submittedAt url author { ...ActorFields } comments(first: 20) { nodes { ...ReviewCommentFields } } }";
+/// A review's inline comments are not listed here: they are read from the
+/// review threads, which are paginated in full and carry each comment's
+/// review id. Listing them again would only raise the query's cost.
+const REVIEW: &str = "fragment ReviewFields on PullRequestReview { id state body submittedAt url author { ...ActorFields } }";
 
 const THREAD: &str = "fragment ReviewThreadFields on PullRequestReviewThread { id isResolved isOutdated path resolvedBy { __typename login id } comments(first: 50) { totalCount pageInfo { hasNextPage endCursor } nodes { ...ReviewCommentFields } } }";
 
@@ -102,6 +107,7 @@ pub(crate) fn pull_request() -> String {
     doc(
         format!(
             "query PullRequestDetail($owner: String!, $name: String!, $number: Int!) {{
+  {COST}
   repository(owner: $owner, name: $name) {{
     ...RepositoryFields
     pullRequest(number: $number) {{
@@ -122,7 +128,10 @@ pub(crate) fn pull_requests(count: usize) -> String {
     let params: Vec<String> = (0..count)
         .map(|i| format!("$o{i}: String!, $n{i}: String!, $k{i}: Int!"))
         .collect();
-    let mut body = format!("query PullRequestBatch({}) {{\n", params.join(", "));
+    let mut body = format!(
+        "query PullRequestBatch({}) {{\n  {COST}\n",
+        params.join(", ")
+    );
     for i in 0..count {
         let _ = writeln!(
             body,
@@ -171,7 +180,7 @@ impl PrConnection {
                 "PullRequestReviewsPage",
                 format!("first: {PAGE_SIZE}, after: $after"),
                 "...ReviewFields",
-                vec![ACTOR, REVIEW_COMMENT, REVIEW],
+                vec![ACTOR, REVIEW],
             ),
             Self::Threads => (
                 "PullRequestReviewThreadsPage",
@@ -196,6 +205,7 @@ impl PrConnection {
         doc(
             format!(
                 "query {name}($id: ID!, $after: String) {{
+  {COST}
   node(id: $id) {{
     ... on PullRequest {{
       {field}({args}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ {nodes} }} }}
@@ -212,6 +222,7 @@ pub(crate) fn thread_comments_page() -> String {
     doc(
         format!(
             "query ReviewThreadCommentsPage($id: ID!, $after: String) {{
+  {COST}
   node(id: $id) {{
     ... on PullRequestReviewThread {{
       comments(first: {THREAD_COMMENT_PAGE_SIZE}, after: $after) {{ totalCount pageInfo {{ hasNextPage endCursor }} nodes {{ ...ReviewCommentFields }} }}
@@ -234,6 +245,7 @@ pub(crate) fn issue() -> String {
     doc(
         format!(
             "query IssueDetail($owner: String!, $name: String!, $number: Int!) {{
+  {COST}
   repository(owner: $owner, name: $name) {{
     ...RepositoryFields
     issueOrPullRequest(number: $number) {{
@@ -255,6 +267,7 @@ pub(crate) fn issue_timeline_page() -> String {
     doc(
         format!(
             "query IssueTimelinePage($id: ID!, $after: String) {{
+  {COST}
   node(id: $id) {{
     ... on Issue {{
       timelineItems(first: {PAGE_SIZE}, after: $after, itemTypes: [CLOSED_EVENT, REOPENED_EVENT]) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ ...IssueTimelineFields }} }}
@@ -268,10 +281,12 @@ pub(crate) fn issue_timeline_page() -> String {
 
 pub(crate) fn repository() -> String {
     doc(
-        "query RepositoryDetail($owner: String!, $name: String!) {
-  repository(owner: $owner, name: $name) { ...RepositoryFields }
-}"
-        .to_string(),
+        format!(
+            "query RepositoryDetail($owner: String!, $name: String!) {{
+  {COST}
+  repository(owner: $owner, name: $name) {{ ...RepositoryFields }}
+}}"
+        ),
         &[REPOSITORY],
     )
 }
@@ -312,6 +327,18 @@ mod tests {
 
     #[test]
     fn documents_only_contain_used_fragments() {
+        for d in all_documents() {
+            for def in d.split("fragment ").skip(1) {
+                let name = def.split_whitespace().next().unwrap();
+                assert!(
+                    d.contains(&format!("...{name}")),
+                    "unused fragment {name} in {d}"
+                );
+            }
+        }
+    }
+
+    fn all_documents() -> Vec<String> {
         let mut docs = vec![
             pull_request(),
             pull_requests(1),
@@ -330,15 +357,40 @@ mod tests {
         ] {
             docs.push(c.page_query());
         }
-        for d in docs {
-            for def in d.split("fragment ").skip(1) {
-                let name = def.split_whitespace().next().unwrap();
-                assert!(
-                    d.contains(&format!("...{name}")),
-                    "unused fragment {name} in {d}"
-                );
-            }
+        docs
+    }
+
+    #[test]
+    fn every_document_reports_its_rate_limit_cost() {
+        for d in all_documents() {
+            let top = d.split("\nfragment ").next().unwrap();
+            let first = top.find('{').unwrap();
+            assert!(
+                top[first..].starts_with("{\n  rateLimit { cost }\n"),
+                "no top-level rateLimit {{ cost }} in {d}"
+            );
         }
+    }
+
+    /// Inline comments come from the review threads, which are paginated in
+    /// full; listing them again under each review only adds query cost.
+    #[test]
+    fn reviews_do_not_list_their_comments() {
+        let review = REVIEW;
+        assert!(!review.contains("comments"), "{review}");
+        let page = PrConnection::Reviews.page_query();
+        assert!(!page.contains("ReviewCommentFields"), "{page}");
+    }
+
+    /// The check suites of the head commit are asked for 40 at a time, the
+    /// size the query cost is computed from; a commit with more falls back
+    /// to the REST checks endpoint.
+    #[test]
+    fn head_commit_check_suites_page_size() {
+        assert!(
+            HEAD_COMMIT.contains("checkSuites(first: 40)"),
+            "{HEAD_COMMIT}"
+        );
     }
 
     #[test]

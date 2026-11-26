@@ -386,7 +386,8 @@ deleting a repository that was already in the account's cache.
 - `GHUSAGE_LOG=debug` (or any `tracing` filter such as
   `ghusage_github=debug`) prints diagnostic logs to stderr.
   At the debug level each GitHub request is logged with its method, path,
-  GraphQL operation name, status, duration and size. A 403 or 429 response
+  GraphQL operation name, status, duration and size, and a GraphQL query
+  also with the rate-limit points it used (`graphql_cost`). A 403 or 429 response
   also shows the `x-ratelimit-*` and `Retry-After` headers and a shortened
   error message, including a 403 that is not a rate limit (for example
   missing permission). A retry for a rate limit shows the same details and

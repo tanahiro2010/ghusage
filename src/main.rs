@@ -457,10 +457,7 @@ fn in_ci() -> bool {
 
 /// Copies the request totals of the whole session into a sync report.
 fn update_api_stats(r: &mut SyncReport, s: &Session) {
-    let stats = s.api_stats();
-    r.api.requests = stats.requests;
-    r.api.retries = stats.retries;
-    r.api.total_api_time_ms = stats.total_api_time_ms;
+    r.api = s.api_stats();
 }
 
 fn require_complete(g: &GlobalArgs, status: CoverageStatus) -> i32 {

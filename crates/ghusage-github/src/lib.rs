@@ -149,6 +149,9 @@ pub struct ApiStats {
     pub total_api_time_ms: u64,
     /// Total response bytes received.
     pub bytes_received: u64,
+    /// GraphQL rate-limit points used: the sum of the `rateLimit.cost` each
+    /// GraphQL response reports.
+    pub graphql_points: u64,
 }
 
 /// Identity of the authenticated GitHub account.

@@ -232,3 +232,36 @@ async fn graphql_rate_limit_logs_only_the_rate_limit_message() {
     assert!(!log.contains("hidden-repo-name"), "{log}");
     assert!(!log.contains("someowner"), "{log}");
 }
+
+#[tokio::test]
+async fn graphql_requests_show_the_points_they_used() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "rateLimit": { "cost": 3 }, "repository": null }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/user"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "login": "octocat", "id": 1, "node_id": "U_1", "type": "User"
+        })))
+        .mount(&server)
+        .await;
+    let (log, guard) = capture();
+    let c = client(&server);
+    c.repository("someowner", "repo").await.unwrap_err();
+    c.viewer().await.unwrap();
+    drop(guard);
+    let log = log.text();
+    let requests = lines_with(&log, "GitHub request");
+    assert_eq!(requests.len(), 2, "{log}");
+    let graphql = lines_with(&log, "/graphql");
+    assert!(graphql[0].contains("graphql_cost=3"), "{log}");
+    // A REST request has no GraphQL cost.
+    let rest = lines_with(&log, "/user");
+    assert!(!rest[0].contains("graphql_cost"), "{log}");
+    assert_eq!(c.stats().graphql_points, 3);
+}

@@ -335,6 +335,9 @@ impl Transport {
                 "GraphQL response is not an object".into(),
             ));
         }
+        if let Some(cost) = graphql_cost(&value) {
+            self.with_stats(|s| s.graphql_points += cost);
+        }
         serde_json::from_value::<GraphqlResponse>(value)
             .map_err(|e| ApiError::InvalidResponse(format!("GraphQL response: {e}")))
     }
@@ -474,6 +477,13 @@ impl Transport {
                 .filter(|r| matches!(r.status, 403 | 429))
                 .map(|r| RateLimitDetail::new(&r.headers, body_message(&r.body).as_deref()));
             let detail = detail.as_ref();
+            // The points a GraphQL query used, as its response reports them.
+            let graphql_cost = result
+                .as_ref()
+                .ok()
+                .filter(|r| operation.is_some() && (200..300).contains(&r.status))
+                .and_then(|r| serde_json::from_slice::<Value>(&r.body).ok())
+                .and_then(|v| graphql_cost(&v));
             tracing::debug!(
                 %method,
                 path = url.path(),
@@ -481,6 +491,7 @@ impl Transport {
                 status = result.as_ref().map_or(0, |r| r.status),
                 elapsed_ms = elapsed,
                 bytes,
+                graphql_cost,
                 ratelimit_resource = detail.and_then(|d| d.resource.as_deref()),
                 ratelimit_remaining = detail.and_then(|d| d.remaining.as_deref()),
                 ratelimit_used = detail.and_then(|d| d.used.as_deref()),
@@ -687,6 +698,14 @@ fn graphql_rate_limit_message(body: &[u8]) -> Option<String> {
         .filter(|e| e.get("type").and_then(|t| t.as_str()) == Some("RATE_LIMITED"))
         .find_map(|e| e.get("message").and_then(|m| m.as_str()))
         .map(|m| truncate(m, 300))
+}
+
+/// The rate-limit points a GraphQL response reports for its query
+/// (`data.rateLimit.cost`, asked for by every query document).
+fn graphql_cost(response: &Value) -> Option<u64> {
+    response
+        .pointer("/data/rateLimit/cost")
+        .and_then(Value::as_u64)
 }
 
 fn graphql_rate_limited(body: &[u8]) -> bool {

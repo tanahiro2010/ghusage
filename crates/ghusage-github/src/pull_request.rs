@@ -172,7 +172,6 @@ struct ReviewNode {
     submitted_at: Option<String>,
     url: Option<String>,
     author: Option<GqlActor>,
-    comments: Option<Connection>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -383,13 +382,7 @@ fn mark_errors(errors: &[GraphqlError], tracker: &mut Tracker) {
         let note = format!("GraphQL error: {}", e.message());
         let affected: Vec<Collection> = match field {
             Some("commits") => vec![Collection::Commits],
-            Some("reviews") => {
-                if path.contains(&"comments") {
-                    vec![Collection::Reviews, Collection::ReviewComments]
-                } else {
-                    vec![Collection::Reviews]
-                }
-            }
+            Some("reviews") => vec![Collection::Reviews],
             Some("reviewThreads") => vec![Collection::ReviewComments],
             Some("comments") => vec![Collection::Comments],
             Some("timelineItems") => vec![Collection::Timeline],
@@ -689,23 +682,14 @@ enum CommentOutcome {
     Bad,
 }
 
-fn inline_comment(
-    b: &mut Builder,
-    c: &CommentNode,
-    thread_id: Option<&str>,
-    review_id: Option<&str>,
-) -> CommentOutcome {
+fn inline_comment(b: &mut Builder, c: &CommentNode, thread_id: &str) -> CommentOutcome {
     if c.state.as_deref() == Some("PENDING") {
         return CommentOutcome::Pending;
     }
     let (Some(id), Some(at)) = (c.id.clone(), time(&c.created_at)) else {
         return CommentOutcome::Bad;
     };
-    let review_id = c
-        .pull_request_review
-        .as_ref()
-        .and_then(|r| r.id.clone())
-        .or_else(|| review_id.map(str::to_string));
+    let review_id = c.pull_request_review.as_ref().and_then(|r| r.id.clone());
     b.push(
         EventType::InlineComment,
         EventId::comment(&id),
@@ -714,7 +698,7 @@ fn inline_comment(
         at,
         c.url.clone(),
         EventMeta {
-            thread_id: thread_id.map(str::to_string),
+            thread_id: Some(thread_id.to_string()),
             review_id,
             reply_to: c.reply_to.as_ref().and_then(|r| r.id.clone()),
             edited_at: time(&c.last_edited_at),
