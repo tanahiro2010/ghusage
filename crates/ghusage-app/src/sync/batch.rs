@@ -67,6 +67,7 @@ pub type ViewerCheck<'a> =
     futures::future::Shared<futures::future::LocalBoxFuture<'a, std::result::Result<Viewer, ApiError>>>;
 
 /// Whether `viewer` is the same account as `subject`, by id and login.
+#[must_use]
 pub fn is_viewer(subject: &Subject, viewer: &Viewer) -> bool {
     subject.id.as_deref() == Some(viewer.id.as_str()) && subject.login == viewer.login
 }

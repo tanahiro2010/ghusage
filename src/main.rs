@@ -398,6 +398,8 @@ async fn prepared_session(g: &GlobalArgs, period: Period, zone: Zone) -> Result<
                 }
             }
             Err(e @ (AppError::AuthRejected(_) | AppError::Auth(_))) => return Err(e),
+            // The account could not be confirmed: its cache must not be shown.
+            Err(e) if s.is_unconfirmed() => return Err(e),
             // GitHub turned out to be unreachable; reported below.
             Err(_) if s.offline_state().reason.is_some() => {}
             Err(e) => {

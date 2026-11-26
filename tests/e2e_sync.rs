@@ -1885,9 +1885,14 @@ async fn a_token_of_another_account_writes_nothing_for_the_remembered_one() {
     assert!(before.0 > 0 && before.1 > 0 && before.2 > 0, "{before:?}");
     Mock::given(method("GET"))
         .and(path("/user"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "login": "other", "id": 2, "node_id": "U_other", "type": "User", "name": "Other"
-        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({
+                    "login": "other", "id": 2, "node_id": "U_other", "type": "User", "name": "Other"
+                }))
+                // Late enough that the sync reaches its first writes before it.
+                .set_delay(std::time::Duration::from_millis(1500)),
+        )
         .with_priority(1)
         .mount(&server)
         .await;
@@ -1901,7 +1906,19 @@ async fn a_token_of_another_account_writes_nothing_for_the_remembered_one() {
             .mount(&server)
             .await;
     }
-    let r = env.sync(&[]).await;
+    // A week before the cached one, so a write for the remembered account
+    // would add coverage rather than repeat it.
+    let r = env
+        .run(&[
+            "sync",
+            "--since",
+            "2024-02-26",
+            "--until",
+            SINCE,
+            "--format",
+            "json",
+        ])
+        .await;
     // Partial: the fixture only lists commits of the remembered account,
     // so listing the other account's commits fails.
     r.expect_code(4).assert_clean();
@@ -1923,7 +1940,8 @@ async fn a_rejected_token_writes_nothing_for_the_remembered_account() {
         .and(path("/user"))
         .respond_with(ResponseTemplate::new(401).set_body_json(json!({
             "message": "Bad credentials", "documentation_url": "https://docs.github.com/rest"
-        })))
+        }))
+        .set_delay(std::time::Duration::from_millis(1500)))
         .with_priority(1)
         .mount(&server)
         .await;
@@ -1944,4 +1962,26 @@ async fn a_rejected_token_writes_nothing_for_the_remembered_account() {
     ])
     .await
     .expect_code(3);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_identity_check_shows_no_cache_of_the_remembered_account() {
+    let server = serve(&World::base()).await;
+    let env = Env::new(&server);
+    env.sync(&[]).await.expect_code(0);
+    Mock::given(method("GET"))
+        .and(path("/user"))
+        .respond_with(
+            ResponseTemplate::new(422).set_body_json(json!({ "message": "Unprocessable" })),
+        )
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    // A period that needs a sync: the report fails instead of showing the
+    // cache of an account that was not confirmed.
+    let r = env
+        .run(&["overview", "--since", SINCE, "--format", "json"])
+        .await;
+    r.expect_code(4);
+    assert!(r.stdout.is_empty(), "{}", r.stdout);
 }
