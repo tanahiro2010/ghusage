@@ -414,3 +414,8 @@ deleting a repository that was already in the account's cache.
   `too-many-requests`). The token
   and GraphQL variables are never logged, but request paths contain
   repository names, so review a log before sharing it.
+- At the debug level, a search held back because another search was rate
+  limited shows how long it was held (`search_gate_ms`), and a rate-limit
+  retry of a search shows how long all searches are held
+  (`search_pause_ms`). See
+  [Rate limits and network](../reference/limitations.md#rate-limits-and-network).
