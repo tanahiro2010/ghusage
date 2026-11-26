@@ -755,40 +755,43 @@ fn a_chosen_data_directory_keeps_its_permissions_with_a_warning() {
     let by_flag = d.path().join("by-flag");
     make_dir_with_mode(&by_env, 0o755);
     make_dir_with_mode(&by_flag, 0o750);
-    ghusage(&d)
+    let by_env_run = ghusage(&d)
         .env("GHUSAGE_DATA_DIR", &by_env)
         .args(["cache", "status"])
         .assert()
-        .success()
-        .stderr(predicate::str::contains(
-            "other users can access the data directory",
-        ))
-        .stderr(predicate::str::contains("755"));
-    ghusage(&d)
+        .success();
+    let by_flag_run = ghusage(&d)
         .arg("--data-dir")
         .arg(&by_flag)
         .args(["cache", "status"])
         .assert()
-        .success()
-        .stderr(predicate::str::contains(
-            "other users can access the data directory",
-        ))
-        .stderr(predicate::str::contains("750"));
+        .success();
+    // Modes first, so a changed directory is reported as such.
     assert_eq!(unix_mode(&by_env), 0o755);
     assert_eq!(unix_mode(&by_flag), 0o750);
     assert_eq!(unix_mode(&by_env.join("ghusage.db")), 0o600);
     assert_eq!(unix_mode(&by_flag.join("ghusage.db")), 0o600);
+    by_env_run
+        .stderr(predicate::str::contains(
+            "other users can access the data directory",
+        ))
+        .stderr(predicate::str::contains("755"));
+    by_flag_run
+        .stderr(predicate::str::contains(
+            "other users can access the data directory",
+        ))
+        .stderr(predicate::str::contains("750"));
 
     // A private chosen directory gives no warning.
     let private = d.path().join("private");
     make_dir_with_mode(&private, 0o700);
-    ghusage(&d)
+    let private_run = ghusage(&d)
         .env("GHUSAGE_DATA_DIR", &private)
         .args(["cache", "status"])
         .assert()
-        .success()
-        .stderr(predicate::str::contains("other users can access").not());
+        .success();
     assert_eq!(unix_mode(&private), 0o700);
+    private_run.stderr(predicate::str::contains("other users can access").not());
 }
 
 #[cfg(unix)]
@@ -804,15 +807,17 @@ fn a_linked_default_data_directory_is_not_changed() {
     let mut c = Command::cargo_bin("ghusage").unwrap();
     c.env_clear();
     keep_system_env(&mut c);
-    c.env("PATH", d.path().join("no-bin"))
+    let run = c
+        .env("PATH", d.path().join("no-bin"))
         .env("HOME", &home)
         .env("TZ", "UTC")
         .args(["cache", "status"])
         .assert()
-        .success()
-        .stderr(predicate::str::contains(
-            "other users can access the data directory",
-        ));
+        .success();
+    // Modes first, so a changed link target is reported as such.
     assert_eq!(unix_mode(&target), 0o755);
     assert_eq!(unix_mode(&target.join("ghusage.db")), 0o600);
+    run.stderr(predicate::str::contains(
+        "other users can access the data directory",
+    ));
 }

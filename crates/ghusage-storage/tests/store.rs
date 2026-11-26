@@ -1903,6 +1903,28 @@ fn cache_files_are_private_to_the_user() {
     assert_eq!(mode(lock.path()), 0o600);
 }
 
+#[cfg(unix)]
+#[test]
+fn restricting_a_data_directory_does_not_follow_a_symbolic_link() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("target");
+    std::fs::create_dir(&target).unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let link = root.path().join("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    ghusage_storage::create_or_restrict_private_dir(&link).unwrap();
+    assert_eq!(mode(&target), 0o755);
+
+    // A real directory is still tightened.
+    let dir = root.path().join("dir");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    ghusage_storage::create_or_restrict_private_dir(&dir).unwrap();
+    assert_eq!(mode(&dir), 0o700);
+}
+
 #[test]
 fn commit_statistics_are_stored_and_unknown_ones_stay_absent() {
     use ghusage_core::metrics::LineCounts;
