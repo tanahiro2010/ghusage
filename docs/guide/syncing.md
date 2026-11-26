@@ -70,8 +70,9 @@ lines each of your commits added and deleted.
 - **Commits inside pull requests** and each **pull request's diff** come
   with the pull request query of every sync. They cost no extra requests.
 - **Other commits** (found only on default branches) need
-  `ghusage sync --diff-stats`. The first sync of an account, and every sync
-  in CI (when `CI` is set, as GitHub Actions does), fetch them without the
+  `ghusage sync --diff-stats`. The first sync of an account (syncs that
+  failed, or in which one data kind failed as a whole, do not count), and
+  every sync in CI (when `CI` is set, as GitHub Actions does), fetch them without the
   flag; this includes the sync a report runs on its own. `--no-diff-stats`
   turns that off. Fetched this way, a failure only prints a warning and the
   sync or report still succeeds. Syncs of the [terminal UI](./tui.md) do
@@ -148,7 +149,7 @@ warning: sync failed, showing cached data: ...
 ```
 
 If only some of the data could be fetched, they print what is missing as
-warnings (for example `warning: issue search failed: ...`) and show the
+warnings (for example `warning: issue sync failed: ...`) and show the
 report, whose coverage tells which data kinds are incomplete.
 
 ### Recently synced data
@@ -380,12 +381,14 @@ deleting a repository that was already in the account's cache.
 - When the primary rate limit is exhausted, `ghusage` waits for the reset if
   it is at most 15 minutes away; otherwise the request fails with a
   rate-limit error. Secondary rate limits and `Retry-After` are honored.
-- Pull requests, commits and issues are synced at the same time. If the
-  search of one of them fails (a rate limit too far away, or an error that
-  persists after the retries), only that data kind is marked `partial`, with
-  the error as reason, and the others are still fetched to the end. The
-  error is printed as `warning: <kind> search failed: ...` on stderr and
-  listed in `failures`, and `sync` exits with code 4. Commits use the
+- Pull requests, commits and issues are synced at the same time. If one of
+  them fails as a whole, for example because its search keeps failing (a
+  rate limit too far away, or an error that persists after the retries),
+  only that data kind is marked `partial`, with the error as reason, and the
+  others are still fetched to the end. The error is printed as
+  `warning: <kind> sync failed: ...` on stderr and listed in `failures`,
+  `sync` exits with code 4, and `cache status` shows the run as
+  `incomplete`. Commits use the
   repositories found by the pull request and issue searches, so when one of
   those fails, commits coverage is `partial` as well and says which
   repositories are unknown. The next sync fetches what is missing. A

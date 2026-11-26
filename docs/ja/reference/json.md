@@ -300,7 +300,7 @@ ghusage prs --format csv > prs.csv
 | `commits_found` | コミット検索とデフォルトブランチのコミット一覧で見つかったコミットの数(重複なし)。プルリクエストの中でだけ見つかったコミットは含みません |
 | `pull_requests_found`, `pull_requests_fetched`, `pull_requests_unchanged` | 検索で見つかった / 取得した / 変更がないため取得を省いたプルリクエストの数 |
 | `issues_found`, `issues_fetched`, `issues_unchanged` | 検索で見つかった / 取得した / 変更がないため取得を省いた Issue の数 |
-| `failures` | 取得に失敗した、または一部しか取得できなかったプルリクエストや Issue と、失敗した検索の説明 |
+| `failures` | 取得に失敗した、または一部しか取得できなかったプルリクエストや Issue と、同期が丸ごと失敗したデータの種類の説明 |
 | `coverage` | 書き込んだカバレッジの記録: `kind`、`start`、`end`、`status`、`scope`、`reason`、`recorded_at` |
 | `api` | `requests`、`retries`、`rate_limit_waits`、`total_api_time_ms`、`bytes_received`(行数のリクエストも含む) |
 | `diff_stats` | 行数を取得したとき(`--diff-stats`、アカウントの最初の同期、CI での同期)だけ入ります。`commits`(期間内の自分のマージでないコミットのうち、行数を合計に入れるもの)、`already_known`(キャッシュにすでにあり、取り直さなかったもの)、`fetched`(今回取得したもの)、`unavailable`(GitHub が返さず、不明のままのもの) |
@@ -315,7 +315,7 @@ ghusage prs --format csv > prs.csv
 
 ### cache status
 
-`path`、`file_size_bytes`、`schema_version`、`account`、`repositories`、`pull_requests`、`issues`、`events`、`last_sync`(`started_at`、`finished_at`、`status`、`message`、または `null`)、`coverage_last_30_days`([CoverageSummary](#coveragesummary) の配列)。
+`path`、`file_size_bytes`、`schema_version`、`account`、`repositories`、`pull_requests`、`issues`、`events`、`last_sync`(`started_at`、`finished_at`、`status`、`message`、または `null`。`status` は `running`、`success`、`partial`(終わったが一部のデータが足りない)、`incomplete`(1 つの種類のデータが丸ごと失敗し、ほかは終わった)、`failed` のどれか)、`coverage_last_30_days`([CoverageSummary](#coveragesummary) の配列)。
 
 ## CSV
 

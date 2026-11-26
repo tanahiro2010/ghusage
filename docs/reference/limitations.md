@@ -187,8 +187,8 @@ the API does not keep cannot be recovered later:
   over long periods take time.
 - When the primary rate limit is exhausted, `ghusage` waits for the reset if
   it is at most 15 minutes away; otherwise the search or request fails with
-  an API error. A failed search marks its data kind (pull requests, commits
-  or issues) `partial`, the other kinds are still fetched, and the sync
+  an API error. A data kind (pull requests, commits or issues) whose search
+  fails is marked `partial`; the other kinds are still fetched, and the sync
   exits with code 4. Everything fetched so far is kept and the next run
   continues.
 - Secondary rate limits are honored with waits of up to 60 seconds.
