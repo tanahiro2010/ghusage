@@ -346,8 +346,61 @@ pub fn create_private_dir(dir: &Path) -> Result<()> {
         return Ok(());
     }
     std::fs::create_dir_all(dir)?;
-    restrict_to_user(dir, 0o700);
+    restrict_dir_to_user(dir);
     Ok(())
+}
+
+/// Like [`create_private_dir`], but also makes an existing `dir` readable
+/// only by the user. Only for a directory that ghusage owns, never for one
+/// the user chose.
+pub fn create_or_restrict_private_dir(dir: &Path) -> Result<()> {
+    create_private_dir(dir)?;
+    restrict_dir_to_user(dir);
+    Ok(())
+}
+
+/// Best effort: on Unix, makes the directory `dir` readable only by the
+/// user (`0700`). A symbolic link at `dir` is never followed: the directory
+/// is opened without following one and its permissions are changed through
+/// that handle, so replacing `dir` with a link cannot redirect the change.
+fn restrict_dir_to_user(dir: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let Ok(handle) = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+            .open(dir)
+        else {
+            return;
+        };
+        if let Ok(meta) = handle.metadata()
+            && meta.is_dir()
+            && meta.permissions().mode() & 0o777 != 0o700
+            && meta.permissions().mode() & 0o200 != 0
+        {
+            drop(handle.set_permissions(std::fs::Permissions::from_mode(0o700)));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+}
+
+/// On Unix, returns the permission bits of `dir` when other users (its
+/// group or everyone) can access it. `None` elsewhere or when it is private.
+#[must_use]
+pub fn shared_dir_mode(dir: &Path) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir).ok()?.permissions().mode() & 0o777;
+        (mode & 0o077 != 0).then_some(mode)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        None
+    }
 }
 
 /// Best effort: on Unix, sets `path`'s permission bits to `mode`. Fails

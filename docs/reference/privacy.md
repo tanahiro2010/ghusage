@@ -28,10 +28,11 @@ diffs (the file contents that changed), so they can be shown again offline.
 - Tokens are **never** written to the cache, to logs or to output. Error
   messages do not include them.
 - The cache is a normal file protected by your user account's file
-  permissions. On macOS and Linux, `ghusage` creates the data directory
-  readable only by you (`0700`) and the database and lock files as `0600`.
-  A directory you created yourself (for example with `--data-dir`) keeps
-  its permissions. Treat the cache like other files that contain your work
+  permissions. On macOS and Linux, `ghusage` keeps the default data
+  directory readable only by you (`0700`), including one that already
+  exists, and the database and lock files as `0600`. A directory you chose
+  (with `--data-dir` or `GHUSAGE_DATA_DIR`) keeps its permissions, with a
+  warning when other users can access it. Treat the cache like other files that contain your work
   data.
 - `ghusage cache clear` deletes all cached GitHub data (the empty database
   file remains). Deleting the data directory removes everything.

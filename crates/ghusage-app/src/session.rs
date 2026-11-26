@@ -167,23 +167,55 @@ pub fn credentials(token_file: Option<&Path>) -> Result<Credentials> {
     )?)
 }
 
+/// Warns about a shared data directory once per process: the terminal UI
+/// reopens the cache for each background sync, after it has taken over the
+/// screen.
+static SHARED_DIR_WARNING: std::sync::Once = std::sync::Once::new();
+
+/// Creates the data directory if missing. The cache holds private
+/// repository names and titles, so a directory ghusage owns is made readable
+/// only by the user even when it already exists. A directory the user chose
+/// (or a symbolic link in place of the default one) is never changed; a
+/// warning is logged when other users can access it.
+fn prepare_data_dir(dir: &paths::DataDir) -> Result<()> {
+    let path = &dir.path;
+    let is_link = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
+    let prepared = if dir.user_chosen || is_link {
+        ghusage_storage::create_private_dir(path)
+    } else {
+        ghusage_storage::create_or_restrict_private_dir(path)
+    };
+    prepared.map_err(|e| match e {
+        ghusage_storage::StorageError::Io(e) => {
+            AppError::Storage(ghusage_storage::StorageError::Io(std::io::Error::new(
+                e.kind(),
+                format!("cannot create data directory {}: {e}", path.display()),
+            )))
+        }
+        other => AppError::Storage(other),
+    })?;
+    if let Some(mode) = ghusage_storage::shared_dir_mode(path) {
+        SHARED_DIR_WARNING.call_once(|| {
+            tracing::warn!(
+                path = %path.display(),
+                mode = format_args!("{mode:03o}"),
+                "other users can access the data directory; restrict it with `chmod 700`"
+            );
+        });
+    }
+    Ok(())
+}
+
 /// Opens the cache database for a configuration.
 pub(crate) fn open_store(cfg: &SessionConfig) -> Result<(Store, Option<PathBuf>)> {
     if cfg.no_cache {
         return Ok((Store::open_in_memory()?, None));
     }
-    let dir = paths::data_dir(cfg.data_dir.clone()).ok_or_else(|| {
+    let resolved = paths::resolve_data_dir(cfg.data_dir.clone()).ok_or_else(|| {
         AppError::Other("cannot determine a data directory; use --data-dir".into())
     })?;
-    ghusage_storage::create_private_dir(&dir).map_err(|e| match e {
-        ghusage_storage::StorageError::Io(e) => {
-            AppError::Storage(ghusage_storage::StorageError::Io(std::io::Error::new(
-                e.kind(),
-                format!("cannot create data directory {}: {e}", dir.display()),
-            )))
-        }
-        other => AppError::Storage(other),
-    })?;
+    prepare_data_dir(&resolved)?;
+    let dir = resolved.path;
     let path = paths::db_path(&dir);
     let store = match Store::open(&path) {
         Ok(s) => s,
