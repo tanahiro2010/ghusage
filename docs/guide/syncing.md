@@ -376,6 +376,11 @@ deleting a repository that was already in the account's cache.
 - When the primary rate limit is exhausted, `ghusage` waits for the reset if
   it is at most 15 minutes away; otherwise it stops with a rate-limit error.
   Secondary rate limits and `Retry-After` are honored.
+- While a search waits for the secondary rate limit, work that does not need
+  its results goes on. For example, the default branches of the repositories
+  from step 1 of [How commits are found](#how-commits-are-found) are listed
+  without waiting for the commit, pull request and issue searches, so the
+  total shown for commits in the progress can grow once the searches finish.
 - `GHUSAGE_LOG=debug` (or any `tracing` filter such as
   `ghusage_github=debug`) prints diagnostic logs to stderr.
   At the debug level each GitHub request is logged with its method, path,
