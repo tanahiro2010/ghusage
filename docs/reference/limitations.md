@@ -192,12 +192,14 @@ the API does not keep cannot be recovered later:
 - Secondary rate limits are honored with waits of up to 60 seconds.
   `Retry-After` is honored when given in seconds.
 - All searches share one rate limit. When a search is rate limited (a
-  secondary limit, `Retry-After` or the exhausted search limit), every
-  search waits until the end of that wait, including searches started
-  during it. After the wait, searches are sent one at a time, 2 seconds
-  apart, for one minute, so the retried searches do not hit the limit
-  again together. Other requests (repository lists, GraphQL) are not held,
-  and searches that are never rate limited are not slowed down.
+  secondary limit, `Retry-After`, the exhausted search limit, or a plain
+  429 response), every search waits until the end of that wait, including
+  searches started during it. After the wait, searches are sent one at a
+  time, 2 seconds apart, for one minute, so the retried searches do not hit
+  the limit again together. Searches that were already waiting when the
+  minute ends are still sent 2 seconds apart. Other requests (repository
+  lists, GraphQL) are not held, and searches that are never rate limited
+  are not slowed down.
 - Waiting for an exhausted primary rate limit has been checked against the
   real API by using up the search limit. Secondary rate limits and resets
   more than 15 minutes away are covered only by automated tests that
