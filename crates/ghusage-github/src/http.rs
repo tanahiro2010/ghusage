@@ -14,7 +14,7 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValu
 use reqwest::{Method, Url};
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, SemaphorePermit};
 
 use crate::activity::{self, Activity};
 use crate::{ApiError, ApiStats, ClientConfig, Credentials, Secret};
@@ -159,8 +159,10 @@ pub(crate) fn graphql_operation(query: &str) -> Option<&str> {
 /// searches never pass through here, and while no search was limited the
 /// gate lets every search through at once.
 ///
-/// A search takes its turn only when it is sent, so a search dropped while
-/// waiting leaves nothing behind.
+/// A search takes its turn only when it is sent, once it also holds a
+/// request slot, so a search dropped while waiting leaves nothing behind
+/// and searches that waited for a slot do not go out together when one
+/// frees up.
 #[derive(Default)]
 struct SearchGate {
     state: Mutex<GateState>,
@@ -194,33 +196,45 @@ impl SearchGate {
         until - now
     }
 
-    /// Waits until a search may be sent, at least `spacing` after the
-    /// previous paced one. Returns how long it waited.
-    async fn wait(&self, spacing: Duration) -> Duration {
-        let start = Instant::now();
-        let mut paced = false;
+    /// When the next search may be sent, at least `spacing` after the
+    /// previous paced one, or `None` when searches are not paced. `paced`
+    /// stays set once a search has been paced, so a search that started
+    /// waiting during the pacing keeps to the spacing after it too.
+    fn next(s: &GateState, now: Instant, spacing: Duration, paced: &mut bool) -> Option<Instant> {
+        *paced |= s.recover_until.is_some_and(|t| t > now);
+        paced.then(|| {
+            [s.paused_until, s.last_sent.map(|t| t + spacing)]
+                .into_iter()
+                .flatten()
+                .fold(now, Instant::max)
+        })
+    }
+
+    /// Waits until a search may be sent. Takes no turn: another search may
+    /// still take this one first.
+    async fn ready(&self, spacing: Duration, paced: &mut bool) {
         loop {
-            let next = {
-                let mut s = self.state();
-                let now = Instant::now();
-                paced |= s.recover_until.is_some_and(|t| t > now);
-                if !paced {
-                    return start.elapsed();
-                }
-                let next = [s.paused_until, s.last_sent.map(|t| t + spacing)]
-                    .into_iter()
-                    .flatten()
-                    .fold(now, Instant::max);
-                if next <= now {
-                    s.last_sent = Some(now);
-                    return start.elapsed();
-                }
-                drop(s);
-                next
+            let now = Instant::now();
+            let next = Self::next(&self.state(), now, spacing, paced);
+            let next = match next {
+                Some(next) if next > now => next,
+                _ => return,
             };
-            // Another search may take this turn first; then wait for the
-            // next one.
             tokio::time::sleep_until(next.into()).await;
+        }
+    }
+
+    /// Takes the turn to send a search now, if it is free.
+    fn take_turn(&self, spacing: Duration, paced: &mut bool) -> bool {
+        let mut s = self.state();
+        let now = Instant::now();
+        match Self::next(&s, now, spacing, paced) {
+            None => true,
+            Some(next) if next <= now => {
+                s.last_sent = Some(now);
+                true
+            }
+            Some(_) => false,
         }
     }
 }
@@ -464,12 +478,11 @@ impl Transport {
         let mut attempt: u32 = 0;
         loop {
             attempt += 1;
-            let held = if search {
-                self.search_gate.wait(spacing).await
-            } else {
-                Duration::ZERO
-            };
-            let decision = match self.attempt(&method, url, body, operation, held).await {
+            let (permit, held) = self.slot(search, spacing).await?;
+            let decision = match self
+                .attempt(permit, &method, url, body, operation, held)
+                .await
+            {
                 Ok(resp) => self.decide(resp, url, &method, attempt, graphql),
                 Err(AttemptError::Timeout) => Decision::Retry {
                     delay: self.backoff(attempt),
@@ -532,21 +545,56 @@ impl Transport {
         }
     }
 
-    /// One attempt. `held` is how long the search gate held it, for the
-    /// debug log.
+    /// Waits for a request slot and, for a search, its turn at the
+    /// [`SearchGate`]. The turn is taken while the slot is held, so the
+    /// spacing holds from when the searches are actually sent. A search
+    /// never holds a slot while it waits at the gate: that would hold up
+    /// requests that are not searches. Returns the slot and how long the
+    /// gate held the search (zero for other requests), for the debug log.
+    async fn slot(
+        &self,
+        search: bool,
+        spacing: Duration,
+    ) -> Result<(SemaphorePermit<'_>, Duration), ApiError> {
+        let start = Instant::now();
+        let mut paced = false;
+        loop {
+            if search {
+                self.search_gate.ready(spacing, &mut paced).await;
+            }
+            let permit = self
+                .semaphore
+                .acquire()
+                .await
+                .map_err(|_| ApiError::Network("client is shutting down".into()))?;
+            if !search {
+                return Ok((permit, Duration::ZERO));
+            }
+            if self.search_gate.take_turn(spacing, &mut paced) {
+                let held = if paced {
+                    start.elapsed()
+                } else {
+                    Duration::ZERO
+                };
+                return Ok((permit, held));
+            }
+            // Another search took the turn while this one waited for the
+            // slot; give the slot back and wait for the next turn.
+            drop(permit);
+        }
+    }
+
+    /// One attempt, holding `_permit`. `held` is how long the search gate
+    /// held it, for the debug log.
     async fn attempt(
         &self,
+        _permit: SemaphorePermit<'_>,
         method: &Method,
         url: &Url,
         body: Option<&[u8]>,
         operation: Option<&str>,
         held: Duration,
     ) -> Result<Attempted, AttemptError> {
-        let _permit = self
-            .semaphore
-            .acquire()
-            .await
-            .map_err(|_| AttemptError::Network("client is shutting down".into()))?;
         let _running = self.activity.start(activity::label(url, body));
         let started = Instant::now();
         let limit = self.config.max_response_bytes;
