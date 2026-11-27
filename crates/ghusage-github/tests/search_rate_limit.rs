@@ -443,3 +443,59 @@ async fn too_many_requests_on_a_search_paces_the_searches() {
     assert_eq!(stats.requests, 8);
     assert_eq!(stats.rate_limit_waits, 1);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn searches_queued_before_the_pacing_ends_stay_spaced_after_it() {
+    // More searches start during the wait than fit in the minute of pacing
+    // after it (one per slot), so some are still waiting when it ends.
+    const SEARCHES: usize = 45;
+    let s = setup(1, Limit::First(secondary_limit)).await;
+    let c = s.client.clone();
+    let commits = tokio::spawn(async move { c.search_commits(LOGIN, jan1(), false).await });
+    let limited_at = limited(&s).await;
+    let mut searches = Vec::new();
+    for _ in 0..SEARCHES {
+        let c = s.client.clone();
+        searches.push(tokio::spawn(async move {
+            c.search_issues(
+                &format!("involves:{LOGIN}"),
+                IssueKind::PullRequest,
+                jan1().start,
+                false,
+            )
+            .await
+        }));
+    }
+    for task in searches {
+        task.await.unwrap().unwrap();
+    }
+    assert_eq!(commits.await.unwrap().unwrap().items.len(), 1);
+    let mut issues: Vec<_> = s
+        .arrivals()
+        .into_iter()
+        .filter(|a| a.path == "/search/issues")
+        .collect();
+    issues.sort_by_key(|a| a.at);
+    assert_eq!(issues.len(), SEARCHES);
+    // The searches still waiting when the pacing ended keep to the
+    // spacing instead of going out together.
+    let pacing_end = limited_at + MINUTE * 2 + Duration::from_millis(100);
+    let late: Vec<_> = issues
+        .iter()
+        .filter(|a| a.at > pacing_end)
+        .cloned()
+        .collect();
+    assert!(
+        late.len() >= 10,
+        "too few searches left after the pacing: {issues:?}"
+    );
+    let slots = u32::try_from(late.len() - 2).unwrap();
+    assert!(
+        spread(&late) >= SPACING * slots,
+        "searches queued before the pacing ended were not spaced after it: {late:?}"
+    );
+    // So do all of them: one search per slot from the end of the wait.
+    let slots = u32::try_from(SEARCHES - 2).unwrap();
+    assert!(spread(&issues) >= SPACING * slots, "{issues:?}");
+    drop(s.server);
+}
