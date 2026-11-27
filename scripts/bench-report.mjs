@@ -237,7 +237,7 @@ export function buildReport(opts) {
     `> A latency p95 change is marked only when p50 and the scenario's Criterion median (if it has one) also moved by more than ${threshold}% in the same direction. ` +
       `On its own, p95 can move by up to about 30% between runs of unchanged code. ` +
       `When p95 alone moves by more than ${P95_ONLY_THRESHOLD}%, the row says "p95 only" and is not counted above; check it before relying on the result. ` +
-      `Times are measured in steps of 0.1 ms, so p95 changes smaller than ${MIN_LATENCY_CHANGE_MS} ms are not marked.`,
+      `The latency bench reports times in steps of 0.1 ms, so p95 changes smaller than ${MIN_LATENCY_CHANGE_MS} ms are not marked.`,
     "",
   );
   return lines.join("\n");
