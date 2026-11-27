@@ -22,6 +22,8 @@ const LOGIN: &str = "alice";
 const BASE: Duration = Duration::from_millis(30);
 const MINUTE: Duration = Duration::from_millis(1800);
 const SPACING: Duration = Duration::from_millis(60);
+/// How long `/users/slow` takes to answer.
+const SLOW: Duration = Duration::from_millis(800);
 
 fn jan1() -> ghusage_core::time::Period {
     period("2024-01-01T00:00:00Z", "2024-01-02T00:00:00Z")
@@ -153,6 +155,12 @@ impl Setup {
 }
 
 async fn setup(commit_count: usize, limit: Limit) -> Setup {
+    setup_with(commit_count, limit, 8).await
+}
+
+/// Like [`setup`], with `concurrency` requests at a time. `/users/slow`
+/// answers after [`SLOW`].
+async fn setup_with(commit_count: usize, limit: Limit, concurrency: usize) -> Setup {
     let server = MockServer::start().await;
     let arrivals = Arc::new(Mutex::new(Vec::new()));
     Mock::given(path_regex("^/search/(commits|issues)$"))
@@ -169,8 +177,16 @@ async fn setup(commit_count: usize, limit: Limit) -> Setup {
         )
         .mount(&server)
         .await;
-    let client = Arc::new(client_with(&server, |c| {
-        c.concurrency = 8;
+    Mock::given(path("/users/slow"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(rest_user("slow", "U_slow", "User"))
+                .set_delay(SLOW),
+        )
+        .mount(&server)
+        .await;
+    let client = Arc::new(client_with(&server, move |c| {
+        c.concurrency = concurrency;
         c.max_attempts = 5;
         c.backoff_base = BASE;
     }));
@@ -497,5 +513,51 @@ async fn searches_queued_before_the_pacing_ends_stay_spaced_after_it() {
     // So do all of them: one search per slot from the end of the wait.
     let slots = u32::try_from(SEARCHES - 2).unwrap();
     assert!(spread(&issues) >= SPACING * slots, "{issues:?}");
+    drop(s.server);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn paced_searches_stay_spaced_while_they_wait_for_a_request_slot() {
+    // One request at a time. Searches start during the wait; just before
+    // it ends, a slow request that is not a search takes the only slot and
+    // keeps it for several slots of the pacing.
+    const SEARCHES: usize = 5;
+    let s = setup_with(1, Limit::First(secondary_limit), 1).await;
+    let c = s.client.clone();
+    let commits = tokio::spawn(async move { c.search_commits(LOGIN, jan1(), false).await });
+    let limited_at = limited(&s).await;
+    let mut searches = Vec::new();
+    for _ in 0..SEARCHES {
+        let c = s.client.clone();
+        searches.push(tokio::spawn(async move {
+            c.search_issues(
+                &format!("involves:{LOGIN}"),
+                IssueKind::PullRequest,
+                jan1().start,
+                false,
+            )
+            .await
+        }));
+    }
+    // 200 ms before the wait (MINUTE) ends.
+    tokio::time::sleep_until((limited_at + Duration::from_millis(1600)).into()).await;
+    s.client.user("slow").await.unwrap();
+    for task in searches {
+        task.await.unwrap().unwrap();
+    }
+    assert_eq!(commits.await.unwrap().unwrap().items.len(), 1);
+    // The retried commit search and the issue searches leave one per slot
+    // once the slot is free, instead of together.
+    let mut paced: Vec<_> = s.arrivals().into_iter().skip(1).collect();
+    paced.sort_by_key(|a| a.at);
+    assert_eq!(paced.len(), SEARCHES + 1);
+    for pair in paced.windows(2) {
+        assert!(
+            pair[1].at - pair[0].at >= SPACING / 2,
+            "paced searches went out together after waiting for a request slot: {paced:?}"
+        );
+    }
+    let stats = s.client.stats();
+    assert_eq!(stats.rate_limit_waits, 1);
     drop(s.server);
 }
